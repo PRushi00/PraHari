@@ -6,6 +6,7 @@ Main Application Entrypoint
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -92,16 +93,22 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router, prefix="/api/v1")
     app.include_router(api_v1_router, prefix="/api")
 
-    @app.get("/", tags=["Root"])
-    def root():
-        return {
-            "name": config.app_name,
-            "version": config.app_version,
-            "schema_version": SCHEMA_VERSION,
-            "deployment_mode": config.deployment_mode.value,
-            "docs": "/docs",
-            "health": "/api/v1/health",
-        }
+    # Serve compiled production frontend SPA if present
+    dist_dir = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if dist_dir.exists() and (dist_dir / "index.html").exists():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
+    else:
+        @app.get("/", tags=["Root"])
+        def root():
+            return {
+                "name": config.app_name,
+                "version": config.app_version,
+                "schema_version": SCHEMA_VERSION,
+                "deployment_mode": config.deployment_mode.value,
+                "docs": "/docs",
+                "health": "/api/v1/health",
+            }
 
     return app
 

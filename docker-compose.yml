@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  prahari:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prahari:latest
+    container_name: prahari_sentinel
+    restart: unless-stopped
+    ports:
+      # Enforce loopback binding on host for security compliance
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - prahari_data:/data
+    environment:
+      - PRAHARI_DEPLOYMENT_MODE=local
+      - PRAHARI_DATABASE_URL=sqlite:////data/prahari.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  prahari_data:
+    driver: local
