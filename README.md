@@ -1,136 +1,138 @@
 # PraHari — The Digital Sentinel
 
-> Cross-platform cybersecurity telemetry ingestion, canonical normalization, SQLite persistence, factual descriptive analysis, and modern SOC monitoring interface.
+> Unified Cybersecurity Telemetry Ingestion, Canonical Normalization, SQLite Persistence, Descriptive Analytics, Research Feasibility Gating, and Causal Future Threat Forecasting.
 
 ---
 
 ## 1. System Overview
 
-PraHari is designed according to the Master Engineering Specification as a dependable, production-grade cybersecurity intelligence platform. It establishes a verifiable vertical slice from raw telemetry ingestion through canonical validation, transactional SQLite storage, factual descriptive analytics, and a high-performance React SOC dashboard.
-
-### Core Architecture Flow
+PraHari is a production-grade, local-first cybersecurity intelligence platform designed for dependable telemetry processing, auditability, and honest predictive threat modeling. It unifies high-throughput telemetry ingestion, schema validation, transactional SQLite persistence, factual descriptive profiling, and a causal machine-learning forecasting engine into a single executable application served on loopback (`127.0.0.1:8000`).
 
 ```
-[ Historical CSV / File Upload / Direct Ingestion ]
-                    │
-                    ▼
-      [ CSV Import Adapter & Validation Engine ]
-       ├── Timestamp sanity checks & format parser
-       ├── IP address syntax & subnet validation
-       ├── Port boundaries (0–65535) & proto lookup
-       └── Strict error rejection vs quality warning flags
-                    │
-                    ▼
-     [ Canonical NormalizedEvent (Pydantic v2 Schema) ]
-                    │
-                    ▼
-       [ SQLite Storage Layer (WAL Mode + FK) ]
-       ├── telemetry_sources
-       ├── normalized_events
-       ├── import_summaries
-       ├── descriptive_analyses
-       └── audit_events
-                    │
-                    ▼
-        [ Descriptive Analysis Service ]
-       └── Factual statistics: IP top-talkers, ports, durations, protocols
-                    │
-                    ▼
-       [ FastAPI Backend Endpoints (v1) ]
-       ├── GET  /api/v1/health
-       ├── GET  /api/v1/events (paginated & filterable)
-       ├── POST /api/v1/import/csv/raw & /file
-       ├── GET  /api/v1/sources
-       └── POST /api/v1/analysis/run & GET /latest
-                    │
-                    ▼
-  [ Modern React + TypeScript + Vite SOC Dashboard ]
-       ├── Overview: ECharts distributions, active counters, quick fixture seeder
-       ├── Ingestion & Import: File upload dropzone, raw text editor, rejection audit table
-       ├── Events Explorer: Live filterable event log with detailed inspection drawer
-       └── Descriptive Analysis: Factual telemetry profiling & data quality flag metrics
+[ Ingestion Sources ] ──► [ Ingestion & Normalizer ] ──► [ SQLite (WAL) ] ──► [ Analytics & Forecasting ] ──► [ Unified SPA Dashboard ]
+ • CSV (CIC-IDS)          • IP/Port/Time Validation      • Events               • Descriptive Profiling        • Overview & Explorer
+ • Zeek (conn.log)        • UTC Normalization            • Sources              • Feasibility Gating           • Threat Forecaster
+ • Suricata (EVE Flow)    • Quality Flags & Rejection    • Analyses             • Causal ML Pipeline           • Stream Simulator
+ • Synthetic Replay       • Canonical Schema 1.0.0       • Audit Log            • Brier Score Calibration      • Audit Log Viewer
 ```
 
 ---
 
-## 2. Research Feasibility & Ethical Safeguards
+## 2. Key Architecture Pillars
 
-- **Descriptive Statistics Only**: Until real-world datasets (e.g. CIC-IDS2018) have completed formal data leakage audits and the Research Feasibility Gate has been signed off, predictive machine-learning forecasting remains gated.
-- **Strict Data Segregation**: Every event is explicitly stamped with `data_category` (`historical_import`, `synthetic`, `live_stream`) and `label_provenance` (`dataset_ground_truth`, `unlabeled`).
-- **Audit Trails**: Every administrative mutation, source creation, and import job is logged in SQLite's `audit_events` table.
+- **Unified Single-Port Deployment**: FastAPI backend serves the production React SPA directly on `http://127.0.0.1:8000/`. Client-side deep links (`/events`, `/forecast`, `/analytics`) fall back gracefully to `index.html` with strict path-traversal prevention.
+- **Multi-Format Ingestion**: Native adapters for multi-column CSVs, Zeek `conn.log` NDJSON, Suricata EVE logs, and synthetic flow streams.
+- **Factual Descriptive Analysis vs. Forecasting**: Factual empirical summaries are strictly segregated from predictive modeling to prevent operator confusion.
+- **Causal Threat Forecasting**: Retrospective observation window ($W=60s$), lead time buffer ($30s$), and future prediction horizon ($H=60s$). Enforces chronological temporal splitting to eliminate overlapping-window leakage.
+- **Research Feasibility Engine**: Gating mechanism requiring $\ge 25$ events, $\ge 99\%$ temporal monotonicity, and label balance before predictive forecasting is permitted.
+- **Zero-Dependency SQLite Persistence**: Embedded SQLite with WAL mode (`PRAGMA journal_mode=WAL`) and foreign keys (`PRAGMA foreign_keys=ON`).
 
 ---
 
 ## 3. Directory Layout
 
 ```
-Prahari Implement_Implementation/
+Implementation/
 ├── backend/
 │   ├── app/
-│   │   ├── adapters/          # Ingestion adapters (csv_import.py)
-│   │   ├── api/               # API endpoints & dependency injection
-│   │   │   └── v1/            # Health, events, sources, imports, analysis
-│   │   ├── core/              # Profile-based AppConfig with safe loopback defaults
+│   │   ├── adapters/          # Ingestion adapters (csv_import.py, json_stream.py, synthetic_replay.py)
+│   │   ├── api/v1/            # Endpoints: health, events, sources, import, stream, analysis, research, forecast, audit
+│   │   ├── core/              # Config, profile settings, and loopback defaults
+│   │   ├── models/            # Feature extractor, forecaster pipeline, model registry
+│   │   ├── research/          # Feasibility audit engine and scientific gating
 │   │   ├── schemas/           # Pydantic canonical models (events.py)
 │   │   ├── services/          # Descriptive analysis engine (analysis.py)
-│   │   ├── storage/           # SQLite manager with WAL & transaction support
-│   │   └── main.py            # FastAPI application entrypoint
+│   │   ├── storage/           # SQLite database layer with WAL mode
+│   │   └── main.py            # FastAPI application & SPA static server
 │   ├── tests/
-│   │   ├── fixtures/          # sample_flows.csv (45-row valid & invalid test dataset)
-│   │   ├── unit/              # Isolated tests for adapters, schemas, database, analysis
-│   │   └── integration/       # End-to-end FastAPI test suite
-│   └── prahari.db             # Local SQLite database (seeded)
-└── frontend/
-    ├── src/
-    │   ├── components/        # Header, navigation, status pills
-    │   ├── pages/             # Overview, Ingestion/Import, Events, Analysis
-    │   ├── services/          # Typed API client (api.ts)
-    │   ├── types/             # TypeScript definitions
-    │   ├── App.tsx            # Main application layout
-    │   └── index.css          # Cyber Sentinel SOC theme design system
-    ├── index.html
-    ├── package.json
-    ├── tsconfig.json
-    └── vite.config.ts         # Vite bundler configured with backend proxy
+│   │   ├── fixtures/          # sample_flows.csv (45-row fixture with valid & malformed rows)
+│   │   ├── integration/       # API, deployment/SPA, and end-to-end pipeline tests
+│   │   └── unit/              # Adapters, database, analysis, forecaster, research tests
+│   └── prahari.db             # Local SQLite database
+├── frontend/
+│   ├── src/                   # React + TypeScript SOC interface
+│   ├── dist/                  # Pre-compiled production bundle served by FastAPI
+│   └── package.json
+├── scripts/
+│   ├── live_data_streamer.py       # Live telemetry streaming probe
+│   ├── verify_live_launcher.py     # Live server launch & API workflow verification script
+│   └── verify_forecasting_pipeline.py # Empirical forecasting evaluation audit script
+├── start_prahari.ps1          # PowerShell turnkey launcher (port conflict preflight, venv check)
+├── start_prahari.bat          # Windows batch launcher
+├── Dockerfile                 # Multi-stage container definition
+├── docker-compose.yml         # Container compose config with persistent volume
+├── ARCHITECTURE.md            # Detailed system architecture specification
+├── DECISIONS.md               # Architecture Decision Records (ADRs)
+└── IMPLEMENTATION_STATUS.md   # Complete verification matrix & test results
 ```
 
 ---
 
-## 4. Running the Platform
+## 4. Quickstart & Deployment
 
-### A. Run Backend (FastAPI)
+### Option A: PowerShell Turnkey Launcher (Recommended)
+1. Run preflight conflict verification:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\start_prahari.ps1 -CheckOnly
+   ```
+2. Launch PraHari on `127.0.0.1:8000`:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\start_prahari.ps1
+   ```
+3. Open your browser:
+   - **Unified SOC Dashboard**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+   - **Interactive API Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
-From `Prahari Implement_Implementation/backend`:
-```powershell
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+### Option B: Windows Batch Launcher
+Double-click or run:
+```cmd
+start_prahari.bat
 ```
-Interactive API documentation will be available at:
-- Swagger UI: `http://127.0.0.1:8000/docs`
-- Redoc: `http://127.0.0.1:8000/redoc`
-- Health check: `http://127.0.0.1:8000/api/v1/health`
 
-### B. Run Frontend (React + Vite)
-
-From `Prahari Implement_Implementation/frontend`:
+### Option C: Manual Backend Launch
 ```powershell
-npm run dev
+.\backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
-Open your browser to:
-- `http://127.0.0.1:5173`
 
 ---
 
-## 5. Running the Test Suite
+## 5. Live Telemetry Streaming Probe
 
-From the workspace root or backend folder:
+To stream simulated live Zeek and Suricata flow records into the running application and view real-time propensity evaluations:
 ```powershell
-python -m pytest "Prahari Implement_Implementation/backend/tests" -v
+.\backend\.venv\Scripts\python.exe scripts\live_data_streamer.py --count 10 --interval 1.0
 ```
 
-All 9 test suites cover:
-- Health check verification
-- Source registration and lifecycle
-- Strict rejection of invalid IPs, ports, and corrupted timestamps
-- Accurate acceptance and normalization of valid flows
-- Database transaction safety and isolation
-- Descriptive historical analysis computation
+---
+
+## 6. Verification & Automated Test Suites
+
+### Run All 33 Automated Tests
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests/ -v
+```
+
+### Run Live Server & Lifecycle Verification
+```powershell
+.\backend\.venv\Scripts\python.exe scripts\verify_live_launcher.py
+```
+
+### Run Empirical Forecasting Audit
+```powershell
+.\backend\.venv\Scripts\python.exe scripts\verify_forecasting_pipeline.py
+```
+
+### Recompile Frontend Production Bundle
+```powershell
+cd frontend
+npm run build
+```
+
+---
+
+## 7. Documentation Index
+
+- [ARCHITECTURE.md](ARCHITECTURE.md): Full technical architecture, data model, causal window formulation, and security model.
+- [DECISIONS.md](DECISIONS.md): Architecture Decision Records (ADR-001 through ADR-008).
+- [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md): Empirical test verification matrix, forecasting findings, and environmental limitations.
