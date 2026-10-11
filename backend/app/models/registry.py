@@ -20,3 +20,10 @@ def get_forecasting_pipeline() -> ThreatForecastingPipeline:
     if _pipeline_instance is None:
         _pipeline_instance = ThreatForecastingPipeline()
     return _pipeline_instance
+
+
+def reset_forecasting_pipeline() -> None:
+    """Reset the forecasting pipeline singleton (for tests)."""
+    global _pipeline_instance
+    _pipeline_instance = ThreatForecastingPipeline()
+

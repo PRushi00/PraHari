@@ -39,24 +39,34 @@ class ModelMetrics(BaseModel):
     precision: float
     recall: float
     f1: float
+    f1_score: Optional[float] = None
     pr_auc: Optional[float] = None
     roc_auc: Optional[float] = None
     brier_score: Optional[float] = None
     false_positive_rate: float = 0.0
     confusion_matrix: list[list[int]] = Field(default_factory=list)
     sample_count: int = 0
+    train_instances: Optional[int] = 0
+    test_instances: Optional[int] = 0
     training_time_seconds: float = 0.0
+    training_duration_seconds: Optional[float] = 0.0
     feature_importance: dict[str, float] = Field(default_factory=dict)
+    feature_importances: Optional[dict[str, float]] = None
 
 
 class PredictionResult(BaseModel):
     model_id: str
+    model_name: Optional[str] = None
+    prediction_id: Optional[str] = None
+    predicted_at: Optional[str] = None
     prediction_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     propensity_score: float  # probability [0.0, 1.0]
     predicted_incident: bool
     threshold: float
+    threshold_used: Optional[float] = None
     lead_time_seconds: float
     prediction_horizon_seconds: float
+    horizon_seconds: Optional[float] = None
     confidence: float
     top_contributing_features: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -176,14 +186,19 @@ def evaluate_model_on_split(
         precision=round(prec, 4),
         recall=round(rec, 4),
         f1=round(f1, 4),
+        f1_score=round(f1, 4),
         pr_auc=round(pr_auc, 4) if pr_auc is not None else None,
         roc_auc=round(roc_auc, 4) if roc_auc is not None else None,
         brier_score=round(brier, 4) if brier is not None else None,
         false_positive_rate=round(fpr, 4),
         confusion_matrix=cm,
         sample_count=len(y_test),
+        train_instances=len(y_train),
+        test_instances=len(y_test),
         training_time_seconds=round(duration, 4),
+        training_duration_seconds=round(duration, 4),
         feature_importance=feat_importances,
+        feature_importances=feat_importances,
     )
 
     return metrics, model
@@ -316,13 +331,20 @@ class ThreatForecastingPipeline:
 
         contributions.sort(key=lambda c: c["impact"], reverse=True)
 
+        now_dt = datetime.now(timezone.utc)
         return PredictionResult(
             model_id=chosen_id,
+            model_name=chosen_id,
+            prediction_id=f"pred-{int(now_dt.timestamp())}",
+            predicted_at=now_dt.isoformat(),
+            prediction_timestamp=now_dt,
             propensity_score=round(p_score, 4),
             predicted_incident=is_incident,
             threshold=threshold,
+            threshold_used=threshold,
             lead_time_seconds=self.extractor.lead_time_seconds,
             prediction_horizon_seconds=self.extractor.prediction_horizon_seconds,
+            horizon_seconds=self.extractor.prediction_horizon_seconds,
             confidence=round(abs(p_score - 0.5) * 2, 3),
             top_contributing_features=contributions[:5],
         )

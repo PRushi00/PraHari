@@ -97,7 +97,36 @@ def create_app() -> FastAPI:
     dist_dir = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist_dir.exists() and (dist_dir / "index.html").exists():
         from fastapi.staticfiles import StaticFiles
-        app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
+        from fastapi.responses import FileResponse
+
+        assets_dir = dist_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str):
+            # Explicit path traversal check
+            if ".." in full_path or full_path.startswith("/"):
+                return JSONResponse(status_code=400, content={"detail": "Invalid path traversal attempt"})
+
+            # Check if requesting a direct static file in dist (like favicon.svg)
+            target = dist_dir / full_path
+            try:
+                resolved_target = target.resolve()
+                resolved_dist = dist_dir.resolve()
+                if not resolved_target.is_relative_to(resolved_dist):
+                    return JSONResponse(status_code=400, content={"detail": "Path outside static directory"})
+                if resolved_target.is_file():
+                    return FileResponse(resolved_target)
+            except Exception:
+                return JSONResponse(status_code=400, content={"detail": "Invalid path resolution"})
+
+            # Missing assets under assets/ or any missing static file with an extension return 404
+            if full_path.startswith("assets/") or ("." in full_path.split("/")[-1]):
+                return JSONResponse(status_code=404, content={"detail": "File not found"})
+
+            # Fallback to SPA index.html for client-side routing paths (e.g. /events, /forecast)
+            return FileResponse(dist_dir / "index.html")
     else:
         @app.get("/", tags=["Root"])
         def root():

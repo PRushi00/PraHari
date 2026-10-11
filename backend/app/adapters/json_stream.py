@@ -171,9 +171,13 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
                 p_str = str(proto_val).strip().upper()
                 protocol = p_str if p_str in ("TCP", "UDP", "ICMP") else p_str
 
-        # Metrics
+        # Metrics (Duration, Packets, Bytes)
         duration = None
-        dur_val = raw_record.get("duration") or raw_record.get("flow_duration")
+        dur_val = (
+            raw_record.get("duration")
+            or raw_record.get("flow_duration")
+            or (raw_record.get("flow", {}).get("age") if isinstance(raw_record.get("flow"), dict) else None)
+        )
         if dur_val is not None:
             try:
                 duration = float(dur_val)
@@ -187,14 +191,31 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
                 packets = int(pkts_val)
             except (ValueError, TypeError):
                 quality_flags.append(QualityFlag.INVALID_VALUE)
+        elif isinstance(raw_record.get("flow"), dict):
+            p1 = raw_record["flow"].get("pkts_toserver") or 0
+            p2 = raw_record["flow"].get("pkts_toclient") or 0
+            if p1 or p2:
+                packets = int(p1) + int(p2)
 
         bytes_total = None
-        bytes_val = raw_record.get("bytes_total") or raw_record.get("bytes") or raw_record.get("orig_bytes")
+        bytes_val = raw_record.get("bytes_total") or raw_record.get("bytes")
         if bytes_val is not None:
             try:
                 bytes_total = int(bytes_val)
             except (ValueError, TypeError):
                 quality_flags.append(QualityFlag.INVALID_VALUE)
+        elif "orig_bytes" in raw_record or "resp_bytes" in raw_record:
+            b1 = raw_record.get("orig_bytes") or 0
+            b2 = raw_record.get("resp_bytes") or 0
+            try:
+                bytes_total = int(b1) + int(b2)
+            except (ValueError, TypeError):
+                quality_flags.append(QualityFlag.INVALID_VALUE)
+        elif isinstance(raw_record.get("flow"), dict):
+            b1 = raw_record["flow"].get("bytes_toserver") or 0
+            b2 = raw_record["flow"].get("bytes_toclient") or 0
+            if b1 or b2:
+                bytes_total = int(b1) + int(b2)
 
         # Label
         label = raw_record.get("label") or raw_record.get("alert", {}).get("signature") or raw_record.get("classification")

@@ -274,7 +274,7 @@ class Database:
             count = 0
             for event in events:
                 try:
-                    conn.execute(
+                    cursor = conn.execute(
                         """INSERT OR IGNORE INTO normalized_events
                            (event_id, schema_version, source_id, data_category,
                             observed_at, ingested_at, event_type,
@@ -304,7 +304,8 @@ class Database:
                             event.raw_reference,
                         ),
                     )
-                    count += 1
+                    if cursor.rowcount > 0:
+                        count += 1
                 except sqlite3.IntegrityError:
                     logger.warning("Duplicate event_id skipped: %s", event.event_id)
             return count
@@ -456,6 +457,12 @@ class Database:
     def save_analysis(self, analysis: DescriptiveAnalysis) -> None:
         """Save a descriptive analysis result."""
         with self.get_connection() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO telemetry_sources
+                   (source_id, name, source_type, description, created_at)
+                   VALUES (?, ?, 'aggregate', 'Auto-created source reference', ?)""",
+                (analysis.source_id, analysis.source_id, datetime.now(timezone.utc).isoformat()),
+            )
             conn.execute(
                 """INSERT OR REPLACE INTO descriptive_analyses
                    (analysis_id, analysis_type, source_id, computed_at, schema_version,
