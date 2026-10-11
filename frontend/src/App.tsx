@@ -2,8 +2,12 @@ import React, { useState, useEffect } from "react";
 import { Header, NavTab } from "./components/Header";
 import { OverviewPage } from "./pages/OverviewPage";
 import { ImportPage } from "./pages/ImportPage";
+import { StreamReplayPage } from "./pages/StreamReplayPage";
 import { EventsPage } from "./pages/EventsPage";
 import { AnalysisPage } from "./pages/AnalysisPage";
+import { ResearchPage } from "./pages/ResearchPage";
+import { ForecastPage } from "./pages/ForecastPage";
+import { AuditPage } from "./pages/AuditPage";
 import { api } from "./services/api";
 import { HealthResponse } from "./types";
 
@@ -48,8 +52,14 @@ export const App: React.FC = () => {
         {activeTab === "import" && (
           <ImportPage onImportComplete={fetchHealth} />
         )}
+        {activeTab === "stream" && (
+          <StreamReplayPage onReplayComplete={fetchHealth} />
+        )}
         {activeTab === "events" && <EventsPage />}
         {activeTab === "analysis" && <AnalysisPage />}
+        {activeTab === "research" && <ResearchPage />}
+        {activeTab === "forecast" && <ForecastPage />}
+        {activeTab === "audit" && <AuditPage />}
       </main>
 
       <footer

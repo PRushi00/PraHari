@@ -118,3 +118,112 @@ export interface EventSummaryStats {
   labels: Record<string, number>;
   event_types: Record<string, number>;
 }
+
+// Research Feasibility Types
+export interface FeasibilityMetric {
+  passed: boolean;
+  value: number | string;
+  threshold?: number | string;
+  rationale: string;
+  severity: "info" | "warning" | "critical";
+}
+
+export interface FeasibilityReport {
+  audit_id: string;
+  audited_at: string;
+  total_events: number;
+  gate_passed: boolean;
+  temporal_monotonicity: FeasibilityMetric;
+  class_balance: FeasibilityMetric;
+  label_provenance: FeasibilityMetric;
+  source_diversity: FeasibilityMetric;
+  causal_leakage_risk: FeasibilityMetric;
+  overall_feasibility_score: number;
+  recommendation: string;
+  advisory_warnings: string[];
+}
+
+// Threat Forecasting Types
+export interface ModelMetrics {
+  model_name: string;
+  model_type: string;
+  trained_at: string;
+  train_instances: number;
+  test_instances: number;
+  training_duration_seconds: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1_score: number;
+  roc_auc?: number | null;
+  pr_auc?: number | null;
+  brier_score?: number | null;
+  false_positive_rate: number;
+  feature_importances?: Record<string, number> | null;
+  confusion_matrix: number[][];
+}
+
+export interface FeatureContribution {
+  feature: string;
+  value: number;
+  contribution: number;
+}
+
+export interface PredictionResult {
+  prediction_id: string;
+  predicted_at: string;
+  model_name: string;
+  propensity_score: number;
+  predicted_incident: boolean;
+  threshold_used: number;
+  lead_time_seconds: number;
+  horizon_seconds: number;
+  top_contributing_features: FeatureContribution[];
+}
+
+// Streaming & Replay Types
+export interface AdapterHealth {
+  adapter_name: string;
+  format: string;
+  is_running: boolean;
+  records_processed: number;
+  records_accepted: number;
+  records_rejected: number;
+  last_activity?: string | null;
+  last_error?: string | null;
+}
+
+export interface SyntheticReplayResponse {
+  source_id: string;
+  generated_records: number;
+  accepted_records: number;
+  rejected_records: number;
+  simulated_attack_ratio: number;
+  duration_seconds: number;
+  status: string;
+}
+
+// Audit & System Compliance Types
+export interface AuditLog {
+  log_id: string;
+  action: string;
+  resource_type: string;
+  resource_id?: string | null;
+  details?: string | null;
+  created_at: string;
+}
+
+export interface SecurityConfig {
+  app_name: string;
+  app_version: string;
+  host: string;
+  port: number;
+  loopback_enforced: boolean;
+  security_boundaries: {
+    live_sniffing_disabled: boolean;
+    packet_modification_disabled: boolean;
+    loopback_only_binding: boolean;
+    offline_eval_mode: boolean;
+  };
+  supported_adapters: string[];
+}

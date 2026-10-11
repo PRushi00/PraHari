@@ -107,4 +107,88 @@ export const api = {
   },
 
   listAnalyses: (): Promise<DescriptiveAnalysis[]> => request<DescriptiveAnalysis[]>("/analysis"),
+
+  // Research Feasibility Audit
+  runResearchAudit: (sourceId?: string): Promise<import("../types").FeasibilityReport> =>
+    request<import("../types").FeasibilityReport>("/research/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: sourceId || null }),
+    }),
+
+  getResearchReport: (): Promise<import("../types").FeasibilityReport | null> =>
+    request<import("../types").FeasibilityReport | null>("/research/report"),
+
+  // Threat Forecasting & Predictive ML
+  trainForecastingModels: (data?: {
+    source_id?: string;
+    max_events?: number;
+    train_ratio?: number;
+  }): Promise<Record<string, import("../types").ModelMetrics>> =>
+    request<Record<string, import("../types").ModelMetrics>>("/forecast/train", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {}),
+    }),
+
+  getForecastingModels: (): Promise<Record<string, import("../types").ModelMetrics>> =>
+    request<Record<string, import("../types").ModelMetrics>>("/forecast/models"),
+
+  predictIncidentPropensity: (data?: {
+    source_id?: string;
+    model_id?: string;
+    threshold?: number;
+    window_limit?: number;
+  }): Promise<import("../types").PredictionResult> =>
+    request<import("../types").PredictionResult>("/forecast/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {}),
+    }),
+
+  // Streaming & Synthetic Replay
+  ingestNdjsonStream: (data: {
+    source_id: string;
+    source_name?: string;
+    format?: string;
+    ndjson_content: string;
+  }): Promise<ImportSummary> =>
+    request<ImportSummary>("/stream/ingest/ndjson", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+
+  replaySyntheticFlows: (data?: {
+    source_id?: string;
+    source_name?: string;
+    count?: number;
+    attack_ratio?: number;
+    seed?: number;
+  }): Promise<import("../types").SyntheticReplayResponse> =>
+    request<import("../types").SyntheticReplayResponse>("/stream/replay/synthetic", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {}),
+    }),
+
+  getStreamAdapters: (): Promise<import("../types").AdapterHealth[]> =>
+    request<import("../types").AdapterHealth[]>("/stream/adapters"),
+
+  // Audit Logs & Compliance Config
+  getAuditLogs: (params?: {
+    limit?: number;
+    offset?: number;
+    resource_type?: string;
+  }): Promise<import("../types").AuditLog[]> => {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.append("limit", params.limit.toString());
+    if (params?.offset !== undefined) sp.append("offset", params.offset.toString());
+    if (params?.resource_type) sp.append("resource_type", params.resource_type);
+    const query = sp.toString();
+    return request<import("../types").AuditLog[]>(`/audit/logs${query ? `?${query}` : ""}`);
+  },
+
+  getSecurityConfig: (): Promise<import("../types").SecurityConfig> =>
+    request<import("../types").SecurityConfig>("/audit/config"),
 };
