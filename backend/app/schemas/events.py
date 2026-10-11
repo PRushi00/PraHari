@@ -39,6 +39,7 @@ class DataCategory(str, Enum):
     HISTORICAL_IMPORT = "historical_import"
     HISTORICAL_REPLAY = "historical_replay"
     SYNTHETIC_DEMO = "synthetic_demo"
+    SYNTHETIC = "synthetic_demo"
     TEST_FIXTURE = "test_fixture"
 
 
@@ -46,6 +47,7 @@ class LabelProvenance(str, Enum):
     """How a label was assigned to an event."""
     DATASET_GROUND_TRUTH = "dataset_ground_truth"
     RULE_BASED = "rule_based"
+    SYNTHETIC_RULE = "rule_based"
     MODEL_PREDICTION = "model_prediction"
     ANALYST_ANNOTATION = "analyst_annotation"
     UNLABELED = "unlabeled"
@@ -60,6 +62,7 @@ class QualityFlag(str, Enum):
     DUPLICATE_CANDIDATE = "duplicate_candidate"
     SCHEMA_WARNING = "schema_warning"
     INVALID_VALUE = "invalid_value"
+    SYNTHETIC_SAMPLE = "synthetic_sample"
 
 
 class NormalizedEvent(BaseModel):
@@ -86,7 +89,7 @@ class NormalizedEvent(BaseModel):
         description="Identifier of the telemetry source that produced this event."
     )
     data_category: DataCategory = Field(
-        ...,
+        default=DataCategory.HISTORICAL_IMPORT,
         description="Category of data origin (live, historical, test, etc.)."
     )
 

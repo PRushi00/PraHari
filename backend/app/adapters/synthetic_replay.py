@@ -57,9 +57,23 @@ class SyntheticFlowGenerator:
         current_time = start_time or datetime.now(timezone.utc) - timedelta(minutes=count)
         events: list[NormalizedEvent] = []
 
+        attack_budget = int(count * attack_ratio)
+        attack_indices: set[int] = set()
+        if attack_budget > 0:
+            # Realistic threat modeling: attacks appear in concentrated bursts
+            burst_size = max(4, attack_budget // 2)
+            b1_start = max(5, int(count * 0.4))
+            for idx in range(b1_start, min(count, b1_start + burst_size)):
+                attack_indices.add(idx)
+            remaining = attack_budget - len(attack_indices)
+            if remaining > 0:
+                b2_start = max(b1_start + burst_size + 5, int(count * 0.75))
+                for idx in range(b2_start, min(count, b2_start + remaining)):
+                    attack_indices.add(idx)
+
         for i in range(count):
             current_time += timedelta(seconds=self.rng.randint(1, 5))
-            is_attack = self.rng.random() < attack_ratio
+            is_attack = i in attack_indices
 
             if is_attack:
                 attack_type = self.rng.choice(["SSH-BruteForce", "PortScan", "DoS-Hulk", "FTP-BruteForce"])
