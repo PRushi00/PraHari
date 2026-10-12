@@ -37,6 +37,12 @@ class DataCategory(str, Enum):
     """Category distinguishing the origin/nature of ingested data."""
     LIVE_TELEMETRY = "live_telemetry"
     HISTORICAL_IMPORT = "historical_import"
+    # Used only by aggregate results (e.g. an analysis spanning several
+    # categories). A stored event is never MIXED or UNDETERMINED.
+    MIXED = "mixed"
+    # An aggregate over zero events: no provenance can be derived, and
+    # claiming any particular category would be an invention.
+    UNDETERMINED = "undetermined"
     HISTORICAL_REPLAY = "historical_replay"
     SYNTHETIC_DEMO = "synthetic_demo"
     SYNTHETIC = "synthetic_demo"
@@ -63,6 +69,144 @@ class QualityFlag(str, Enum):
     SCHEMA_WARNING = "schema_warning"
     INVALID_VALUE = "invalid_value"
     SYNTHETIC_SAMPLE = "synthetic_sample"
+    # Informational, NOT a data defect: the telemetry source is structurally
+    # incapable of providing one or more canonical fields. Distinguished from
+    # MISSING_FIELD, which means a field the source *can* provide was absent.
+    SOURCE_LIMITED = "source_limited"
+
+
+class FieldAvailability(str, Enum):
+    """
+    Why a canonical field does or does not carry a value.
+
+    A null is not self-explanatory: "the source cannot measure this" and
+    "the source should have provided this but did not" are different facts
+    with different consequences. Collapsing them makes a structurally
+    limited source look like a broken one.
+    """
+    POPULATED = "populated"                    # value present and valid
+    MISSING_UNEXPECTED = "missing_unexpected"  # source supports it; value absent
+    UNSUPPORTED_BY_SOURCE = "unsupported_by_source"  # source cannot provide it
+    NOT_APPLICABLE = "not_applicable"          # meaningless for this event type
+    INVALID = "invalid"                        # present but failed validation
+
+
+# Canonical fields whose availability varies by telemetry source.
+CAPABILITY_FIELDS = (
+    "src_ip", "dst_ip", "src_port", "dst_port", "protocol",
+    "duration", "packets", "bytes_total",
+    "label",
+    "http_method", "http_path", "http_status_code", "http_duration_ms",
+    "dst_hostname",
+)
+
+
+class SourceCapability(BaseModel):
+    """
+    What a telemetry source is structurally able to report.
+
+    Declared once per source rather than inferred per event, so analytics can
+    tell "this source never measures bytes" from "this record lost its byte
+    count". Consumers must not treat an UNSUPPORTED_BY_SOURCE field as a
+    data-quality defect.
+    """
+    source_type: str
+    description: str = ""
+    # field name -> availability when the source is working correctly
+    fields: dict[str, FieldAvailability] = Field(default_factory=dict)
+    # Plain-language limits, surfaced in the API and UI verbatim.
+    limitations: list[str] = Field(default_factory=list)
+
+    def availability_of(self, field: str) -> FieldAvailability:
+        return self.fields.get(field, FieldAvailability.UNSUPPORTED_BY_SOURCE)
+
+    def supports(self, field: str) -> bool:
+        return self.availability_of(field) in (
+            FieldAvailability.POPULATED,
+            FieldAvailability.MISSING_UNEXPECTED,
+        )
+
+    def unsupported_fields(self) -> list[str]:
+        return sorted(
+            f for f in CAPABILITY_FIELDS
+            if self.fields.get(f, FieldAvailability.UNSUPPORTED_BY_SOURCE)
+            in (FieldAvailability.UNSUPPORTED_BY_SOURCE, FieldAvailability.NOT_APPLICABLE)
+        )
+
+
+class DomainAttributionMethod(str, Enum):
+    """How a destination hostname was associated with a connection."""
+    DNS_CACHE_OBSERVATION = "dns_cache_observation"
+    DNS_QUERY_LOG = "dns_query_log"
+    APPLICATION_LAYER_REPORTED = "application_layer_reported"
+    REVERSE_DNS = "reverse_dns"
+    NONE = "none"
+
+
+class AttributionConfidence(str, Enum):
+    """
+    Confidence that a hostname is the name the application actually used.
+
+    Deliberately coarse: the evidence available locally does not support
+    finer gradations, and a numeric score would imply precision we do not have.
+    """
+    HIGH = "high"        # single recent local resolution for this exact IP
+    MEDIUM = "medium"    # recent resolution, but shared/CDN IP or several candidates
+    LOW = "low"          # stale, ambiguous, or weakly correlated evidence
+    NONE = "none"        # no defensible association
+
+
+class DomainAttribution(BaseModel):
+    """
+    A hostname association for a destination IP, carried with its evidence.
+
+    This is an inference, never a fact recorded by the connection itself. The
+    original connection record and its destination IP are preserved
+    regardless of whether attribution succeeds.
+    """
+    hostname: Optional[str] = None
+    method: DomainAttributionMethod = DomainAttributionMethod.NONE
+    confidence: AttributionConfidence = AttributionConfidence.NONE
+    evidence_observed_at: Optional[datetime] = None
+    evidence_age_seconds: Optional[float] = None
+    # Other hostnames seen resolving to the same IP, which is why a shared or
+    # CDN address cannot be attributed with high confidence.
+    candidate_hostnames: list[str] = Field(default_factory=list)
+    candidate_count: int = 0
+    limitations: list[str] = Field(default_factory=list)
+
+    identifies_requested_host: bool = Field(
+        default=False,
+        description=(
+            "True only when the evidence speaks to the hostname the application "
+            "actually requested (a DNS resolution it performed, or a direct "
+            "report from an application-layer source). False for reverse DNS, "
+            "which names whoever owns the address — often a CDN edge — and is "
+            "frequently unrelated to the site the user visited."
+        ),
+    )
+    attribution_kind: str = Field(
+        default="none",
+        description="'requested_host', 'infrastructure_owner', or 'none'.",
+    )
+
+    @property
+    def is_attributed(self) -> bool:
+        return self.hostname is not None
+
+
+# Flags that describe PROVENANCE or a known SOURCE LIMIT rather than a
+# defect in the record. Counting these as quality warnings makes every
+# synthetic fixture and every record from a structurally limited sensor
+# look malformed, which buries the genuine defects.
+NON_DEFECT_QUALITY_FLAGS: frozenset = frozenset(
+    {QualityFlag.SOURCE_LIMITED, QualityFlag.SYNTHETIC_SAMPLE}
+)
+
+
+def is_quality_defect(flag: "QualityFlag") -> bool:
+    """True when a flag indicates something actually wrong with the record."""
+    return flag not in NON_DEFECT_QUALITY_FLAGS
 
 
 class NormalizedEvent(BaseModel):
@@ -164,6 +308,39 @@ class NormalizedEvent(BaseModel):
     quality_flags: list[QualityFlag] = Field(
         default_factory=list,
         description="Data quality indicators for this event."
+    )
+
+    # ── Application-layer fields ──
+    # Populated ONLY by an authorized application-layer telemetry source.
+    # The Windows connection-table collector cannot observe any of these and
+    # always leaves them null; a value here means an app-layer source
+    # reported it, never that it was inferred from a port number.
+    app_protocol: Optional[str] = Field(
+        default=None,
+        description="Application protocol as REPORTED by an app-layer source (never inferred from port)."
+    )
+    http_method: Optional[str] = Field(
+        default=None, description="HTTP request method, if reported by an app-layer source."
+    )
+    http_path: Optional[str] = Field(
+        default=None, description="HTTP request path, if reported by an app-layer source."
+    )
+    http_status_code: Optional[int] = Field(
+        default=None, ge=100, le=599,
+        description="HTTP response status, if reported by an app-layer source. Never a TCP state."
+    )
+    http_duration_ms: Optional[float] = Field(
+        default=None, ge=0,
+        description="HTTP request duration in ms, if reported by an app-layer source."
+    )
+    dst_hostname: Optional[str] = Field(
+        default=None,
+        description=(
+            "Destination hostname as REPORTED by the source itself (e.g. an "
+            "app-layer source that knows the requested host). Hostnames merely "
+            "inferred from DNS observations are NOT stored here; they are "
+            "returned as a separate DomainAttribution with evidence."
+        ),
     )
 
     # Raw reference
@@ -279,8 +456,44 @@ class DescriptiveAnalysis(BaseModel):
     time_range_start: Optional[datetime] = None
     time_range_end: Optional[datetime] = None
 
+    # ── Derived provenance ──
+    # Computed FROM the analyzed events, never supplied by the caller. The
+    # caller may choose WHICH events to analyze; it may not declare what they
+    # are. (A caller-declared category previously stamped every analysis
+    # 'historical_import' regardless of the data it summarized.)
+    data_categories: dict[str, int] = Field(
+        default_factory=dict,
+        description="Event count per data_category actually present in the analyzed set.",
+    )
+    source_breakdown: dict[str, int] = Field(
+        default_factory=dict,
+        description="Event count per source_id actually present in the analyzed set.",
+    )
+    is_mixed_provenance: bool = Field(
+        default=False,
+        description="True when the analyzed set spans more than one data_category.",
+    )
+
     # Data quality
-    missing_field_counts: dict[str, int] = Field(default_factory=dict)
+    missing_field_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Fields absent where the contributing source DOES support them. "
+            "Genuine gaps — see unsupported_field_counts for structural limits."
+        ),
+    )
+    unsupported_field_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Fields absent because the contributing source cannot provide them. "
+            "NOT a data-quality defect; reported separately so a structurally "
+            "limited source is not mistaken for a failing one."
+        ),
+    )
+    source_limitations: list[str] = Field(
+        default_factory=list,
+        description="Plain-language limits of the sources contributing to this analysis.",
+    )
     quality_flag_counts: dict[str, int] = Field(default_factory=dict)
     records_with_warnings: int = 0
 
@@ -292,6 +505,17 @@ class DescriptiveAnalysis(BaseModel):
     top_src_ips: list[dict] = Field(default_factory=list)
     top_dst_ips: list[dict] = Field(default_factory=list)
     top_dst_ports: list[dict] = Field(default_factory=list)
+
+    # ── Connection intelligence (populated where the data supports it) ──
+    events_by_connection_state: dict[str, int] = Field(default_factory=dict)
+    events_by_process: dict[str, int] = Field(default_factory=dict)
+    top_dst_hostnames: list[dict] = Field(default_factory=list)
+    hostname_attributed_count: int = Field(
+        default=0, description="Events for which a destination hostname could be attributed."
+    )
+    events_per_hour: dict[str, int] = Field(
+        default_factory=dict, description="Observation counts bucketed by UTC hour."
+    )
 
     # Flow metrics summary
     avg_duration: Optional[float] = None

@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS normalized_events (
     label_provenance TEXT NOT NULL DEFAULT 'unlabeled',
     quality_flags   TEXT NOT NULL DEFAULT '[]',
     raw_reference   TEXT,
+    app_protocol    TEXT,
+    http_method     TEXT,
+    http_path       TEXT,
+    http_status_code INTEGER,
+    http_duration_ms REAL,
+    dst_hostname    TEXT,
     FOREIGN KEY (source_id) REFERENCES telemetry_sources(source_id)
 );
 
@@ -76,6 +82,26 @@ CREATE INDEX IF NOT EXISTS idx_events_source ON normalized_events(source_id);
 CREATE INDEX IF NOT EXISTS idx_events_observed ON normalized_events(observed_at);
 CREATE INDEX IF NOT EXISTS idx_events_label ON normalized_events(label);
 CREATE INDEX IF NOT EXISTS idx_events_type ON normalized_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_category ON normalized_events(data_category);
+CREATE INDEX IF NOT EXISTS idx_events_dst_ip ON normalized_events(dst_ip);
+
+-- Locally observed DNS resolutions, used to infer a destination hostname for
+-- a connection. Kept in a separate table so enrichment never mutates the
+-- connection record it describes, and so conflicting or stale observations
+-- remain visible as evidence rather than being overwritten.
+CREATE TABLE IF NOT EXISTS dns_observations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip_address      TEXT NOT NULL,
+    hostname        TEXT NOT NULL,
+    observed_at     TEXT NOT NULL,
+    method          TEXT NOT NULL,
+    ttl_seconds     INTEGER,
+    source_id       TEXT,
+    UNIQUE (ip_address, hostname, observed_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dns_ip ON dns_observations(ip_address);
+CREATE INDEX IF NOT EXISTS idx_dns_observed ON dns_observations(observed_at);
 
 CREATE TABLE IF NOT EXISTS import_summaries (
     import_id           TEXT PRIMARY KEY,
@@ -107,6 +133,16 @@ CREATE TABLE IF NOT EXISTS descriptive_analyses (
     time_range_start    TEXT,
     time_range_end      TEXT,
     missing_field_counts TEXT NOT NULL DEFAULT '{}',
+    unsupported_field_counts TEXT NOT NULL DEFAULT '{}',
+    source_limitations  TEXT NOT NULL DEFAULT '[]',
+    data_categories     TEXT NOT NULL DEFAULT '{}',
+    source_breakdown    TEXT NOT NULL DEFAULT '{}',
+    is_mixed_provenance INTEGER NOT NULL DEFAULT 0,
+    events_by_connection_state TEXT NOT NULL DEFAULT '{}',
+    events_by_process   TEXT NOT NULL DEFAULT '{}',
+    top_dst_hostnames   TEXT NOT NULL DEFAULT '[]',
+    hostname_attributed_count INTEGER NOT NULL DEFAULT 0,
+    events_per_hour     TEXT NOT NULL DEFAULT '{}',
     quality_flag_counts TEXT NOT NULL DEFAULT '{}',
     records_with_warnings INTEGER NOT NULL DEFAULT 0,
     unique_src_ips      INTEGER NOT NULL DEFAULT 0,
@@ -149,11 +185,53 @@ class Database:
         self.db_path = db_path
         self._connection: Optional[sqlite3.Connection] = None
 
+    # Columns added after the initial schema. CREATE TABLE IF NOT EXISTS does
+    # not add columns to an existing table, so a database created by an
+    # earlier version must be migrated in place — otherwise it silently keeps
+    # working while dropping every new field.
+    _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+        "normalized_events": [
+            ("app_protocol", "TEXT"),
+            ("http_method", "TEXT"),
+            ("http_path", "TEXT"),
+            ("http_status_code", "INTEGER"),
+            ("http_duration_ms", "REAL"),
+            ("dst_hostname", "TEXT"),
+        ],
+        "descriptive_analyses": [
+            ("unsupported_field_counts", "TEXT NOT NULL DEFAULT '{}'"),
+            ("source_limitations", "TEXT NOT NULL DEFAULT '[]'"),
+            ("data_categories", "TEXT NOT NULL DEFAULT '{}'"),
+            ("source_breakdown", "TEXT NOT NULL DEFAULT '{}'"),
+            ("is_mixed_provenance", "INTEGER NOT NULL DEFAULT 0"),
+            ("events_by_connection_state", "TEXT NOT NULL DEFAULT '{}'"),
+            ("events_by_process", "TEXT NOT NULL DEFAULT '{}'"),
+            ("top_dst_hostnames", "TEXT NOT NULL DEFAULT '[]'"),
+            ("hostname_attributed_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("events_per_hour", "TEXT NOT NULL DEFAULT '{}'"),
+        ],
+    }
+
     def initialize(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if absent, then add any columns introduced later."""
         with self.get_connection() as conn:
             conn.executescript(TABLES_DDL)
+            self._migrate_columns(conn)
             logger.info("Database initialized at %s", self.db_path)
+
+    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
+        """Add missing columns to existing tables, preserving all data."""
+        for table, columns in self._ADDED_COLUMNS.items():
+            existing = {
+                row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+            }
+            if not existing:
+                continue  # table absent; DDL above will have created it
+            for name, ddl in columns:
+                if name in existing:
+                    continue
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                logger.info("Migrated %s: added column %s", table, name)
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -232,6 +310,54 @@ class Database:
                 ),
             )
 
+    def refresh_source_activity(
+        self,
+        source_id: str,
+        last_event_at: Optional[datetime] = None,
+        status: Optional[str] = None,
+    ) -> Optional[TelemetrySource]:
+        """
+        Recompute a source's activity counters directly from stored events.
+
+        ``event_count`` is derived from ``normalized_events`` rather than
+        incremented by batch size. Incrementing is unsafe: it double-counts
+        when a batch contains records already present (deduplicated on insert)
+        and drifts permanently if an insert is partially rolled back.
+
+        ``last_event_at`` only ever moves forward, so a late-arriving batch of
+        older records cannot rewind a source's freshness indicator.
+        """
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT source_id FROM telemetry_sources WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            ts = last_event_at.isoformat() if last_event_at else None
+            conn.execute(
+                """UPDATE telemetry_sources
+                   SET event_count = (
+                           SELECT COUNT(*) FROM normalized_events
+                           WHERE source_id = :sid
+                       ),
+                       last_event_at = CASE
+                           WHEN :ts IS NULL THEN last_event_at
+                           WHEN last_event_at IS NULL THEN :ts
+                           WHEN :ts > last_event_at THEN :ts
+                           ELSE last_event_at
+                       END,
+                       status = COALESCE(:status, status)
+                   WHERE source_id = :sid""",
+                {"sid": source_id, "ts": ts, "status": status},
+            )
+            updated = conn.execute(
+                "SELECT * FROM telemetry_sources WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            return self._row_to_source(updated) if updated else None
+
     def get_source(self, source_id: str) -> Optional[TelemetrySource]:
         """Retrieve a telemetry source by ID."""
         with self.get_connection() as conn:
@@ -280,8 +406,11 @@ class Database:
                             observed_at, ingested_at, event_type,
                             src_ip, dst_ip, src_port, dst_port, protocol,
                             duration, packets, bytes_total,
-                            label, label_provenance, quality_flags, raw_reference)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            label, label_provenance, quality_flags, raw_reference,
+                            app_protocol, http_method, http_path,
+                            http_status_code, http_duration_ms, dst_hostname)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                   ?, ?, ?, ?, ?, ?)""",
                         (
                             event.event_id,
                             event.schema_version,
@@ -302,12 +431,29 @@ class Database:
                             event.label_provenance.value,
                             json.dumps([f.value for f in event.quality_flags]),
                             event.raw_reference,
+                            event.app_protocol,
+                            event.http_method,
+                            event.http_path,
+                            event.http_status_code,
+                            event.http_duration_ms,
+                            event.dst_hostname,
                         ),
                     )
                     if cursor.rowcount > 0:
                         count += 1
-                except sqlite3.IntegrityError:
-                    logger.warning("Duplicate event_id skipped: %s", event.event_id)
+                except sqlite3.IntegrityError as exc:
+                    # INSERT OR IGNORE already absorbs duplicate primary keys
+                    # (rowcount 0, no exception). Anything that still raises
+                    # here is a different constraint failure — in practice a
+                    # foreign-key violation from an unregistered source_id,
+                    # which OR IGNORE does NOT suppress. Logging that as a
+                    # "duplicate" and continuing would silently discard the
+                    # event and report success, so it is raised instead.
+                    raise sqlite3.IntegrityError(
+                        f"Failed to persist event {event.event_id} for source "
+                        f"'{event.source_id}': {exc}. Ensure the telemetry source "
+                        f"is registered before inserting its events."
+                    ) from exc
             return count
 
     def get_event(self, event_id: str) -> Optional[NormalizedEvent]:
@@ -326,6 +472,7 @@ class Database:
         source_id: Optional[str] = None,
         label: Optional[str] = None,
         event_type: Optional[str] = None,
+        data_category: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[NormalizedEvent]:
@@ -342,6 +489,9 @@ class Database:
         if event_type:
             query += " AND event_type = ?"
             params.append(event_type)
+        if data_category:
+            query += " AND data_category = ?"
+            params.append(data_category)
 
         query += " ORDER BY observed_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -354,8 +504,16 @@ class Database:
         self,
         source_id: Optional[str] = None,
         label: Optional[str] = None,
+        event_type: Optional[str] = None,
+        data_category: Optional[str] = None,
     ) -> int:
-        """Count events with optional filters."""
+        """
+        Count events with optional filters.
+
+        Must accept EVERY filter that list_events accepts. It previously
+        omitted event_type, so a filtered query reported the unfiltered
+        total — e.g. "3,252 total" beside zero rows.
+        """
         query = "SELECT COUNT(*) FROM normalized_events WHERE 1=1"
         params: list = []
         if source_id:
@@ -364,6 +522,12 @@ class Database:
         if label:
             query += " AND label = ?"
             params.append(label)
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        if data_category:
+            query += " AND data_category = ?"
+            params.append(data_category)
 
         with self.get_connection() as conn:
             row = conn.execute(query, params).fetchone()
@@ -393,7 +557,103 @@ class Database:
             label_provenance=LabelProvenance(row["label_provenance"]),
             quality_flags=flags,
             raw_reference=row["raw_reference"],
+            app_protocol=self._opt(row, "app_protocol"),
+            http_method=self._opt(row, "http_method"),
+            http_path=self._opt(row, "http_path"),
+            http_status_code=self._opt(row, "http_status_code"),
+            http_duration_ms=self._opt(row, "http_duration_ms"),
+            dst_hostname=self._opt(row, "dst_hostname"),
         )
+
+    @staticmethod
+    def _opt(row: sqlite3.Row, column: str):
+        """Read a column that may be absent in an un-migrated database."""
+        try:
+            return row[column]
+        except (IndexError, KeyError):
+            return None
+
+    # ──────────────── DNS Observations (enrichment evidence) ────────────────
+
+    def record_dns_observations(self, observations: list[dict]) -> int:
+        """
+        Persist locally observed DNS resolutions.
+
+        Each observation is evidence that *at some moment* a hostname
+        resolved to an address. It is deliberately append-only: a later
+        answer does not erase an earlier one, because a shared or CDN
+        address legitimately maps to many names and that ambiguity must stay
+        visible to anyone judging an attribution.
+        """
+        if not observations:
+            return 0
+        inserted = 0
+        with self.get_connection() as conn:
+            for obs in observations:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO dns_observations
+                       (ip_address, hostname, observed_at, method, ttl_seconds, source_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        obs["ip_address"],
+                        obs["hostname"],
+                        obs["observed_at"],
+                        obs.get("method", "dns_cache_observation"),
+                        obs.get("ttl_seconds"),
+                        obs.get("source_id"),
+                    ),
+                )
+                inserted += cur.rowcount if cur.rowcount > 0 else 0
+        return inserted
+
+    def get_dns_observations_for_ip(self, ip_address: str, limit: int = 50) -> list[dict]:
+        """All recorded hostnames for an address, newest observation first."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """SELECT hostname, observed_at, method, ttl_seconds
+                   FROM dns_observations
+                   WHERE ip_address = ?
+                   ORDER BY observed_at DESC
+                   LIMIT ?""",
+                (ip_address, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_dns_observations_for_ips(self, ips: list[str]) -> dict[str, list[dict]]:
+        """Bulk lookup for many addresses in one query."""
+        if not ips:
+            return {}
+        unique = list({ip for ip in ips if ip})
+        out: dict[str, list[dict]] = {ip: [] for ip in unique}
+        placeholders = ",".join("?" * len(unique))
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"""SELECT ip_address, hostname, observed_at, method, ttl_seconds
+                    FROM dns_observations
+                    WHERE ip_address IN ({placeholders})
+                    ORDER BY observed_at DESC""",
+                unique,
+            ).fetchall()
+        for r in rows:
+            out[r["ip_address"]].append(
+                {
+                    "hostname": r["hostname"],
+                    "observed_at": r["observed_at"],
+                    "method": r["method"],
+                    "ttl_seconds": r["ttl_seconds"],
+                }
+            )
+        return out
+
+    def count_dns_observations(self) -> int:
+        with self.get_connection() as conn:
+            return conn.execute("SELECT COUNT(*) FROM dns_observations").fetchone()[0]
+
+    def count_dns_distinct_ips(self) -> int:
+        with self.get_connection() as conn:
+            return conn.execute(
+                "SELECT COUNT(DISTINCT ip_address) FROM dns_observations"
+            ).fetchone()[0]
 
     # ──────────────── Import Summaries ────────────────
 
@@ -471,8 +731,13 @@ class Database:
                     missing_field_counts, quality_flag_counts, records_with_warnings,
                     unique_src_ips, unique_dst_ips, unique_src_ports, unique_dst_ports,
                     top_src_ips, top_dst_ips, top_dst_ports,
-                    avg_duration, avg_packets, avg_bytes, total_bytes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    avg_duration, avg_packets, avg_bytes, total_bytes,
+                    unsupported_field_counts, source_limitations,
+                    data_categories, source_breakdown, is_mixed_provenance,
+                    events_by_connection_state, events_by_process,
+                    top_dst_hostnames, hostname_attributed_count, events_per_hour)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     analysis.analysis_id,
                     analysis.analysis_type,
@@ -500,6 +765,16 @@ class Database:
                     analysis.avg_packets,
                     analysis.avg_bytes,
                     analysis.total_bytes,
+                    json.dumps(analysis.unsupported_field_counts),
+                    json.dumps(analysis.source_limitations),
+                    json.dumps(analysis.data_categories),
+                    json.dumps(analysis.source_breakdown),
+                    int(analysis.is_mixed_provenance),
+                    json.dumps(analysis.events_by_connection_state),
+                    json.dumps(analysis.events_by_process),
+                    json.dumps(analysis.top_dst_hostnames),
+                    analysis.hostname_attributed_count,
+                    json.dumps(analysis.events_per_hour),
                 ),
             )
 
@@ -554,4 +829,24 @@ class Database:
             avg_packets=row["avg_packets"],
             avg_bytes=row["avg_bytes"],
             total_bytes=row["total_bytes"],
+            unsupported_field_counts=self._json_opt(row, "unsupported_field_counts", {}),
+            source_limitations=self._json_opt(row, "source_limitations", []),
+            data_categories=self._json_opt(row, "data_categories", {}),
+            source_breakdown=self._json_opt(row, "source_breakdown", {}),
+            is_mixed_provenance=bool(self._opt(row, "is_mixed_provenance") or 0),
+            events_by_connection_state=self._json_opt(row, "events_by_connection_state", {}),
+            events_by_process=self._json_opt(row, "events_by_process", {}),
+            top_dst_hostnames=self._json_opt(row, "top_dst_hostnames", []),
+            hostname_attributed_count=self._opt(row, "hostname_attributed_count") or 0,
+            events_per_hour=self._json_opt(row, "events_per_hour", {}),
         )
+
+    def _json_opt(self, row: sqlite3.Row, column: str, default):
+        """Read and decode a JSON column that may be absent or empty."""
+        raw = self._opt(row, column)
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return default

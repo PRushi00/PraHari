@@ -72,9 +72,41 @@ def list_audit_logs(
 @router.get("/config", response_model=SystemConfigReport)
 def get_system_security_config(
     config: AppConfig = Depends(get_config),
+    db: Database = Depends(get_db),
 ) -> SystemConfigReport:
-    """Inspect active system configuration and operational security boundaries."""
+    """
+    Inspect active system configuration and operational security boundaries.
+
+    Every boundary below is derived from live state. Publishing fixed `true`
+    values here would assert guarantees the running system may not actually
+    provide — the most misleading possible content for a security surface.
+    """
     is_loopback = config.host in ("127.0.0.1", "localhost", "::1")
+
+    # Derive the live telemetry collection posture from the collector itself.
+    collector_state = "stopped"
+    packet_capture_in_use = False
+    try:
+        from app.services.collector import get_collector
+
+        status_obj = get_collector(db).status()
+        collector_state = status_obj.state
+        # The only live collector PraHari implements reads the OS connection
+        # table. It performs no packet capture and opens no raw sockets.
+        packet_capture_in_use = False
+    except Exception:  # noqa: BLE001
+        collector_state = "unknown"
+
+    # The research gate is advisory: /research/audit reports feasibility, and
+    # forecasting refuses to emit validated results without a leakage-free
+    # holdout, but a gate verdict does not by itself block the endpoints.
+    gate_enforcement = (
+        "advisory_plus_evaluation_guard: feasibility is reported via "
+        "/research/audit; /forecast/train refuses evaluation that would leak, "
+        "and predictions are labelled unvalidated until a purged holdout with "
+        "positive examples exists. A REJECT verdict does not disable the API."
+    )
+
     return SystemConfigReport(
         app_name=config.app_name,
         app_version=config.app_version,
@@ -88,9 +120,18 @@ def get_system_security_config(
         database_url=config.database_url,
         retention_days=config.retention_days,
         security_boundaries={
-            "live_sniffing_disabled": True,
-            "cloud_costs_prevention": True,
-            "host_network_mutation_prohibited": True,
-            "research_gate_enforced": True,
+            "packet_capture_in_use": packet_capture_in_use,
+            "live_collector_state": collector_state,
+            "live_collection_method": (
+                "windows_connection_table_polling (metadata only; no packet "
+                "capture, no promiscuous mode, no elevated privileges)"
+            ),
+            "service_exposure": (
+                "loopback_only" if is_loopback else f"bound_to_{config.host}"
+            ),
+            "authentication_required": config.require_authentication,
+            "raw_payload_storage_enabled": config.raw_payload_storage,
+            "external_telemetry_transmission": False,
+            "research_gate_enforcement": gate_enforcement,
         },
     )

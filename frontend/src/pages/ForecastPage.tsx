@@ -10,6 +10,7 @@ import {
 import { api } from "../services/api";
 import { ModelMetrics, PredictionResult, TelemetrySource } from "../types";
 
+import { fmtFixed, fmtPercent, isNum, safeSeries } from "../utils/format";
 export const ForecastPage: React.FC = () => {
   const [models, setModels] = useState<Record<string, ModelMetrics>>({});
   const [sources, setSources] = useState<TelemetrySource[]>([]);
@@ -21,15 +22,22 @@ export const ForecastPage: React.FC = () => {
   const [threshold, setThreshold] = useState<number>(0.5);
   const [trainRatio, setTrainRatio] = useState<number>(0.7);
   const [error, setError] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<import("../types").ReadinessReport | null>(null);
+  const [integrity, setIntegrity] = useState<import("../types").SplitIntegrityReport | null>(null);
+  const [blocked, setBlocked] = useState<any | null>(null);
 
   const fetchInitialData = async () => {
     try {
-      const [srcData, modelData] = await Promise.all([
+      const [srcData, modelData, ready, integ] = await Promise.all([
         api.getSources(),
         api.getForecastingModels().catch(() => ({})),
+        api.getForecastReadiness().catch(() => null),
+        api.getForecastIntegrity().catch(() => null),
       ]);
       setSources(srcData);
       setModels(modelData || {});
+      setReadiness(ready);
+      setIntegrity(integ);
     } catch (err: any) {
       console.error(err);
     }
@@ -42,6 +50,7 @@ export const ForecastPage: React.FC = () => {
   const handleTrainModels = async () => {
     setTraining(true);
     setError(null);
+    setBlocked(null);
     try {
       const res = await api.trainForecastingModels({
         source_id: selectedSource || undefined,
@@ -49,18 +58,39 @@ export const ForecastPage: React.FC = () => {
         train_ratio: trainRatio,
       });
       setModels(res);
-      // Auto-run prediction with newly trained model
       handlePredict(activeModelId);
     } catch (err: any) {
-      setError(err.message || "Failed to train forecasting models");
+      // The backend refuses with a structured explanation; show it rather
+      // than a bare failure message.
+      const parsed = parseBlocked(err);
+      if (parsed) setBlocked(parsed);
+      else setError(err.message || "Failed to train forecasting models");
     } finally {
       setTraining(false);
+      fetchInitialData();
     }
+  };
+
+  /**
+   * The API returns a JSON object as `detail` when the research gate or the
+   * split-integrity guard refuses an operation.
+   */
+  const parseBlocked = (err: any): any | null => {
+    try {
+      const parsedDetail = JSON.parse(err.message);
+      if (parsedDetail && typeof parsedDetail === "object" && parsedDetail.error) {
+        return parsedDetail;
+      }
+    } catch {
+      // not a JSON detail
+    }
+    return null;
   };
 
   const handlePredict = async (modelIdToUse?: string) => {
     setPredicting(true);
     setError(null);
+    setBlocked(null);
     try {
       const res = await api.predictIncidentPropensity({
         source_id: selectedSource || undefined,
@@ -69,7 +99,9 @@ export const ForecastPage: React.FC = () => {
       });
       setPrediction(res);
     } catch (err: any) {
-      setError(err.message || "Prediction failed");
+      const parsed = parseBlocked(err);
+      if (parsed) setBlocked(parsed);
+      else setError(err.message || "Prediction failed");
     } finally {
       setPredicting(false);
     }
@@ -77,8 +109,230 @@ export const ForecastPage: React.FC = () => {
 
   const modelKeys = Object.keys(models);
 
+  const READINESS_LABEL: Record<string, string> = {
+    insufficient_data: "Insufficient data",
+    missing_or_invalid_labels: "Missing or invalid labels",
+    invalid_evaluation_conditions: "No evaluated model yet",
+    inadequate_class_representation: "Inadequate class representation",
+    evaluated_performance_inadequate: "Evaluated — performance inadequate",
+    trained_not_validated: "Trained but not validated",
+    validated_with_documented_conditions: "Validated under documented conditions",
+  };
+
+  const readinessPanel = readiness && (
+    <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "0.75rem",
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: "1rem", fontWeight: 600 }}>Research Readiness</h3>
+        <span
+          className={
+            readiness.can_serve_validated_forecast
+              ? "badge badge-benign"
+              : readiness.can_train
+              ? "badge badge-info"
+              : "badge badge-warning"
+          }
+        >
+          {READINESS_LABEL[readiness.state] || readiness.state}
+        </span>
+      </div>
+
+      <p style={{ fontSize: "0.82rem", margin: "0.75rem 0", lineHeight: 1.6 }}>
+        {readiness.summary}
+      </p>
+
+      <div
+        style={{
+          background: "rgba(255,255,255,0.03)",
+          border: "1px solid var(--border-subtle)",
+          borderRadius: "6px",
+          padding: "0.75rem 0.9rem",
+          fontSize: "0.74rem",
+          lineHeight: 1.65,
+          marginBottom: "1rem",
+        }}
+      >
+        <strong>Prediction target.</strong> {readiness.prediction_target}
+        <br />
+        <span style={{ color: "var(--text-dim)" }}>
+          Observation window {readiness.observation_window_seconds}s · lead time{" "}
+          {readiness.lead_time_seconds}s · horizon {readiness.prediction_horizon_seconds}s
+        </span>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))",
+          gap: "0.9rem",
+          marginBottom: "1rem",
+        }}
+      >
+        {[
+          ["Stored events", readiness.total_events],
+          ["Labelled", readiness.labelled_events],
+          ["Incident examples", readiness.positive_events],
+          ["Benign examples", readiness.negative_events],
+          ["Span (min)", Math.round(readiness.time_span_seconds / 60)],
+        ].map(([label, value]) => (
+          <div key={label as string}>
+            <div style={{ fontSize: "1.3rem", fontWeight: 600 }}>{value as number}</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>{label as string}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="table-container">
+        <table style={{ width: "100%", fontSize: "0.74rem" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left" }}>Requirement</th>
+              <th style={{ textAlign: "left" }}>Required</th>
+              <th style={{ textAlign: "left" }}>Observed</th>
+              <th style={{ textAlign: "center" }}>Met</th>
+            </tr>
+          </thead>
+          <tbody>
+            {readiness.requirements.map((r) => (
+              <tr key={r.name}>
+                <td title={r.detail}>{r.name.replace(/_/g, " ")}</td>
+                <td style={{ color: "var(--text-dim)" }}>{r.required}</td>
+                <td>{r.observed}</td>
+                <td style={{ textAlign: "center" }}>
+                  {r.satisfied ? (
+                    <span style={{ color: "#10b981" }}>yes</span>
+                  ) : (
+                    <span style={{ color: "#f43f5e" }}>no</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {readiness.next_steps.length > 0 && (
+        <div style={{ marginTop: "1rem" }}>
+          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+            To become research-ready
+          </div>
+          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.75rem", lineHeight: 1.7 }}>
+            {readiness.next_steps.map((n, i) => (
+              <li key={i}>{n}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+
+  const blockedPanel = blocked && (
+    <div
+      className="glass-panel"
+      style={{ padding: "1.5rem", marginBottom: "1.5rem", borderLeft: "3px solid #f59e0b" }}
+    >
+      <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>
+        Operation refused: {String(blocked.error).replace(/_/g, " ")}
+      </h3>
+      <p style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>{blocked.message}</p>
+
+      {Array.isArray(blocked.unmet_requirements) && blocked.unmet_requirements.length > 0 && (
+        <ul style={{ fontSize: "0.75rem", paddingLeft: "1.1rem", lineHeight: 1.7 }}>
+          {blocked.unmet_requirements.map((u: any, i: number) => (
+            <li key={i}>
+              <strong>{String(u.name).replace(/_/g, " ")}</strong>: requires {u.required}, observed{" "}
+              {u.observed}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {blocked.split_report && (
+        <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", lineHeight: 1.7 }}>
+          Windows: {blocked.split_report.total_instances} total ·{" "}
+          {blocked.split_report.train_instances} training ·{" "}
+          {blocked.split_report.purged_instances} purged ·{" "}
+          {blocked.split_report.test_instances} holdout (
+          {blocked.split_report.test_positive} incident windows)
+        </div>
+      )}
+
+      {blocked.remediation && (
+        <p style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{blocked.remediation}</p>
+      )}
+      {Array.isArray(blocked.next_steps) && (
+        <ul style={{ fontSize: "0.75rem", paddingLeft: "1.1rem", lineHeight: 1.7 }}>
+          {blocked.next_steps.map((n: string, i: number) => (
+            <li key={i}>{n}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
+  const integrityPanel = integrity && (
+    <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
+      <h3 style={{ margin: "0 0 0.25rem", fontSize: "1rem", fontWeight: 600 }}>
+        Evaluation Split Integrity
+      </h3>
+      <p style={{ color: "var(--text-dim)", fontSize: "0.73rem", marginBottom: "0.9rem" }}>
+        Training ends before evaluation begins, and the contaminated boundary
+        windows between them are purged. Read every metric alongside this.
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+          gap: "0.9rem",
+          fontSize: "0.78rem",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: "1.2rem", fontWeight: 600 }}>{integrity.train_instances}</div>
+          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>
+            training windows ({integrity.train_positive} incident)
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#f59e0b" }}>
+            {integrity.purged_instances}
+          </div>
+          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>
+            purged ({integrity.embargo_seconds}s)
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: "1.2rem", fontWeight: 600 }}>{integrity.test_instances}</div>
+          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>
+            holdout windows ({integrity.test_positive} incident)
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: "0.78rem" }}>{integrity.split_strategy.replace(/_/g, " ")}</div>
+          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>split strategy</div>
+        </div>
+      </div>
+      {integrity.test_positive === 0 && (
+        <div className="badge badge-warning" style={{ marginTop: "0.9rem", display: "block", padding: "0.6rem" }}>
+          The holdout contains no incident windows, so detection metrics computed
+          on it are undefined and do not demonstrate predictive ability.
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="page-container">
+      {readinessPanel}
+      {blockedPanel}
+      {integrityPanel}
       {/* Page Header */}
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem" }}>
         <div>
@@ -153,10 +407,25 @@ export const ForecastPage: React.FC = () => {
         {modelKeys.length === 0 ? (
           <div style={{ padding: "2.5rem", textAlign: "center", color: "var(--text-muted)" }}>
             <Cpu size={36} style={{ color: "var(--accent-cyan)", margin: "0 auto 1rem auto" }} />
-            <p>No models trained yet on current telemetry.</p>
-            <button className="btn btn-primary" onClick={handleTrainModels} style={{ marginTop: "1rem" }} disabled={training}>
-              Run Initial Training
-            </button>
+            <p>
+              No model has been trained on the current telemetry, so no
+              forecast is available.
+            </p>
+            {readiness && !readiness.can_train ? (
+              <p style={{ fontSize: "0.8rem", maxWidth: "34rem", margin: "0.5rem auto 0", lineHeight: 1.6 }}>
+                Training is blocked by the research gate: {readiness.summary} See
+                Research Readiness above for the unmet requirements.
+              </p>
+            ) : (
+              <button
+                className="btn btn-primary"
+                onClick={handleTrainModels}
+                style={{ marginTop: "1rem" }}
+                disabled={training}
+              >
+                Run Initial Training
+              </button>
+            )}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -203,14 +472,14 @@ export const ForecastPage: React.FC = () => {
                         </div>
                       </td>
                       <td style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{m.model_type}</td>
-                      <td>{(m.precision * 100).toFixed(1)}%</td>
-                      <td>{(m.recall * 100).toFixed(1)}%</td>
-                      <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{(m.f1_score * 100).toFixed(1)}%</td>
-                      <td>{m.pr_auc != null ? m.pr_auc.toFixed(3) : "—"}</td>
-                      <td>{m.roc_auc != null ? m.roc_auc.toFixed(3) : "—"}</td>
-                      <td>{m.brier_score != null ? m.brier_score.toFixed(3) : "—"}</td>
+                      <td>{fmtPercent(m.precision)}</td>
+                      <td>{fmtPercent(m.recall)}</td>
+                      <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{fmtPercent(m.f1_score ?? m.f1)}</td>
+                      <td>{fmtFixed(m.pr_auc, 3, "—")}</td>
+                      <td>{fmtFixed(m.roc_auc, 3, "—")}</td>
+                      <td>{fmtFixed(m.brier_score, 3, "—")}</td>
                       <td style={{ color: m.false_positive_rate > 0.2 ? "#f43f5e" : "#10b981" }}>
-                        {(m.false_positive_rate * 100).toFixed(1)}%
+                        {fmtPercent(m.false_positive_rate)}
                       </td>
                       <td style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                         {m.train_instances} / {m.test_instances}
@@ -287,7 +556,7 @@ export const ForecastPage: React.FC = () => {
                   {prediction.predicted_incident ? "PREDICTED INCIDENT IMMINENT" : "BENIGN TELEMETRY FORECAST"}
                 </span>
                 <span style={{ fontSize: "1.25rem", fontWeight: 800, color: prediction.predicted_incident ? "#f43f5e" : "#10b981" }}>
-                  {(prediction.propensity_score * 100).toFixed(1)}%
+                  {fmtPercent(prediction.propensity_score)}
                 </span>
               </div>
               <div style={{ width: "100%", height: 8, background: "rgba(255,255,255,0.1)", borderRadius: 4, marginTop: "0.75rem", overflow: "hidden" }}>
@@ -324,14 +593,16 @@ export const ForecastPage: React.FC = () => {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
               {prediction.top_contributing_features.map((feat, idx) => {
-                const maxVal = Math.max(...prediction.top_contributing_features.map((f) => f.contribution), 0.01);
-                const pct = Math.min(100, Math.max(10, (feat.contribution / maxVal) * 100));
+                const maxVal = Math.max(...safeSeries(prediction.top_contributing_features.map((f) => f.impact)), 0.01);
+                const pct = isNum(feat.impact)
+                  ? Math.min(100, Math.max(10, (feat.impact / maxVal) * 100))
+                  : 0;
                 return (
                   <div key={idx}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", marginBottom: "0.25rem" }}>
                       <span style={{ fontWeight: 600, color: "var(--text-main)" }}>{feat.feature}</span>
                       <span style={{ color: "var(--text-dim)" }}>
-                        val: <code style={{ color: "var(--accent-cyan)" }}>{feat.value.toFixed(1)}</code> • impact: {feat.contribution.toFixed(3)}
+                        val: <code style={{ color: "var(--accent-cyan)" }}>{fmtFixed(feat.value, 1)}</code> • impact: {fmtFixed(feat.impact, 3)}
                       </span>
                     </div>
                     <div style={{ width: "100%", height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden" }}>

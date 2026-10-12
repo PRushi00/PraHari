@@ -40,9 +40,16 @@ frontend/node_modules/
 .npm
 *.log
 
-# SQLite test files
+# SQLite databases — NEVER commit these.
+# The operational database contains genuine network telemetry collected from
+# the local host: local and remote IP addresses, ports, connection times and
+# owning process ids. That is sensitive information about the operator's
+# machine and browsing, and it must not enter version control.
+*.db
+prahari.db
 prahari_test.db
 prahari_test*.db
+prahari_live_verify.db
 *.db-journal
 *.db-wal
 *.db-shm
@@ -52,3 +59,15 @@ prahari_test*.db
 .idea/
 .DS_Store
 Thumbs.db
+
+# Experiment manifests are reproducibility records, not telemetry: they
+# contain counts, hashes and configuration only. They are kept out of the
+# default commit set because they are run artifacts; commit one explicitly
+# when it documents a result worth preserving.
+experiments/
+
+# Central-mode credentials. The file stores HASHES only, but it still
+# identifies every authorised source and must never be committed.
+secrets/
+credentials.json
+*credentials*.json

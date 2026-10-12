@@ -125,26 +125,37 @@ def test_complete_end_to_end_pipeline(tmp_path: Path):
     assert feasibility["recommendation"] in ("PERMIT_FORECASTING", "CONDITIONAL_REVIEW")
     assert len(feasibility["checks"]) >= 4
 
-    # 7. Model Training and Benchmark
-    resp = client.post("/api/v1/forecast/train", json={"max_events": 1000, "train_ratio": 0.7})
+    # 7. Research gate — 37 events over a few minutes cannot support
+    #    supervised forecasting, so the gate refuses BEFORE any model runs.
+    #    This is enforced in the backend, so a direct API call is refused on
+    #    the same terms as a dashboard click.
+    resp = client.get("/api/v1/forecast/readiness")
     assert resp.status_code == 200
-    models = resp.json()
-    assert "random_forest_forecaster" in models
-    assert "logistic_regression" in models
-    assert "baseline_constant" in models
-    assert "baseline_threshold" in models
-    rf_metrics = models["random_forest_forecaster"]
-    assert rf_metrics["accuracy"] >= 0.0
-    assert rf_metrics["f1"] >= 0.0
-    assert len(rf_metrics["confusion_matrix"]) == 2
+    readiness = resp.json()
+    assert readiness["can_train"] is False
+    assert readiness["state"] == "insufficient_data"
+    assert readiness["unmet_requirements"], "gate must name what is unmet"
 
-    # 8. Threat Propensity Inference
+    resp = client.post("/api/v1/forecast/train", json={"max_events": 1000, "train_ratio": 0.7})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "forecasting_blocked_by_research_gate"
+    assert detail["readiness_state"] == "insufficient_data"
+    assert len(detail["unmet_requirements"]) >= 1
+    assert detail["next_steps"]
+    # The refusal states what the model would have been forecasting.
+    assert "attack" in detail["prediction_target"].lower()
+
+    # 8. Prediction is refused on the same grounds — an uncalibrated score
+    #    here would invite being read as a forecast.
     resp = client.post("/api/v1/forecast/predict", json={"threshold": 0.5})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["operation"] == "predict"
+
+    # 8b. No model may be advertised, because none was trained.
+    resp = client.get("/api/v1/forecast/models")
     assert resp.status_code == 200
-    pred = resp.json()
-    assert 0.0 <= pred["propensity_score"] <= 1.0
-    assert isinstance(pred["predicted_incident"], bool)
-    assert len(pred["top_contributing_features"]) > 0
+    assert resp.json() == {}
 
     # 9. Audit Log Verification
     resp = client.get("/api/v1/audit/logs?limit=50")
@@ -153,7 +164,11 @@ def test_complete_end_to_end_pipeline(tmp_path: Path):
     actions = [log["action"] for log in audit_logs]
     assert "import_csv_file" in actions
     assert "run_descriptive_analysis" in actions
-    assert "train_forecasting_models" in actions
+    # The blocked attempt is itself auditable: the refusal is recorded with
+    # its reason, rather than leaving no trace.
+    assert "train_forecasting_models_blocked" in actions
+    blocked = next(l for l in audit_logs if l["action"] == "train_forecasting_models_blocked")
+    assert "refused" in blocked["details"].lower()
 
     # 10. Persistence Across Database Re-open
     db_reopened = Database(str(db_path))

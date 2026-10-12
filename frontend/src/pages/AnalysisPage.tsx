@@ -3,6 +3,7 @@ import { RefreshCw, AlertCircle, Info } from "lucide-react";
 import { api } from "../services/api";
 import { DescriptiveAnalysis } from "../types";
 
+import { UNAVAILABLE, fmtFixed, fmtInt, fmtTime, isNum } from "../utils/format";
 export const AnalysisPage: React.FC = () => {
   const [analysis, setAnalysis] = useState<DescriptiveAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,6 +35,28 @@ export const AnalysisPage: React.FC = () => {
     } finally {
       setRecomputing(false);
     }
+  };
+
+  /**
+   * Explain a metric's availability for the analyzed set.
+   *
+   * With mixed provenance some sources may supply a field while others
+   * cannot, so "unsupported" alone is not the whole story. Saying "not
+   * measurable" beside a displayed value is a contradiction, which is what
+   * the previous version did.
+   */
+  const availabilityNote = (field: string, hasValue: boolean, whenPresent: string): string => {
+    const missingFrom = (analysis?.unsupported_field_counts || {})[field] ?? 0;
+    const total = analysis?.total_events ?? 0;
+    if (!hasValue) {
+      return missingFrom > 0
+        ? "Not measurable by the contributing source"
+        : "No value available for the analyzed set";
+    }
+    if (missingFrom > 0) {
+      return `${whenPresent} — excludes ${missingFrom} of ${total} records whose source cannot measure it`;
+    }
+    return whenPresent;
   };
 
   return (
@@ -101,31 +124,128 @@ export const AnalysisPage: React.FC = () => {
           <div className="stat-grid" style={{ marginBottom: "2rem" }}>
             <div className="glass-panel stat-card">
               <div className="stat-label">Total Events Profiled</div>
-              <div className="stat-value">{analysis.total_events.toLocaleString()}</div>
-              <div className="stat-subtext">Category: {analysis.data_category}</div>
+              <div className="stat-value">{fmtInt(analysis.total_events)}</div>
+              <div className="stat-subtext">
+                {analysis.is_mixed_provenance
+                  ? "Mixed provenance — see breakdown below"
+                  : `Category: ${analysis.data_category}`}
+              </div>
             </div>
 
             <div className="glass-panel stat-card blue">
               <div className="stat-label">Average Flow Duration</div>
               <div className="stat-value">
-                {analysis.avg_duration ? `${(analysis.avg_duration / 1000).toFixed(1)} ms` : "N/A"}
+                {isNum(analysis.avg_duration)
+                  ? `${(analysis.avg_duration / 1000).toFixed(1)} ms`
+                  : UNAVAILABLE}
               </div>
-              <div className="stat-subtext">Mean connection length</div>
+              <div className="stat-subtext">
+                {availabilityNote("duration", isNum(analysis.avg_duration), "Mean connection length")}
+              </div>
             </div>
 
             <div className="glass-panel stat-card emerald">
               <div className="stat-label">Average Packet Volume</div>
               <div className="stat-value">
-                {analysis.avg_packets ? analysis.avg_packets.toFixed(0) : "N/A"}
+                {fmtFixed(analysis.avg_packets, 0)}
               </div>
-              <div className="stat-subtext">Packets per flow</div>
+              <div className="stat-subtext">
+                {availabilityNote("packets", isNum(analysis.avg_packets), "Packets per flow")}
+              </div>
             </div>
 
             <div className="glass-panel stat-card amber">
-              <div className="stat-label">Quality Warnings</div>
+              <div className="stat-label">Data Quality Warnings</div>
               <div className="stat-value">{analysis.records_with_warnings}</div>
-              <div className="stat-subtext">Flows with audit flags</div>
+              <div className="stat-subtext">
+                Genuine defects only — source limits counted separately
+              </div>
             </div>
+          </div>
+
+          {/* Provenance — derived from the analyzed events, not declared */}
+          <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "2rem" }}>
+            <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+              Data Provenance
+            </h3>
+            <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+              Derived from the records actually summarized, so live telemetry,
+              historical imports and synthetic fixtures stay distinguishable.
+            </p>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: "1.25rem",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                  By data category
+                </div>
+                {Object.entries(analysis.data_categories || {}).map(([cat, count]) => (
+                  <div key={cat} style={{ fontSize: "0.8rem", marginBottom: "0.2rem" }}>
+                    <span
+                      className={cat === "live_telemetry" ? "badge badge-benign" : "badge badge-info"}
+                    >
+                      {cat}
+                    </span>{" "}
+                    {count}
+                  </div>
+                ))}
+                {Object.keys(analysis.data_categories || {}).length === 0 && (
+                  <div style={{ color: "var(--text-dim)", fontSize: "0.8rem" }}>No events.</div>
+                )}
+              </div>
+
+              <div>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                  By source
+                </div>
+                {Object.entries(analysis.source_breakdown || {}).map(([src, count]) => (
+                  <div key={src} style={{ fontSize: "0.8rem", marginBottom: "0.2rem" }}>
+                    {src}: {count}
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                  Observation window
+                </div>
+                <div style={{ fontSize: "0.78rem" }}>
+                  {fmtTime(analysis.time_range_start, "—")}
+                </div>
+                <div style={{ fontSize: "0.78rem" }}>
+                  to{" "}
+                  {fmtTime(analysis.time_range_end, "—")}
+                </div>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginTop: "0.4rem" }}>
+                  Computed {fmtTime(analysis.computed_at, "—")}
+                </div>
+              </div>
+            </div>
+
+            {(analysis.source_limitations || []).length > 0 && (
+              <div style={{ marginTop: "1.25rem" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                  Limits of the contributing sources
+                </div>
+                <ul
+                  style={{
+                    margin: 0,
+                    paddingLeft: "1.1rem",
+                    fontSize: "0.72rem",
+                    color: "var(--text-dim)",
+                    lineHeight: 1.7,
+                  }}
+                >
+                  {analysis.source_limitations.map((l, i) => (
+                    <li key={i}>{l}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
           {/* Top Talkers Tables */}
@@ -225,9 +345,46 @@ export const AnalysisPage: React.FC = () => {
               </div>
 
               <div>
-                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
-                  Missing / Omitted Optional Fields
+                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>
+                  Fields Unavailable From the Source
                 </h4>
+                <p style={{ color: "var(--text-dim)", fontSize: "0.72rem", marginBottom: "0.5rem" }}>
+                  These are structural limits of the telemetry source, not data
+                  defects. The source cannot measure them, so they are stored as
+                  null rather than estimated.
+                </p>
+                {Object.keys(analysis.unsupported_field_counts || {}).length > 0 ? (
+                  <div className="table-container" style={{ marginBottom: "1.25rem" }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Field Name</th>
+                          <th style={{ textAlign: "right" }}>Records Affected</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(analysis.unsupported_field_counts).map(([field, count]) => (
+                          <tr key={field}>
+                            <td>{field}</td>
+                            <td style={{ textAlign: "right" }}>{count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginBottom: "1.25rem" }}>
+                    All canonical fields are supported by the contributing sources.
+                  </div>
+                )}
+
+                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>
+                  Genuinely Missing Fields
+                </h4>
+                <p style={{ color: "var(--text-dim)", fontSize: "0.72rem", marginBottom: "0.5rem" }}>
+                  Fields the source <em>does</em> support but did not provide —
+                  these are real gaps worth investigating.
+                </p>
                 {Object.keys(analysis.missing_field_counts).length > 0 ? (
                   <div className="table-container">
                     <table>
@@ -248,7 +405,9 @@ export const AnalysisPage: React.FC = () => {
                     </table>
                   </div>
                 ) : (
-                  <div style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>All fields fully populated.</div>
+                  <div style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                    No unexplained gaps: every field the sources support was populated.
+                  </div>
                 )}
               </div>
             </div>

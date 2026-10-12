@@ -17,7 +17,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 
-from app.schemas.events import NormalizedEvent, DataCategory, LabelProvenance
+from app.schemas.events import (
+    NON_DEFECT_QUALITY_FLAGS,
+    DataCategory,
+    LabelProvenance,
+    NormalizedEvent,
+    QualityFlag,
+    is_quality_defect,
+)
 
 
 class FeasibilityCheckResult(BaseModel):
@@ -95,11 +102,26 @@ def audit_dataset_feasibility(
     balance_score = 1.0 - abs(0.5 - min(max(attack_ratio, 0.05), 0.5)) * 2
     label_passed = has_labels and attack_count >= 2 and benign_count >= 2
 
+    if not has_labels:
+        label_detail = (
+            f"No ground-truth labels are present on any of {total} events. "
+            "Locally observed traffic carries no incident labels, and "
+            "unlabelled traffic is NOT treated as benign — doing so would "
+            "invent ground truth."
+        )
+    else:
+        label_detail = (
+            f"Benign: {benign_count}, Attack: {attack_count} "
+            f"({round(attack_ratio * 100, 1)}% attack)."
+        )
+        if not label_passed:
+            label_detail += " Both classes need at least 2 examples."
+
     checks.append(FeasibilityCheckResult(
         check_name="Label Ground Truth & Balance",
         passed=label_passed,
         score=round(balance_score, 4),
-        details=f"Benign: {benign_count}, Attack: {attack_count} ({round(attack_ratio * 100, 1)}%). Ground truth verified.",
+        details=label_detail,
         risk_level="low" if label_passed else "high",
     ))
 
@@ -117,16 +139,40 @@ def audit_dataset_feasibility(
     ))
 
     # 4. Feature Completeness & Quality Flags
-    warning_count = sum(1 for e in events if len(e.quality_flags) > 0)
+    #
+    # SOURCE_LIMITED marks a field the telemetry source structurally cannot
+    # provide. It is a property of the sensor, not a defect in the record,
+    # and must not count against data quality — otherwise every record from
+    # the Windows connection table scores as faulty and the feasibility
+    # index collapses for reasons unrelated to data integrity.
+    warning_count = sum(
+        1 for e in events if any(is_quality_defect(f) for f in e.quality_flags)
+    )
+    source_limited_count = sum(
+        1
+        for e in events
+        if any(f in NON_DEFECT_QUALITY_FLAGS for f in e.quality_flags)
+    )
     warning_ratio = warning_count / float(total)
     quality_score = max(0.0, 1.0 - warning_ratio)
     quality_passed = warning_ratio < 0.4
+
+    quality_detail = (
+        f"Records with genuine quality defects: {warning_count} "
+        f"({round(warning_ratio * 100, 1)}%)."
+    )
+    if source_limited_count:
+        quality_detail += (
+            f" A further {source_limited_count} record(s) carry source-limit "
+            "or synthetic-provenance markers; these describe the source, not "
+            "a defect, and are not counted against quality."
+        )
 
     checks.append(FeasibilityCheckResult(
         check_name="Data Quality & Artifact Audit",
         passed=quality_passed,
         score=round(quality_score, 4),
-        details=f"Records with warnings: {warning_count} ({round(warning_ratio * 100, 1)}%).",
+        details=quality_detail,
         risk_level="low" if quality_passed else "medium",
     ))
 

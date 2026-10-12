@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { Header, NavTab } from "./components/Header";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OverviewPage } from "./pages/OverviewPage";
 import { ImportPage } from "./pages/ImportPage";
+import { LiveTelemetryPage } from "./pages/LiveTelemetryPage";
 import { StreamReplayPage } from "./pages/StreamReplayPage";
 import { EventsPage } from "./pages/EventsPage";
 import { AnalysisPage } from "./pages/AnalysisPage";
@@ -10,6 +12,18 @@ import { ForecastPage } from "./pages/ForecastPage";
 import { AuditPage } from "./pages/AuditPage";
 import { api } from "./services/api";
 import { HealthResponse } from "./types";
+
+const PAGE_LABELS: Record<string, string> = {
+  overview: "Overview",
+  live: "Live Telemetry",
+  import: "CSV Import",
+  stream: "Stream & Replay",
+  events: "Events Explorer",
+  analysis: "Analytics",
+  research: "Feasibility",
+  forecast: "Threat Forecasting",
+  audit: "Audit & Security",
+};
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>("overview");
@@ -43,11 +57,18 @@ export const App: React.FC = () => {
       />
 
       <main className="main-content" style={{ flex: 1 }}>
+        {/* A render error inside a page must not unmount the application.
+            Keying on activeTab resets the boundary on navigation, so a
+            failed view recovers instead of staying broken forever. */}
+        <ErrorBoundary pageName={PAGE_LABELS[activeTab] ?? activeTab} resetKey={activeTab}>
         {activeTab === "overview" && (
           <OverviewPage
             onNavigateToImport={() => setActiveTab("import")}
             onRefreshAll={fetchHealth}
           />
+        )}
+        {activeTab === "live" && (
+          <LiveTelemetryPage onDataChanged={fetchHealth} />
         )}
         {activeTab === "import" && (
           <ImportPage onImportComplete={fetchHealth} />
@@ -60,6 +81,7 @@ export const App: React.FC = () => {
         {activeTab === "research" && <ResearchPage />}
         {activeTab === "forecast" && <ForecastPage />}
         {activeTab === "audit" && <AuditPage />}
+        </ErrorBoundary>
       </main>
 
       <footer

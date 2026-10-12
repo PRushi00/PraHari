@@ -3,6 +3,7 @@ import { Upload, FileText, CheckCircle2, XCircle, History } from "lucide-react";
 import { api } from "../services/api";
 import { ImportSummary } from "../types";
 
+import { fmtTime } from "../utils/format";
 interface ImportPageProps {
   onImportComplete: () => void;
 }
@@ -339,7 +340,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
                   <tr key={h.import_id}>
                     <td>{h.source_id}</td>
                     <td>{h.source_file || "<direct-stream>"}</td>
-                    <td>{new Date(h.started_at).toLocaleString()}</td>
+                    <td>{fmtTime(h.started_at, "—")}</td>
                     <td>{h.total_records}</td>
                     <td style={{ color: "#34d399" }}>{h.accepted_records}</td>
                     <td style={{ color: h.rejected_records > 0 ? "#fb7185" : "inherit" }}>

@@ -61,9 +61,28 @@ class AppConfig(BaseSettings):
     retention_days: int = 365
     raw_payload_storage: bool = False
 
-    # Security
+    # ── Security ──
+    # Local (loopback) mode is unauthenticated by design. CENTRAL mode
+    # requires credentials and refuses to start without them; see
+    # app/core/security.py.
     require_authentication: bool = False  # Local mode default
-    api_key: str = ""  # Must be set for centralized mode
+    # Path to a JSON credential file holding HASHES only. Never commit it.
+    credentials_file: str = ""
+    # Public routes that stay reachable without a credential in central
+    # mode, so an operator can diagnose a deployment that is otherwise
+    # refusing them.
+    central_public_paths: list[str] = Field(
+        default=["/api/v1/health", "/docs", "/redoc", "/openapi.json"]
+    )
+
+    # ── Optional application-layer telemetry ──
+    # Disabled by default. Enabling only opens an ingestion endpoint for an
+    # authorized producer the operator runs themselves; PraHari never
+    # configures a proxy, installs a certificate, or intercepts traffic.
+    enable_application_layer_ingest: bool = False
+    # Query strings frequently carry search terms, tokens and identifiers,
+    # so they are stripped unless the operator explicitly opts in.
+    applayer_retain_query_strings: bool = False
 
     model_config = {
         "env_prefix": "PRAHARI_",
@@ -73,10 +92,34 @@ class AppConfig(BaseSettings):
     }
 
     def get_database_path(self) -> Path:
-        """Extract SQLite database file path from URL."""
-        if self.database_url.startswith("sqlite:///"):
-            return Path(self.database_url.replace("sqlite:///", ""))
-        return Path("prahari.db")
+        """
+        Absolute path of the SQLite database file.
+
+        A relative URL such as ``sqlite:///./prahari.db`` is resolved against
+        the PROJECT ROOT, not the process working directory. Resolving
+        against the CWD silently produced different databases depending on
+        how the app was started — the launcher (run from the project root)
+        and a backend-directory invocation each created their own file, so
+        telemetry collected through one was invisible to the other.
+        """
+        raw = self.database_url
+        if raw.startswith("sqlite:///"):
+            candidate = Path(raw[len("sqlite:///"):])
+        else:
+            candidate = Path("prahari.db")
+
+        if candidate.is_absolute():
+            return candidate
+        return (self.project_root / candidate).resolve()
+
+    @property
+    def project_root(self) -> Path:
+        """
+        Repository root — the directory containing ``backend/`` and
+        ``frontend/``. Derived from this file's location so it does not
+        depend on the working directory.
+        """
+        return Path(__file__).resolve().parent.parent.parent.parent
 
 
 @lru_cache()

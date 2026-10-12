@@ -10,6 +10,7 @@ import {
 import { api } from "../services/api";
 import { AuditLog, SecurityConfig } from "../types";
 
+import { fmtTime } from "../utils/format";
 export const AuditPage: React.FC = () => {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [config, setConfig] = useState<SecurityConfig | null>(null);
@@ -81,7 +82,7 @@ export const AuditPage: React.FC = () => {
             LOOPBACK ENFORCED
           </div>
           <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
-            Binding: <code>{config ? `${config.host}:${config.port}` : "127.0.0.1:8000"}</code> (Strict local access)
+            Binding: <code>{config ? `${config.host_binding}:${config.port}` : "127.0.0.1:8000"}</code> (Strict local access)
           </div>
         </div>
 
@@ -94,7 +95,9 @@ export const AuditPage: React.FC = () => {
             <CheckCircle size={18} style={{ color: "#10b981" }} />
           </div>
           <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#10b981" }}>
-            PROMISCUOUS SNIFFING DISABLED
+            {config?.security_boundaries?.["packet_capture_in_use"] === false
+              ? "NO PACKET CAPTURE"
+              : "PACKET CAPTURE STATE UNKNOWN"}
           </div>
           <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
             No raw socket or host interface modification permitted
@@ -110,10 +113,17 @@ export const AuditPage: React.FC = () => {
             <Activity size={18} style={{ color: "var(--accent-cyan)" }} />
           </div>
           <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "var(--accent-cyan)" }}>
-            OFFLINE REPLAY / IMPORT
+            {String(
+              config?.security_boundaries?.["live_collector_state"] ?? "unknown"
+            ).toUpperCase()}
           </div>
           <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
-            Adapters: CSV, Zeek JSON, Suricata, Synthetic Replay
+            {/* Reported by the backend rather than hardcoded: the previous
+                fixed list omitted the live Windows source entirely. */}
+            {String(
+              config?.security_boundaries?.["live_collection_method"] ??
+                "Collection method not reported"
+            )}
           </div>
         </div>
       </div>
@@ -171,9 +181,9 @@ export const AuditPage: React.FC = () => {
               </thead>
               <tbody>
                 {logs.map((log) => (
-                  <tr key={log.log_id}>
+                  <tr key={log.id}>
                     <td style={{ fontSize: "0.8rem", fontFamily: "var(--font-mono)", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-                      {new Date(log.created_at).toLocaleString()}
+                      {fmtTime(log.timestamp, "—")}
                     </td>
                     <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>
                       <code>{log.action}</code>

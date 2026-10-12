@@ -24,3 +24,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live_windows: requires genuine Windows connection-table collection (skipped on other platforms)",
+]

@@ -69,3 +69,52 @@ class BaseTelemetryAdapter(ABC):
         self.records_rejected += 1
         self.last_active_at = datetime.now(timezone.utc)
         self.last_error = error
+
+
+class AdapterRegistry:
+    """
+    Process-wide registry of live adapter instances.
+
+    Health endpoints read from this registry so the figures they publish are
+    the counters the adapters actually accumulated. Reporting fixed example
+    numbers instead would make the health surface indistinguishable from a
+    working one while hiding real ingestion failures.
+    """
+
+    def __init__(self) -> None:
+        self._adapters: dict[str, BaseTelemetryAdapter] = {}
+
+    def register(self, adapter: BaseTelemetryAdapter) -> BaseTelemetryAdapter:
+        """Register an adapter, or return the already-registered instance."""
+        existing = self._adapters.get(adapter.adapter_id)
+        if existing is not None:
+            return existing
+        self._adapters[adapter.adapter_id] = adapter
+        return adapter
+
+    def get(self, adapter_id: str) -> Optional[BaseTelemetryAdapter]:
+        return self._adapters.get(adapter_id)
+
+    def get_or_register(self, adapter_id: str, factory) -> BaseTelemetryAdapter:
+        """Fetch an adapter by id, creating and registering it on first use."""
+        existing = self._adapters.get(adapter_id)
+        if existing is not None:
+            return existing
+        adapter = factory()
+        self._adapters[adapter_id] = adapter
+        return adapter
+
+    def health_report(self) -> list[AdapterHealth]:
+        """Live health for every adapter that has actually been exercised."""
+        return [a.get_health() for a in self._adapters.values()]
+
+    def clear(self) -> None:
+        self._adapters.clear()
+
+
+_registry = AdapterRegistry()
+
+
+def get_adapter_registry() -> AdapterRegistry:
+    """Accessor for the process-wide adapter registry."""
+    return _registry

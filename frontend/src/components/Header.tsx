@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   BarChart2,
   Radio,
+  Wifi,
   FileCheck,
   TrendingUp,
   Lock,
@@ -14,6 +15,7 @@ import { HealthResponse } from "../types";
 
 export type NavTab =
   | "overview"
+  | "live"
   | "import"
   | "stream"
   | "events"
@@ -54,6 +56,13 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Activity size={15} />
           Overview
+        </button>
+        <button
+          className={`nav-btn ${activeTab === "live" ? "active" : ""}`}
+          onClick={() => onSelectTab("live")}
+        >
+          <Wifi size={15} />
+          Live Telemetry
         </button>
         <button
           className={`nav-btn ${activeTab === "import" ? "active" : ""}`}

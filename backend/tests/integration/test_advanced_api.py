@@ -27,8 +27,10 @@ def client_with_db():
         name="Test Sensor",
         source_type="synthetic_replay",
     ))
+    # 800 synthetic events spanning ~2400s: enough to satisfy the research
+    # gate's data prerequisites, so the forecasting happy path can be tested.
     gen = SyntheticFlowGenerator(seed=99, source_id="test_sensor")
-    seed_events = gen.generate_scenario_batch(count=150, attack_ratio=0.25)
+    seed_events = gen.generate_scenario_batch(count=800, attack_ratio=0.25)
     test_db.insert_events(seed_events)
 
     app.dependency_overrides[get_db] = lambda: test_db
@@ -65,6 +67,26 @@ def test_synthetic_replay_endpoint(client_with_db):
     data = res.json()
     assert data["accepted_records"] == 25
     assert data["rejected_records"] == 0
+
+
+def test_forecast_readiness_endpoint_reports_state_and_target(client_with_db):
+    client, _ = client_with_db
+    res = client.get("/api/v1/forecast/readiness")
+    assert res.status_code == 200
+    report = res.json()
+
+    # The gate states what it is forecasting and over what horizon.
+    assert "attack" in report["prediction_target"].lower()
+    assert report["prediction_horizon_seconds"] > 0
+    assert report["observation_window_seconds"] > 0
+
+    # Every prerequisite is reported with observed vs required values.
+    assert len(report["requirements"]) >= 5
+    for req in report["requirements"]:
+        assert {"name", "satisfied", "required", "observed"} <= set(req)
+
+    assert report["can_train"] is True
+    assert report["unmet_requirements"] == []
 
 
 def test_forecast_train_and_predict_endpoint(client_with_db):
@@ -107,4 +129,20 @@ def test_audit_logs_and_config_endpoint(client_with_db):
     assert res.status_code == 200
     cfg = res.json()
     assert cfg["loopback_enforced"] is True
-    assert cfg["security_boundaries"]["live_sniffing_disabled"] is True
+
+    # Security boundaries must be derived from live state, not asserted as
+    # fixed constants. Each value below reflects something the running system
+    # can actually be checked against.
+    boundaries = cfg["security_boundaries"]
+    assert boundaries["packet_capture_in_use"] is False
+    assert boundaries["external_telemetry_transmission"] is False
+    assert boundaries["service_exposure"] == "loopback_only"
+    assert boundaries["authentication_required"] == cfg["authentication_required"]
+    assert boundaries["raw_payload_storage_enabled"] is False
+    # The collector reports a real state rather than a hardcoded "disabled".
+    assert boundaries["live_collector_state"] in (
+        "stopped", "running", "error", "unsupported", "unknown",
+    )
+    # The research gate is described honestly as advisory, not claimed as a
+    # hard block the system does not actually implement.
+    assert "advisory" in boundaries["research_gate_enforcement"]

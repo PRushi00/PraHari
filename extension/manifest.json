@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "PraHari Local Telemetry Probe",
+  "version": "1.0.0",
+  "description": "Optional, opt-in probe that reports HTTP request METADATA from this browser profile to a local PraHari instance. Collects no bodies, cookies, credentials or query strings.",
+
+  "permissions": [
+    "webRequest",
+    "storage",
+    "alarms"
+  ],
+
+  "host_permissions": [
+    "http://127.0.0.1:8000/*"
+  ],
+
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_title": "PraHari Telemetry Probe",
+    "default_popup": "popup.html"
+  }
+}

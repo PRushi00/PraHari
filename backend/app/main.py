@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core.config import get_config
+from app.core.config import DeploymentMode, get_config
 from app.api.deps import get_db
 from app.api.v1.router import api_v1_router
 from app.schemas.events import SCHEMA_VERSION
@@ -38,6 +38,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("PraHari database ready at %s", config.get_database_path())
     yield
     logger.info("PraHari backend shutting down...")
+
+    # Stop live telemetry collection cleanly so the polling task is released
+    # and the source is not left advertising itself as active.
+    try:
+        from app.services.collector import get_collector
+
+        collector = get_collector(db)
+        if collector.is_running:
+            logger.info("Stopping live telemetry collector...")
+            await collector.stop()
+    except Exception:  # noqa: BLE001
+        logger.warning("Error while stopping telemetry collector", exc_info=True)
+
     db.close()
 
 
@@ -56,6 +69,35 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    # ── Central-mode authentication (fail closed) ──
+    # Local/loopback deployment is unauthenticated by design. Central mode
+    # accepts telemetry from distinct remote sources, so it REFUSES TO START
+    # without credentials rather than starting open.
+    if config.deployment_mode is DeploymentMode.CENTRAL:
+        from app.api.auth import CentralAuthMiddleware
+        from app.core.security import CredentialStore, MissingCredentialsError
+
+        try:
+            store = CredentialStore.load(config)
+        except MissingCredentialsError as exc:
+            raise RuntimeError(
+                f"Refusing to start in CENTRAL deployment mode: {exc}"
+            ) from exc
+
+        app.add_middleware(
+            CentralAuthMiddleware,
+            store=store,
+            public_paths=config.central_public_paths,
+        )
+        logger.info(
+            "Central mode: authentication enabled with %d credential(s)",
+            len(store),
+        )
+    else:
+        logger.info(
+            "Local mode: loopback deployment, authentication not required"
+        )
 
     # CORS configuration
     app.add_middleware(
@@ -105,6 +147,16 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
+            # API paths must never fall through to the SPA shell. Without this
+            # an unknown or misspelled endpoint returns HTTP 200 with HTML,
+            # which silently breaks API clients (they receive a page where
+            # they expect JSON) and hides genuinely missing routes.
+            if full_path == "api" or full_path.startswith("api/"):
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": f"API endpoint '/{full_path}' not found"},
+                )
+
             # Explicit path traversal check
             if ".." in full_path or full_path.startswith("/"):
                 return JSONResponse(status_code=400, content={"detail": "Invalid path traversal attempt"})

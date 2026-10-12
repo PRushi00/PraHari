@@ -9,20 +9,20 @@ Provides endpoints for:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_db
 from app.storage.database import Database
-from app.adapters.base import AdapterHealth
+from app.adapters.base import AdapterHealth, get_adapter_registry
 from app.adapters.json_stream import JsonStreamAdapter
 from app.adapters.synthetic_replay import SyntheticFlowGenerator
 from app.schemas.events import DataCategory, ImportSummary, TelemetrySource
 
 router = APIRouter(prefix="/stream", tags=["Telemetry Stream & Replay"])
 
-_json_adapter = JsonStreamAdapter(adapter_id="zeek_suricata_stream")
 _synth_generator = SyntheticFlowGenerator(source_id="synthetic_generator")
 
 
@@ -55,7 +55,10 @@ def ingest_ndjson_stream(
         )
         db.upsert_source(source)
 
-    adapter = JsonStreamAdapter(adapter_id=req.source_id)
+    adapter = get_adapter_registry().get_or_register(
+        req.source_id,
+        lambda: JsonStreamAdapter(adapter_id=req.source_id),
+    )
     events, summary = adapter.import_ndjson_string(
         ndjson_content=req.ndjson_content,
         data_category=req.data_category,
@@ -63,9 +66,11 @@ def ingest_ndjson_stream(
 
     if events:
         db.insert_events(events)
-        source.event_count += len(events)
-        source.last_event_at = max(e.observed_at for e in events)
-        db.upsert_source(source)
+        db.refresh_source_activity(
+            req.source_id,
+            last_event_at=max(e.observed_at for e in events),
+            status="active",
+        )
 
     db.save_import_summary(summary)
     db.log_audit(
@@ -96,6 +101,7 @@ def trigger_synthetic_replay(
         )
         db.upsert_source(source)
 
+    started_at = datetime.now(timezone.utc)
     generator = SyntheticFlowGenerator(source_id=req.source_id)
     events = generator.generate_scenario_batch(
         count=req.count,
@@ -103,14 +109,21 @@ def trigger_synthetic_replay(
     )
 
     db.insert_events(events)
-    source.event_count += len(events)
-    source.last_event_at = max(e.observed_at for e in events)
-    db.upsert_source(source)
+    db.refresh_source_activity(
+        req.source_id,
+        last_event_at=max(e.observed_at for e in events),
+        status="active",
+    )
 
+    # Every other ingestion path records both ends of the operation; this
+    # one did not, so the summary reported no completion time and elapsed
+    # duration was unavailable downstream.
     summary = ImportSummary(
         source_id=req.source_id,
         source_file="<synthetic_generator>",
         data_category=DataCategory.SYNTHETIC,
+        started_at=started_at,
+        completed_at=datetime.now(timezone.utc),
         total_records=req.count,
         accepted_records=len(events),
         rejected_records=0,
@@ -129,21 +142,11 @@ def trigger_synthetic_replay(
 
 @router.get("/adapters", response_model=list[AdapterHealth])
 def get_adapters_health() -> list[AdapterHealth]:
-    """Retrieve operational health metrics across all registered adapters."""
-    return [
-        _json_adapter.get_health(),
-        AdapterHealth(
-            adapter_id="csv_import_adapter",
-            adapter_type="csv_import",
-            is_healthy=True,
-            records_processed=35,
-            records_rejected=10,
-        ),
-        AdapterHealth(
-            adapter_id="synthetic_generator",
-            adapter_type="synthetic_replay",
-            is_healthy=True,
-            records_processed=100,
-            records_rejected=0,
-        ),
-    ]
+    """
+    Retrieve operational health for adapters that have actually run.
+
+    Figures come from the live adapter registry. An adapter that has not been
+    exercised in this process is absent rather than reported with placeholder
+    counters, so an empty list genuinely means "nothing has ingested yet".
+    """
+    return get_adapter_registry().health_report()

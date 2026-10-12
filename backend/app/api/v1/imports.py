@@ -51,9 +51,13 @@ def import_raw_csv(
 
     if events:
         db.insert_events(events)
-        source.event_count += len(events)
-        source.last_event_at = max(e.observed_at for e in events)
-        db.upsert_source(source)
+        # Counters are recomputed from storage rather than incremented by batch
+        # size, so deduplicated records cannot inflate the source's totals.
+        db.refresh_source_activity(
+            source.source_id,
+            last_event_at=max(e.observed_at for e in events),
+            status="active",
+        )
 
     db.save_import_summary(summary)
     db.log_audit(
@@ -111,9 +115,13 @@ async def import_csv_file_upload(
 
     if events:
         db.insert_events(events)
-        source.event_count += len(events)
-        source.last_event_at = max(e.observed_at for e in events)
-        db.upsert_source(source)
+        # Counters are recomputed from storage rather than incremented by batch
+        # size, so deduplicated records cannot inflate the source's totals.
+        db.refresh_source_activity(
+            source.source_id,
+            last_event_at=max(e.observed_at for e in events),
+            status="active",
+        )
 
     db.save_import_summary(summary)
     db.log_audit(

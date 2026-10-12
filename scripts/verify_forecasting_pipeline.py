@@ -23,7 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from app.adapters.csv_import import CsvImportAdapter
 from app.models.feature_extractor import WindowFeatureExtractor, FEATURE_NAMES
-from app.models.forecaster import ThreatForecastingPipeline, BaselineConstantModel, BaselineThresholdModel
+from app.models.forecaster import (
+    BaselineConstantModel,
+    BaselineThresholdModel,
+    InsufficientEvaluationDataError,
+    ThreatForecastingPipeline,
+)
 from app.schemas.events import DataCategory
 
 def run_empirical_forecasting_audit():
@@ -71,13 +76,27 @@ def run_empirical_forecasting_audit():
     print(f"Negative Normal Windows (y=0):   {len(y) - int(np.sum(y))} ({(1-np.mean(y))*100:.1f}%)")
     print(f"Features Extracted (D):          {X.shape[1]} causal metrics ({', '.join(FEATURE_NAMES[:4])}...)")
     
+    # Disclose the configuration actually used (short spans force rescaling).
+    wr = extractor.last_windowing_report
+    if wr is not None and not wr.uses_nominal_config:
+        print()
+        print("   [CONFIGURATION NOTICE] The nominal W/L/H/S above were NOT used:")
+        for note in wr.notes:
+            print(f"   - {note}")
+        print(f"   Effective: W={wr.effective_window_seconds}s L={wr.effective_lead_seconds}s "
+              f"H={wr.effective_horizon_seconds}s S={wr.effective_stride_seconds}s")
+
     # Overlapping window analysis
     print("\n   [LEAKAGE RISK ANALYSIS - OVERLAPPING WINDOWS]:")
-    print("   When sliding observation windows by step=15s with window=60s, adjacent feature")
-    print("   vectors share 45s of telemetry (autocorrelation). Random train/test shuffling")
-    print("   would leak telemetry from training windows into test windows!")
-    print("   PraHari DEFENSE: Enforces STRICT TEMPORAL SPLITTING (train strictly on the past,")
-    print("   evaluate strictly on the future). Test instances are never interspersed with training.")
+    print("   Sliding a 60s observation window by 15s makes adjacent feature vectors")
+    print("   share 45s of telemetry. Worse, a window's LABEL describes [t+30s, t+90s]")
+    print("   - a period that later windows take as INPUT. So a bare index split leaks")
+    print("   twice: test windows re-observe training telemetry, and training labels")
+    print("   describe data that test windows use as features.")
+    print("   PraHari DEFENSE: chronological split WITH a train-side purge of")
+    print("   ceil((W+L+H)/S) windows. Contaminated boundary windows are dropped from")
+    print("   training; the holdout is preserved. Instances are never reassigned across")
+    print("   the boundary, and evaluation is REFUSED when no honest split exists.")
     print()
 
     # 3. Temporal Train / Test Split
@@ -86,11 +105,11 @@ def run_empirical_forecasting_audit():
     X_train, y_train = X[:n_train], y[:n_train]
     X_test, y_test = X[n_train:], y[n_train:]
     
-    print(f"[3. TEMPORAL SPLIT AUDIT (70% Train / 30% Test)]")
-    print(f"Train split span: {timestamps[0].isoformat()} to {timestamps[n_train-1].isoformat()} ({n_train} samples)")
-    print(f"Test split span:  {timestamps[n_train].isoformat()} to {timestamps[-1].isoformat()} ({len(y_test)} samples)")
-    print(f"Train Positive Count: {int(np.sum(y_train))} / {len(y_train)} ({np.mean(y_train)*100:.1f}%)")
-    print(f"Test Positive Count:  {int(np.sum(y_test))} / {len(y_test)} ({np.mean(y_test)*100:.1f}%)")
+    print(f"[3. NAIVE SPLIT (shown only to illustrate what is NOT used)]")
+    print(f"A bare 70/30 index split would give {n_train} train / {len(y_test)} test windows")
+    print(f"with train positives {int(np.sum(y_train))}/{len(y_train)} and test positives "
+          f"{int(np.sum(y_test))}/{len(y_test)}.")
+    print("This split is CONTAMINATED at the boundary and is not what PraHari evaluates on.")
     print()
 
     # 4. Pipeline Execution & Model Benchmarking
@@ -99,7 +118,47 @@ def run_empirical_forecasting_audit():
         lead_time_seconds=30.0,
         prediction_horizon_seconds=60.0,
     )
-    metrics_map = pipeline.train_and_evaluate_all(events, train_ratio=train_ratio)
+    try:
+        metrics_map = pipeline.train_and_evaluate_all(events, train_ratio=train_ratio)
+    except InsufficientEvaluationDataError as exc:
+        rep = exc.split_report
+        print("[4. EVALUATION REFUSED - NO LEAKAGE-FREE SPLIT EXISTS]")
+        print()
+        print(f"  {exc}")
+        print()
+        if rep is not None:
+            print("  Split evidence:")
+            print(f"    total windows          : {rep.total_instances}")
+            print(f"    purged (contaminated)  : {rep.purged_instances} "
+                  f"({rep.embargo_windows} windows = {rep.embargo_seconds}s)")
+            print(f"    leakage-free training  : {rep.train_instances} "
+                  f"(positives {rep.train_positive}, negatives {rep.train_negative})")
+            print(f"    holdout                : {rep.test_instances} "
+                  f"(positives {rep.test_positive}, negatives {rep.test_negative})")
+        print()
+        print("  This is the correct outcome for this fixture, not a failure of the")
+        print("  pipeline. The dataset spans ~5 minutes with attacks concentrated early;")
+        print("  it cannot support training on the past and evaluating on strictly later")
+        print("  data once overlapping windows are purged.")
+        print()
+        print("  No metrics are reported, because any number produced here would come")
+        print("  from a contaminated split. To obtain a defensible evaluation, supply")
+        print("  telemetry spanning more time with labelled attack and benign activity")
+        print("  in BOTH the earlier and later periods.")
+        return
+
+    rep = pipeline.last_split_report
+    if rep is not None:
+        print("[3b. PURGED CHRONOLOGICAL SPLIT ACTUALLY USED]")
+        print(f"  training windows : {rep.train_instances} "
+              f"(positives {rep.train_positive}, negatives {rep.train_negative})")
+        print(f"  purged           : {rep.purged_instances} boundary windows "
+              f"({rep.embargo_seconds}s)")
+        print(f"  holdout windows  : {rep.test_instances} "
+              f"(positives {rep.test_positive}, negatives {rep.test_negative})")
+        print(f"  train ends       : {rep.train_end_timestamp}")
+        print(f"  test begins      : {rep.test_start_timestamp}")
+        print()
 
     print(f"[4. EMPIRICAL MODEL BENCHMARK RESULTS]")
     print(f"{'Model Name':<28} | {'Accuracy':<8} | {'Precision':<9} | {'Recall':<6} | {'F1':<6} | {'PR-AUC':<7} | {'ROC-AUC':<7} | {'Brier':<6}")
@@ -126,10 +185,24 @@ def run_empirical_forecasting_audit():
         for f_name, imp in sorted_feats[:5]:
             print(f"  • {f_name:<22}: {imp*100:.1f}% contribution weight")
             
-    print("\n[VERIFICATION OF FORECASTING SCIENTIFIC DEFICIENCY]:")
-    print("Scientific Caveat: Because this fixture dataset has 45 total records, statistical power")
-    print("is limited. The application HONESTLY reports these evaluation metrics without inflating scores.")
-    print("The Research Feasibility Engine correctly advises CONDITIONAL_REVIEW due to limited sample count.")
+    print("\n[7. METRIC INTERPRETABILITY]")
+    any_uninterpretable = False
+    for model_id, m in metrics_map.items():
+        if not m.metrics_interpretable:
+            any_uninterpretable = True
+            print(f"  {m.model_name}: NOT INTERPRETABLE "
+                  f"(test positives={m.test_positive_count}, negatives={m.test_negative_count})")
+            for w in m.interpretation_warnings:
+                print(f"    - {w}")
+    if not any_uninterpretable:
+        print("  All reported metrics were computed on a holdout containing both")
+        print("  positive and negative windows with adequate sample size.")
+
+    print("\n[SCIENTIFIC STATUS]")
+    print("Metrics above come from a purged chronological holdout. They are an honest")
+    print("measurement of this dataset, not a claim of general forecasting ability.")
+    print("Demonstrating predictive effectiveness requires labelled incident data across")
+    print("multiple independent time periods or scenarios, which this fixture does not provide.")
 
 if __name__ == "__main__":
     run_empirical_forecasting_audit()

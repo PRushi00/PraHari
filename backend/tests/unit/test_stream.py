@@ -61,3 +61,50 @@ def test_synthetic_flow_generator():
     # Chronological check
     for i in range(len(events) - 1):
         assert events[i].observed_at <= events[i + 1].observed_at
+
+
+def test_synthetic_replay_summary_records_both_timestamps():
+    """
+    Regression: the replay summary never set completed_at, so elapsed
+    duration was unavailable to every consumer. The dashboard had papered
+    over this by reading a `duration_seconds` field the API does not
+    return, which crashed the page.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from app.api.deps import get_db
+    from app.main import app
+    from app.storage.database import Database
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+    db = Database(db_path=db_path)
+    db.initialize()
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/v1/stream/replay/synthetic",
+                json={"source_id": "synthetic_replay_engine", "count": 20},
+            )
+        assert res.status_code == 200
+        body = res.json()
+
+        assert body["started_at"] is not None
+        assert body["completed_at"] is not None
+        assert body["completed_at"] >= body["started_at"]
+
+        # The fields the dashboard actually renders.
+        assert body["total_records"] == 20
+        assert body["data_category"] == "synthetic_demo"
+
+        # And the ones it must NOT expect.
+        for phantom in ("duration_seconds", "simulated_attack_ratio", "generated_records"):
+            assert phantom not in body
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        Path(db_path).unlink(missing_ok=True)

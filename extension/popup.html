@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PraHari Telemetry Probe</title>
+    <style>
+      body { font-family: system-ui, sans-serif; width: 320px; margin: 0; padding: 14px;
+             background: #0b1220; color: #e2e8f0; font-size: 13px; }
+      h1 { font-size: 14px; margin: 0 0 10px; }
+      .row { display: flex; justify-content: space-between; margin: 4px 0; }
+      .muted { color: #94a3b8; }
+      button { width: 100%; padding: 8px; margin-top: 10px; border-radius: 6px;
+               border: 1px solid #334155; background: #1e293b; color: #e2e8f0;
+               cursor: pointer; font-size: 13px; }
+      button.on { background: #064e3b; border-color: #10b981; }
+      button.off { background: #4c1d24; border-color: #f43f5e; }
+      .note { margin-top: 12px; font-size: 11px; color: #94a3b8; line-height: 1.6; }
+      .err { color: #fca5a5; font-size: 11px; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>PraHari Telemetry Probe</h1>
+    <div class="row"><span class="muted">Status</span><strong id="status">—</strong></div>
+    <div class="row"><span class="muted">Observed</span><span id="observed">0</span></div>
+    <div class="row"><span class="muted">Sent</span><span id="sent">0</span></div>
+    <div class="row"><span class="muted">Queued</span><span id="queued">0</span></div>
+    <div class="row"><span class="muted">Failed</span><span id="failed">0</span></div>
+    <div class="row"><span class="muted">Endpoint</span><span id="endpoint" class="muted"></span></div>
+    <div id="error" class="err"></div>
+
+    <button id="toggle">Loading…</button>
+    <button id="flush">Send queued now</button>
+
+    <div class="note">
+      Reports request <strong>metadata only</strong>: method, hostname, path,
+      status and timing. Never bodies, cookies, headers, credentials, query
+      strings or page content. Sends only to the local PraHari endpoint above.
+    </div>
+  </body>
+  <script src="popup.js"></script>
+</html>

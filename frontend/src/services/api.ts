@@ -116,8 +116,11 @@ export const api = {
       body: JSON.stringify({ source_id: sourceId || null }),
     }),
 
+  // Backend exposes the latest audit at GET /research/audit. The previous
+  // path (/research/report) does not exist and silently returned the SPA
+  // shell, so this call always failed to parse.
   getResearchReport: (): Promise<import("../types").FeasibilityReport | null> =>
-    request<import("../types").FeasibilityReport | null>("/research/report"),
+    request<import("../types").FeasibilityReport | null>("/research/audit"),
 
   // Threat Forecasting & Predictive ML
   trainForecastingModels: (data?: {
@@ -165,8 +168,8 @@ export const api = {
     count?: number;
     attack_ratio?: number;
     seed?: number;
-  }): Promise<import("../types").SyntheticReplayResponse> =>
-    request<import("../types").SyntheticReplayResponse>("/stream/replay/synthetic", {
+  }): Promise<ImportSummary> =>
+    request<ImportSummary>("/stream/replay/synthetic", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data || {}),
@@ -188,6 +191,72 @@ export const api = {
     const query = sp.toString();
     return request<import("../types").AuditLog[]>(`/audit/logs${query ? `?${query}` : ""}`);
   },
+
+  // Live Windows Telemetry Collector
+  getCollectorStatus: (): Promise<import("../types").CollectorStatus> =>
+    request<import("../types").CollectorStatus>("/collector/status"),
+
+  startCollector: (intervalSeconds: number): Promise<import("../types").CollectorStatus> =>
+    request<import("../types").CollectorStatus>("/collector/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interval_seconds: intervalSeconds }),
+    }),
+
+  stopCollector: (): Promise<import("../types").CollectorStatus> =>
+    request<import("../types").CollectorStatus>("/collector/stop", { method: "POST" }),
+
+  pollCollectorOnce: (): Promise<import("../types").PollResult> =>
+    request<import("../types").PollResult>("/collector/poll", { method: "POST" }),
+
+  // Connection intelligence
+  getConnections: (params?: {
+    source_id?: string;
+    data_category?: string;
+    dst_port?: number;
+    protocol?: string;
+    connection_state?: string;
+    process?: string;
+    dst_ip?: string;
+    hostname?: string;
+    include_enrichment?: boolean;
+    allow_reverse_dns?: boolean;
+    limit?: number;
+    offset?: number;
+  }): Promise<import("../types").PaginatedConnectionsResponse> => {
+    const sp = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") sp.append(k, String(v));
+    });
+    const q = sp.toString();
+    return request<import("../types").PaginatedConnectionsResponse>(
+      `/events/connections${q ? `?${q}` : ""}`
+    );
+  },
+
+  getSourceCapabilities: (): Promise<import("../types").SourceCapability[]> =>
+    request<import("../types").SourceCapability[]>("/events/capabilities"),
+
+  // Domain enrichment
+  getEnrichmentStatus: (): Promise<import("../types").EnrichmentStatus> =>
+    request<import("../types").EnrichmentStatus>("/enrichment/status"),
+
+  diagnoseDns: (): Promise<Record<string, unknown>> =>
+    request<Record<string, unknown>>("/enrichment/dns/diagnose"),
+
+  refreshDnsObservations: (): Promise<Record<string, unknown>> =>
+    request<Record<string, unknown>>("/enrichment/dns/refresh", { method: "POST" }),
+
+  // Forecasting readiness
+  getForecastReadiness: (): Promise<import("../types").ReadinessReport> =>
+    request<import("../types").ReadinessReport>("/forecast/readiness"),
+
+  getForecastIntegrity: (): Promise<import("../types").SplitIntegrityReport | null> =>
+    request<import("../types").SplitIntegrityReport | null>("/forecast/integrity"),
+
+  // Optional application-layer telemetry
+  getAppLayerStatus: (): Promise<import("../types").AppLayerStatus> =>
+    request<import("../types").AppLayerStatus>("/applayer/status"),
 
   getSecurityConfig: (): Promise<import("../types").SecurityConfig> =>
     request<import("../types").SecurityConfig>("/audit/config"),

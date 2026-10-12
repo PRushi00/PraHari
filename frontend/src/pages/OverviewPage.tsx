@@ -4,6 +4,7 @@ import { ShieldAlert, Server, Network, Layers, RefreshCw, UploadCloud, CheckCirc
 import { api } from "../services/api";
 import { EventSummaryStats, HealthResponse, DescriptiveAnalysis } from "../types";
 
+import { UNAVAILABLE, fmtInt, fmtTime, isNum } from "../utils/format";
 interface OverviewPageProps {
   onNavigateToImport: () => void;
   onRefreshAll: () => void;
@@ -195,7 +196,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <span className="stat-label">Persisted Events</span>
             <Network className="stat-icon" size={20} />
           </div>
-          <div className="stat-value">{stats?.total_events.toLocaleString() || "0"}</div>
+          <div className="stat-value">{fmtInt(stats?.total_events, "0")}</div>
           <div className="stat-subtext">Normalized canonical flows</div>
         </div>
 
@@ -213,9 +214,20 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <span className="stat-label">Security Classifications</span>
             <ShieldAlert className="stat-icon" size={20} style={{ color: "var(--accent-rose)" }} />
           </div>
-          <div className="stat-value">{Object.keys(stats?.labels || {}).length}</div>
+          <div className="stat-value">
+            {
+              Object.keys(stats?.labels || {}).filter(
+                (k) => !["benign", "unlabeled"].includes(k.toLowerCase())
+              ).length
+            }
+          </div>
           <div className="stat-subtext">
-            {Object.keys(stats?.labels || {}).filter((k) => k.toLowerCase() !== "benign").length} attack categories detected
+            {/* "unlabeled" is the absence of ground truth, not an attack
+                category. Counting it previously reported "1 attack categories
+                detected" for traffic that carried no labels at all. */}
+            {(stats?.labels || {})["unlabeled"]
+              ? `${(stats?.labels || {})["unlabeled"]} events carry no ground-truth label`
+              : "Labelled attack categories present"}
           </div>
         </div>
 
@@ -304,7 +316,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <div>
               <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Descriptive Analysis Summary</h3>
               <p style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>
-                Computed at {new Date(analysis.computed_at).toLocaleString()} • Scope: {analysis.source_id}
+                Computed at {fmtTime(analysis.computed_at, "—")} • Scope: {analysis.source_id}
               </p>
             </div>
             <span className="badge badge-info">Factual Statistics Only (No Forecast)</span>
@@ -326,7 +338,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <div style={{ background: "rgba(15, 23, 42, 0.5)", padding: "1rem", borderRadius: "8px" }}>
               <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Avg Flow Duration</div>
               <div style={{ fontSize: "1.3rem", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
-                {analysis.avg_duration ? `${(analysis.avg_duration / 1000).toFixed(1)} ms` : "N/A"}
+                {isNum(analysis.avg_duration)
+                  ? `${(analysis.avg_duration / 1000).toFixed(1)} ms`
+                  : UNAVAILABLE}
               </div>
             </div>
             <div style={{ background: "rgba(15, 23, 42, 0.5)", padding: "1rem", borderRadius: "8px" }}>

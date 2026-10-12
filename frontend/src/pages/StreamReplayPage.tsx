@@ -10,6 +10,7 @@ import {
 import { api } from "../services/api";
 import { AdapterHealth, SyntheticReplayResponse, ImportSummary } from "../types";
 
+import { fmtElapsed, fmtInt, fmtTime } from "../utils/format";
 export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ onReplayComplete }) => {
   const [adapters, setAdapters] = useState<AdapterHealth[]>([]);
   const [replayCount, setReplayCount] = useState<number>(100);
@@ -157,20 +158,27 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
           <div key={idx} className="glass-panel" style={{ padding: "1.5rem" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
               <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textTransform: "uppercase" }}>
-                {ad.format} Adapter
+                {ad.adapter_type} Adapter
               </span>
-              <span className="badge" style={{ background: ad.is_running ? "rgba(16, 185, 129, 0.2)" : "rgba(100, 116, 139, 0.2)", color: ad.is_running ? "#10b981" : "var(--text-muted)" }}>
-                {ad.is_running ? "ONLINE" : "STANDBY"}
+              <span className="badge" style={{ background: ad.is_healthy ? "rgba(16, 185, 129, 0.2)" : "rgba(244, 63, 94, 0.2)", color: ad.is_healthy ? "#10b981" : "#f43f5e" }}>
+                {ad.is_healthy ? "HEALTHY" : "ERROR"}
               </span>
             </div>
             <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--text-main)", marginBottom: "0.5rem" }}>
-              {ad.adapter_name}
+              {ad.adapter_id}
             </div>
             <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", display: "flex", gap: "1rem" }}>
-              <span>Proc: <strong>{ad.records_processed}</strong></span>
-              <span>Acc: <strong style={{ color: "#10b981" }}>{ad.records_accepted}</strong></span>
-              <span>Rej: <strong style={{ color: ad.records_rejected > 0 ? "#f43f5e" : "var(--text-dim)" }}>{ad.records_rejected}</strong></span>
+              <span>Processed: <strong style={{ color: "#10b981" }}>{fmtInt(ad.records_processed)}</strong></span>
+              <span>Rejected: <strong style={{ color: (ad.records_rejected ?? 0) > 0 ? "#f43f5e" : "var(--text-dim)" }}>{fmtInt(ad.records_rejected)}</strong></span>
             </div>
+            <div style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginTop: "0.4rem" }}>
+              Last active: {fmtTime(ad.last_active_at, "never")}
+            </div>
+            {ad.error_message && (
+              <div style={{ fontSize: "0.72rem", color: "#fca5a5", marginTop: "0.35rem" }}>
+                {ad.error_message}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -248,10 +256,19 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
                 <span>Replay Batch Generated Successfully</span>
               </div>
               <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "0.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
-                <div>Total Generated: <strong>{replayResult.generated_records}</strong></div>
-                <div>Accepted: <strong style={{ color: "#10b981" }}>{replayResult.accepted_records}</strong></div>
-                <div>Simulated Attacks: <strong>{(replayResult.simulated_attack_ratio * 100).toFixed(0)}%</strong></div>
-                <div>Elapsed: <strong>{replayResult.duration_seconds.toFixed(2)}s</strong></div>
+                <div>Records Generated: <strong>{fmtInt(replayResult.total_records)}</strong></div>
+                <div>Accepted: <strong style={{ color: "#10b981" }}>{fmtInt(replayResult.accepted_records)}</strong></div>
+                <div>Rejected: <strong style={{ color: (replayResult.rejected_records ?? 0) > 0 ? "#f43f5e" : "var(--text-dim)" }}>{fmtInt(replayResult.rejected_records)}</strong></div>
+                {/* Elapsed time is DERIVED from the summary's own timestamps.
+                    The previous code read a duration_seconds field that the
+                    backend never returns. */}
+                <div>Elapsed: <strong>{fmtElapsed(replayResult.started_at, replayResult.completed_at)}</strong></div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  Category: <strong>{replayResult.data_category ?? "—"}</strong>{" "}
+                  <span style={{ color: "var(--text-dim)" }}>
+                    (synthetic records, kept distinct from live telemetry)
+                  </span>
+                </div>
               </div>
             </div>
           )}

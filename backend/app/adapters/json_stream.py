@@ -87,18 +87,27 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
             errors.append(f"Record {record_index}: missing or unparseable timestamp")
 
         # 2. Extract Endpoints (IP & Port)
-        # Supports Zeek format (id.orig_h / id.resp_h), Suricata (src_ip / dest_ip), and flat keys
+        # Supports Zeek format (id.orig_h / id.resp_h), Suricata (src_ip / dest_ip), and flat keys.
+        # A malformed record where "id" is a scalar rather than an object must be
+        # rejected as invalid data, not crash the whole batch import.
+        id_obj = raw_record.get("id")
+        if not isinstance(id_obj, dict):
+            if id_obj is not None:
+                warnings.append("id_field_not_an_object")
+                quality_flags.append(QualityFlag.SCHEMA_WARNING)
+            id_obj = {}
+
         src_ip_val = (
             raw_record.get("src_ip")
             or raw_record.get("source_ip")
-            or raw_record.get("id", {}).get("orig_h")
+            or id_obj.get("orig_h")
             or raw_record.get("id.orig_h")
         )
         dst_ip_val = (
             raw_record.get("dst_ip")
             or raw_record.get("dest_ip")
             or raw_record.get("destination_ip")
-            or raw_record.get("id", {}).get("resp_h")
+            or id_obj.get("resp_h")
             or raw_record.get("id.resp_h")
         )
 
@@ -127,14 +136,14 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
         src_port_val = (
             raw_record.get("src_port")
             or raw_record.get("source_port")
-            or raw_record.get("id", {}).get("orig_p")
+            or id_obj.get("orig_p")
             or raw_record.get("id.orig_p")
         )
         dst_port_val = (
             raw_record.get("dst_port")
             or raw_record.get("dest_port")
             or raw_record.get("destination_port")
-            or raw_record.get("id", {}).get("resp_p")
+            or id_obj.get("resp_p")
             or raw_record.get("id.resp_p")
         )
 
@@ -218,15 +227,24 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
                 bytes_total = int(b1) + int(b2)
 
         # Label
-        label = raw_record.get("label") or raw_record.get("alert", {}).get("signature") or raw_record.get("classification")
+        alert_obj = raw_record.get("alert")
+        if not isinstance(alert_obj, dict):
+            alert_obj = {}
+        label = (
+            raw_record.get("label")
+            or alert_obj.get("signature")
+            or raw_record.get("classification")
+        )
         if label:
             label = str(label).strip()
 
         event_type = EventType.NETWORK_FLOW
         raw_type = str(raw_record.get("event_type", "")).lower()
         if "dns" in raw_type:
-            event_type = EventType.DNS
-        elif "alert" in raw_type or label and label.lower() != "benign":
+            event_type = EventType.DNS_QUERY
+        elif "http" in raw_type:
+            event_type = EventType.HTTP_REQUEST
+        elif "alert" in raw_type or (label and label.lower() != "benign"):
             event_type = EventType.ALERT
 
         if errors:
