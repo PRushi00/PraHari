@@ -185,7 +185,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
     resource_type   TEXT,
     resource_id     TEXT,
     details         TEXT,
-    user_identity   TEXT DEFAULT 'local_operator'
+    user_identity   TEXT DEFAULT 'local_operator',
+    -- Correlation id of the request that caused this entry (ADR-063).
+    -- NULL for anything with no request behind it: a collector poll, the
+    -- CLI, a test. NULL is accurate; a placeholder would not be.
+    request_id      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
@@ -350,6 +354,12 @@ class Database:
             ("duration_measured_count", "INTEGER NOT NULL DEFAULT -1"),
             ("implausible_timestamp_events", "INTEGER NOT NULL DEFAULT -1"),
         ],
+        "audit_events": [
+            # Nullable with no default: an entry written before this
+            # column existed has no request id, and inventing one would
+            # be worse than recording its absence.
+            ("request_id", "TEXT"),
+        ],
     }
 
     def initialize(self) -> None:
@@ -422,21 +432,58 @@ class Database:
         resource_id: str = "",
         details: str = "",
         user_identity: str = "local_operator",
+        request_id: Optional[str] = None,
     ) -> None:
-        """Record an audit event."""
+        """
+        Record an audit event.
+
+        `request_id` defaults to the correlation id of the request in
+        flight (ADR-063), so every existing call site gains attribution
+        without being changed. It is NULL outside a request — a collector
+        poll, the CLI, a test — which is the accurate answer.
+        """
+        if request_id is None:
+            try:
+                from app.api.request_context import get_request_id
+
+                request_id = get_request_id()
+            except Exception:  # pragma: no cover - storage must not depend on the API
+                request_id = None
+
         with self.get_connection() as conn:
-            conn.execute(
-                """INSERT INTO audit_events (timestamp, action, resource_type, resource_id, details, user_identity)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    datetime.now(timezone.utc).isoformat(),
-                    action,
-                    resource_type,
-                    resource_id,
-                    details,
-                    user_identity,
-                ),
-            )
+            try:
+                conn.execute(
+                    """INSERT INTO audit_events (timestamp, action, resource_type,
+                                                 resource_id, details, user_identity,
+                                                 request_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        action,
+                        resource_type,
+                        resource_id,
+                        details,
+                        user_identity,
+                        request_id,
+                    ),
+                )
+            except sqlite3.OperationalError:
+                # A database that predates the column. An audit entry is
+                # more important than its attribution, so the entry is
+                # still written.
+                conn.execute(
+                    """INSERT INTO audit_events (timestamp, action, resource_type,
+                                                 resource_id, details, user_identity)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        action,
+                        resource_type,
+                        resource_id,
+                        details,
+                        user_identity,
+                    ),
+                )
 
     # ──────────────── Telemetry Sources ────────────────
 
@@ -1057,6 +1104,59 @@ class Database:
                     analysis.implausible_timestamp_events,
                 ),
             )
+
+    def count_analyses(self, source_id: Optional[str] = None) -> int:
+        """How many descriptive analyses are stored."""
+        query = "SELECT COUNT(*) FROM descriptive_analyses"
+        params: list = []
+        if source_id:
+            query += " WHERE source_id = ?"
+            params.append(source_id)
+        with self.get_connection() as conn:
+            return conn.execute(query, params).fetchone()[0]
+
+    def analyses_exceeding_limit(
+        self, keep: int, source_id: Optional[str] = None
+    ) -> list[str]:
+        """
+        The analysis_ids that would be removed to leave the newest `keep`.
+
+        Read-only: it names the candidates so an operator can see exactly
+        what a prune would delete before authorising it. Ordering is by
+        `computed_at` descending, with `analysis_id` as a tiebreak so the
+        selection is deterministic when two analyses share a timestamp.
+        """
+        if keep < 0:
+            raise ValueError("keep must not be negative")
+        query = "SELECT analysis_id FROM descriptive_analyses"
+        params: list = []
+        if source_id:
+            query += " WHERE source_id = ?"
+            params.append(source_id)
+        query += " ORDER BY computed_at DESC, analysis_id DESC"
+        with self.get_connection() as conn:
+            ids = [r["analysis_id"] for r in conn.execute(query, params)]
+        return ids[keep:]
+
+    def prune_analyses(self, keep: int, source_id: Optional[str] = None) -> int:
+        """
+        Delete all but the newest `keep` analyses. Returns the count removed.
+
+        **Destructive, and deliberately never called automatically.** The
+        only caller is an explicitly confirmed administrative endpoint
+        (ADR-064). Analyses are historical records of what was computed,
+        not a cache, so nothing in PraHari expires them on a timer, at
+        startup, or as a side effect of a read.
+        """
+        doomed = self.analyses_exceeding_limit(keep, source_id=source_id)
+        if not doomed:
+            return 0
+        with self.get_connection() as conn:
+            conn.executemany(
+                "DELETE FROM descriptive_analyses WHERE analysis_id = ?",
+                [(a,) for a in doomed],
+            )
+        return len(doomed)
 
     def get_latest_analysis(self, source_id: Optional[str] = None) -> Optional[DescriptiveAnalysis]:
         """Retrieve the most recent descriptive analysis."""

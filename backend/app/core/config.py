@@ -79,6 +79,12 @@ class AppConfig(BaseSettings):
 
     # Retention
     retention_days: int = 365
+    # Analysis history (ADR-064). 0 means KEEP EVERYTHING, which is the
+    # default: an analysis is a historical record of what was computed,
+    # and nothing prunes it automatically. A positive value is only a
+    # SUGGESTED keep-count for the explicitly confirmed prune endpoint;
+    # it still never runs on its own.
+    analysis_history_limit: int = 0
     raw_payload_storage: bool = False
 
     # ── Security ──

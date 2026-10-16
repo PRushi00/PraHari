@@ -2829,3 +2829,95 @@ Also worth having, and absent: request-ID middleware feeding `log_audit`.
 This write took a code trace to attribute because the database records
 only `user_identity="local_operator"`, with no request id, address or
 user agent.
+
+---
+
+## ADR-063: Request Correlation Ids, Because One Write Could Not Be Attributed
+
+### Context
+ADR-062's unexplained `descriptive_analyses` row took a code trace to
+attribute. `audit_events` recorded only
+`user_identity="local_operator"` — no request id, method or path — so the
+database could say *what* changed and *when*, never *which request*.
+
+### Decision
+`api/request_context.py` sets a correlation id per request and echoes it
+in `X-Request-ID`. `log_audit` reads it from a **ContextVar**, so every
+existing call site gained attribution without being edited.
+
+A ContextVar rather than a parameter, deliberately: `log_audit` is a
+`Database` method, and the storage layer must stay usable from the
+collector, the CLI and tests, none of which have an HTTP request.
+Threading an id through every route would touch a dozen call sites and be
+forgotten by the next one added. Starlette runs sync handlers in a worker
+thread via anyio, which copies the context, so the var is visible there.
+
+- **NULL outside a request.** A collector poll, the CLI and a test have
+  no request behind them, and that is recorded as NULL rather than a
+  fabricated placeholder.
+- **A client-supplied id is accepted but sanitised** — capped at 64
+  characters and restricted to `[A-Za-z0-9._:-]`. This value is persisted
+  and shown in reports, so an unbounded or control-character id would be
+  a log-injection vector. It is **rejected, not truncated**: a trimmed
+  10 KB header would look legitimate while no longer matching what the
+  client holds.
+- **Only the id is stored.** No address, no user agent, no query string —
+  those would put identifying data in a long-lived table, and the id
+  alone is enough to tie a row to a log line.
+- **An audit entry outranks its attribution.** On a database predating
+  the column the insert falls back to the original statement, so the
+  event is still recorded.
+
+### Consequences
+A write like ADR-062's is now traceable from the database alone. The
+column is additive and nullable; existing entries keep NULL and are not
+backfilled, because no id was captured for them.
+
+---
+
+## ADR-064: Analysis History Is a Record, Not a Cache — So Nothing Expires It Automatically
+
+### Context
+ADR-062 fixed GET-on-read, but `POST /analysis/run` could still grow
+`descriptive_analyses` without bound. The question ADR-062 deferred was
+what these rows *are*.
+
+### Decision: historical records
+An analysis carries its own `computed_at`, totals, provenance,
+`data_categories` and measured counts. It is a record of what PraHari
+computed at a moment — evidence, not a derived cache entry that can be
+regenerated at will, because the events it summarised may since have been
+pruned by telemetry retention.
+
+That settles the retention design: **nothing expires analysis history
+automatically.** Not a timer, not startup, not a read, not a new run.
+`test_nothing_prunes_automatically` holds that line against reads,
+writes and health checks.
+
+Trimming is an explicit administrative act, `POST /analysis/prune`:
+
+- **Dry run by default.** Without the confirmation token
+  `DELETE_ANALYSIS_HISTORY` nothing is deleted and the response names the
+  analyses that would be — the same preview-then-confirm shape the
+  telemetry retention service uses, because this is the only operation in
+  PraHari that removes a historical record.
+- **`keep` must be at least 1.** This trims history; it does not empty it.
+- **Admin-gated in central mode**, audited, and the audit entry carries
+  the request id from ADR-063.
+- **Telemetry is never touched** — only `descriptive_analyses`.
+
+`analysis_history_limit` defaults to **0, meaning keep everything**, and
+even a positive value is only a suggestion surfaced to the endpoint. It
+never causes a deletion on its own; a test asserts that.
+
+### What was NOT done
+The 30 analyses in the operational database are left alone. This work
+does not run the prune against a protected database, and the endpoint
+exists so the operator can decide. Deleting them would also be the first
+time anything in this project removed a historical record — which is the
+operator's call, not a side effect of a defect fix.
+
+A retention policy must not become a way to hide the original GET defect:
+the growth is fixed at its cause in ADR-062, and this endpoint exists for
+the separate, legitimate case of an operator who has run many explicit
+analyses.

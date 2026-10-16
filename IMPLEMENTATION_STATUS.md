@@ -1879,3 +1879,51 @@ The 30 stored rows. Deleting them would modify operational data and they
 legitimately record what was computed. A retention policy for POST-created
 analyses, and request-ID attribution in the audit log, are recommended in
 ADR-062 and not implemented here.
+
+---
+
+## Session 26 — Request Attribution and Analysis-History Retention
+
+**1151 backend passed / 4 skipped · 67 frontend passed.** Typecheck, build
+and `git diff --check` clean. Both operational databases byte-identical to
+the session baseline.
+
+Closes the two items ADR-062 recorded as recommended-but-not-done. They
+were the last blueprint requirements implementable in this environment;
+everything still open is externally blocked.
+
+### Request correlation ids (ADR-063)
+
+A correlation id per request, echoed in `X-Request-ID` and read by
+`log_audit` through a ContextVar — so every existing audit call site
+gained attribution with no edit. NULL outside a request, which is the
+accurate answer for a collector poll, the CLI or a test.
+
+A client-supplied id is accepted but capped at 64 characters and
+character-restricted, and **rejected rather than truncated**: the value is
+persisted, so an unbounded or newline-bearing id would be a log-injection
+vector. Six hostile shapes are tested, including a null byte and a SQL
+fragment. Only the id is stored — no address or user agent, verified by a
+test that asserts a planted `User-Agent` does not reach the row.
+
+### Analysis history retention (ADR-064)
+
+Semantics decided and documented: an analysis is a **historical record**,
+not a cache — it carries its own totals and provenance, and the events it
+summarised may since have been pruned.
+
+So nothing expires it automatically. `POST /analysis/prune` is dry-run by
+default, needs the `DELETE_ANALYSIS_HISTORY` token, requires `keep >= 1`,
+is admin-gated in central mode, is audited with its request id, and never
+touches telemetry. `analysis_history_limit` defaults to 0 (keep
+everything) and is only a suggestion — a test asserts a positive value
+prunes nothing on its own.
+
+The 30 rows in the operational database are left for the operator. 30
+tests.
+
+### Verified this session, not re-asserted
+
+Both database hashes matched the historical reference values at baseline
+and are unchanged at the end. The collector was already stopped and was
+left stopped; no process was started.

@@ -8,7 +8,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.api.auth import require_admin_in_central
 from app.api.deps import get_db
+from app.core.config import AppConfig, get_config
 from app.services.analysis import compute_descriptive_analysis
 from app.services.enrichment import get_enrichment_service
 from app.storage.database import Database
@@ -163,3 +165,95 @@ def get_latest_analysis(
 def list_analyses(db: Database = Depends(get_db)) -> list[DescriptiveAnalysis]:
     """List all stored descriptive analyses."""
     return db.list_analyses()
+
+# ──────────────────────────────────────────────────────────────────
+# Analysis history (ADR-064)
+#
+# An analysis is a HISTORICAL RECORD of what PraHari computed, carrying
+# its own totals, provenance and measured counts — not a cache entry. So
+# nothing expires it automatically: not a timer, not startup, not a read.
+# Trimming it is an explicit, confirmed, audited administrative act.
+# ──────────────────────────────────────────────────────────────────
+
+ANALYSIS_PRUNE_CONFIRMATION = "DELETE_ANALYSIS_HISTORY"
+
+
+class AnalysisPruneRequest(BaseModel):
+    keep: int = Field(
+        ...,
+        ge=1,
+        description=(
+            "How many of the most recent analyses to KEEP. Must be at "
+            "least 1: this operation trims history, it does not empty it."
+        ),
+    )
+    source_id: Optional[str] = Field(default=None)
+    confirm: Optional[str] = Field(
+        default=None,
+        description=(
+            f"Must be exactly {ANALYSIS_PRUNE_CONFIRMATION!r} to delete. "
+            "Omit for a dry run that only reports what would be removed."
+        ),
+    )
+    reason: str = Field(default="", max_length=500)
+
+
+@router.post("/prune")
+def prune_analysis_history(
+    req: AnalysisPruneRequest,
+    db: Database = Depends(get_db),
+    config: AppConfig = Depends(get_config),
+    _: object = Depends(require_admin_in_central),
+) -> dict:
+    """
+    Trim stored analysis history, keeping the most recent `keep` records.
+
+    **Dry run by default.** Without the confirmation token nothing is
+    deleted and the response reports exactly which analyses would be —
+    the same preview-then-confirm shape the telemetry retention service
+    uses, because this is the only operation in PraHari that deletes a
+    historical record.
+
+    Administrative in central mode; unrestricted on a loopback
+    deployment, matching the rest of the API.
+    """
+    total = db.count_analyses(source_id=req.source_id)
+    candidates = db.analyses_exceeding_limit(req.keep, source_id=req.source_id)
+
+    if req.confirm != ANALYSIS_PRUNE_CONFIRMATION:
+        return {
+            "dry_run": True,
+            "deleted": 0,
+            "total_analyses": total,
+            "keep": req.keep,
+            "would_delete": len(candidates),
+            "would_delete_ids": candidates[:50],
+            "confirmation_required": ANALYSIS_PRUNE_CONFIRMATION,
+            "note": (
+                "Nothing was deleted. Re-send with the confirmation token "
+                "to proceed. Analyses are historical records; this is the "
+                "only operation that removes one."
+            ),
+        }
+
+    deleted = db.prune_analyses(req.keep, source_id=req.source_id)
+    db.log_audit(
+        action="prune_analysis_history",
+        resource_type="descriptive_analysis",
+        resource_id=req.source_id or "all_sources",
+        details=(
+            f"Deleted {deleted} of {total} analyses, keeping the newest "
+            f"{req.keep}" + (f"; reason={req.reason}" if req.reason else "")
+        ),
+    )
+    return {
+        "dry_run": False,
+        "deleted": deleted,
+        "total_analyses": db.count_analyses(source_id=req.source_id),
+        "keep": req.keep,
+        "configured_suggestion": config.analysis_history_limit or None,
+        "note": (
+            "Deleted on explicit confirmation. No automatic retention "
+            "applies to analysis history."
+        ),
+    }

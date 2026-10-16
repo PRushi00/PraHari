@@ -139,6 +139,15 @@ def create_app() -> FastAPI:
         max_bytes=config.max_request_size_mb * BYTES_PER_MB,
     )
 
+    # ── Request correlation ids (ADR-063) ──
+    # Added LAST of the custom middlewares so it runs OUTERMOST: the id
+    # must exist before auth, limits or a route can write an audit entry.
+    # Installed in both deployment modes, because the write that motivated
+    # it came from a loopback deployment.
+    from app.api.request_context import RequestIdMiddleware
+
+    app.add_middleware(RequestIdMiddleware)
+
     # CORS configuration
     app.add_middleware(
         CORSMiddleware,

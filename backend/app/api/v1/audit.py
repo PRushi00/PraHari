@@ -7,7 +7,7 @@ and deployment boundary compliance.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
@@ -28,6 +28,7 @@ class AuditLogItem(BaseModel):
     resource_id: str
     details: str
     user_identity: str
+    request_id: Optional[str] = None
 
 
 class SystemConfigReport(BaseModel):
@@ -52,6 +53,14 @@ class SystemConfigReport(BaseModel):
     security_boundaries: dict[str, Any]
 
 
+def _column(row, name: str):
+    """Read a column that may be absent on a pre-migration database."""
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
 @router.get("/logs", response_model=list[AuditLogItem])
 def list_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
@@ -73,6 +82,9 @@ def list_audit_logs(
                 resource_id=r["resource_id"] or "",
                 details=r["details"] or "",
                 user_identity=r["user_identity"] or "system",
+                # None on an entry written before the column existed, and
+                # on anything with no request behind it (ADR-063).
+                request_id=_column(r, "request_id"),
             )
             for r in rows
         ]
