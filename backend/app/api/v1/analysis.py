@@ -85,6 +85,8 @@ def run_analysis(
         db, req.source_id, req.data_category, req.max_events, req.include_hostnames
     )
     db.save_analysis(analysis)
+    analysis.persisted = True
+    analysis.is_current = True
     db.log_audit(
         action="run_descriptive_analysis",
         resource_type="descriptive_analysis",
@@ -112,9 +114,18 @@ def get_latest_analysis(
     """
     Retrieve the most recent descriptive analysis.
 
-    A saved analysis is a snapshot. If events have been ingested since it was
-    computed its totals no longer describe the database, so by default it is
-    recomputed rather than served as if current.
+    **This route never writes.** A GET that persisted a row meant any
+    browser page load, prefetch, probe or `curl` silently appended to the
+    operational database, and because each recomputation minted a fresh
+    `analysis_id` nothing was ever replaced (ADR-062).
+
+    A saved analysis is a snapshot. If events have been ingested since it
+    was computed, its totals no longer describe the database, so by
+    default a fresh one is COMPUTED FOR THIS RESPONSE and returned with
+    `persisted=False`. Persisting remains the job of POST /analysis/run.
+
+    Set `recompute_if_stale=false` to receive the stored snapshot instead,
+    flagged `is_current=False`.
     """
     analysis = db.get_latest_analysis(source_id=source_id)
     current_total = db.count_events(source_id=source_id)
@@ -122,15 +133,30 @@ def get_latest_analysis(
     if analysis is None:
         if current_total == 0:
             return None
-        analysis = _build_analysis(db, source_id, None, 50_000, True)
-        db.save_analysis(analysis)
+        # Nothing stored yet. Compute for this response and say plainly
+        # that it was not saved.
+        fresh = _build_analysis(db, source_id, None, 50_000, True)
+        fresh.persisted = False
+        fresh.is_current = True
+        return fresh
+
+    if analysis.total_events == current_total:
+        analysis.persisted = True
+        analysis.is_current = True
         return analysis
 
-    if recompute_if_stale and analysis.total_events != current_total:
-        analysis = _build_analysis(db, source_id, None, 50_000, True)
-        db.save_analysis(analysis)
+    # The stored snapshot has been overtaken by newer events.
+    if not recompute_if_stale:
+        # Return it as stored, flagged, so a caller that asked for the
+        # snapshot is not misled about its currency.
+        analysis.persisted = True
+        analysis.is_current = False
+        return analysis
 
-    return analysis
+    fresh = _build_analysis(db, source_id, None, 50_000, True)
+    fresh.persisted = False
+    fresh.is_current = True
+    return fresh
 
 
 @router.get("", response_model=list[DescriptiveAnalysis])

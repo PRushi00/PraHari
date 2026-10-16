@@ -1128,6 +1128,10 @@ class Database:
             implausible_timestamp_events=_measured(
                 self._opt(row, "implausible_timestamp_events")
             ),
+            # It came out of the database, so it is by definition stored.
+            # Whether it is still CURRENT is a question about live counts
+            # and is answered by the route, not here.
+            persisted=True,
         )
 
     def _json_opt(self, row: sqlite3.Row, column: str, default):

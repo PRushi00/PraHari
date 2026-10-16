@@ -1836,3 +1836,46 @@ the Windows table cannot supply, and no attack label invented.
 Linux (Windows-only host), live NetFlow collection (the adapter parses
 exports only), and any real-data forecasting claim. The research gate
 remains closed and correctly so.
+
+---
+
+## Session 25 — GET /analysis/latest No Longer Writes
+
+**1121 backend passed / 4 skipped · 67 frontend passed.** Typecheck, build
+and `git diff --check` clean. Both operational databases unchanged.
+
+### The defect
+
+`GET /analysis/latest` called `db.save_analysis()` whenever the stored
+analysis was stale. Each recomputation minted a fresh `uuid4`, so
+`INSERT OR REPLACE` never replaced — the live database accumulated **30
+rows with 30 distinct ids**, six inside one ten-minute window. The GET
+path wrote no audit record, so the rows had nothing attributing them.
+
+It was the only GET in the whole API that writes, and it was found when a
+`curl` issued during an explicitly read-only investigation caused one.
+
+### The fix
+
+GET now computes a fresh result and returns it **unsaved**; `POST
+/analysis/run` remains the only route that persists, keeping its audit
+record. Two response-only fields distinguish the cases that one flag
+cannot: `persisted` (is this stored?) and `is_current` (do its totals
+still describe the database?).
+
+### Evidence
+
+19 tests asserting at the **storage layer** — row counts and an
+intercepted `save_analysis` — not HTTP status codes, since a route can
+return 200 while writing. Ten consecutive stale GETs leave the table at
+its original size.
+
+Teeth verified: with the pre-fix behaviour restored under a monkeypatch,
+the same assertions catch it (rows 1 → 2).
+
+### Left alone, deliberately
+
+The 30 stored rows. Deleting them would modify operational data and they
+legitimately record what was computed. A retention policy for POST-created
+analyses, and request-ID attribution in the audit log, are recommended in
+ADR-062 and not implemented here.

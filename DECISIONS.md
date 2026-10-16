@@ -2750,3 +2750,82 @@ three states stay distinct:
   migrate the protected database. Tested on temporary databases only —
   `test_analysis_persistence.py`, 14 tests, including the migration from a
   pre-column schema and proof that `-1` reads as `None` and never as `0`.
+
+---
+
+## ADR-062: A GET Must Not Write — and the Analysis Route Did
+
+### Context
+A read-only investigation into an unexplained `descriptive_analyses`
+insertion found the cause in `GET /api/v1/analysis/latest`:
+
+```python
+if recompute_if_stale and analysis.total_events != current_total:
+    analysis = _build_analysis(...)
+    db.save_analysis(analysis)        # a GET writing a row
+```
+
+`recompute_if_stale` defaults to True, so any GET issued while the stored
+snapshot was out of date persisted a new analysis.
+
+Two things made it worse. `_build_analysis` mints a fresh `uuid4`, so the
+`INSERT OR REPLACE` never replaced anything — **30 rows, 30 distinct
+ids**, six of them inside one ten-minute window while the collector ran.
+And the GET path wrote no audit record, while `POST /analysis/run` does,
+so the row appeared in the database with nothing attributing it.
+
+A sweep of every `@router.get` across `api/v1/` found this was the only
+GET in the API that writes.
+
+**How it was found matters.** The write happened during an investigation
+conducted under an explicit read-only constraint, caused by a `curl` to
+an endpoint whose method promises safety. Browser page loads
+(`OverviewPage.tsx:27`, `AnalysisPage.tsx:15`) call it on every mount, so
+routine dashboard use grew the table unboundedly.
+
+### Decision
+**GET never writes, on every path.** The route now computes a fresh
+result for the response and returns it **unsaved**. Persisting stays the
+job of `POST /analysis/run`, which keeps its validation and its audit
+record.
+
+The intent behind the original code was right — do not serve a stale
+snapshot as if current — and is preserved. What changes is that freshness
+is achieved by computing, not by persisting.
+
+Two response-only fields carry the distinction, because one flag cannot:
+
+| `persisted` | `is_current` | Meaning |
+|---|---|---|
+| true | true | stored, and still describes the database |
+| true | false | the stored snapshot, explicitly requested with `recompute_if_stale=false`, now out of date |
+| false | true | computed for this response, accurate, **not saved** |
+
+Neither field is persisted: they describe a response, not an analysis, and
+storing them would store a fact about a past request. `_row_to_analysis`
+sets `persisted=True` because a row loaded from the database is stored by
+definition; the route answers currency, which is a question about live
+counts.
+
+### Consequences
+- **Positive**: GET is safe again. Dashboard loads, prefetches, probes and
+  read-only inspection no longer touch the database, and the unbounded
+  growth is gone at its source.
+- **Backward compatible**: the response gains two fields and loses none.
+  A caller that ignores them sees the same analysis it saw before, and a
+  stale GET still returns current numbers.
+- **Not done**: the 30 rows already stored are left alone. Deleting them
+  would modify operational data, and they are a legitimate record of what
+  the system computed.
+
+### Recommended separately, not implemented
+A retention policy for explicitly created analyses. `POST` can still grow
+the table without bound if called repeatedly, which is far less likely
+than a page load but not impossible. That needs its own decision about
+what to keep, and would be the first thing in this project to delete
+historical records — so it should not be bundled into a defect fix.
+
+Also worth having, and absent: request-ID middleware feeding `log_audit`.
+This write took a code trace to attribute because the database records
+only `user_identity="local_operator"`, with no request id, address or
+user agent.

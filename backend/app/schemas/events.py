@@ -567,6 +567,33 @@ class DescriptiveAnalysis(BaseModel):
     # (FILETIME epoch, far future). Excluded from the range above.
     implausible_timestamp_events: Optional[int] = None
 
+    # ── Freshness, response-only (ADR-062) ──
+    #
+    # Not persisted: save_analysis names its columns and these are not
+    # among them, deliberately. They describe THIS response, not the
+    # analysis, so storing them would be storing a fact about a past
+    # request.
+    #
+    # `persisted` says whether this exact result exists in the database.
+    # `is_current` says whether its totals still describe the database.
+    # The pair keeps "saved but out of date" distinct from "accurate but
+    # not saved", which a single flag cannot express.
+    persisted: bool = Field(
+        default=False,
+        description=(
+            "True when this result is stored in the database. False means "
+            "it was computed for this response only and was NOT saved."
+        ),
+    )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "True when total_events still matches the live event count. "
+            "False means the stored snapshot has been overtaken by newer "
+            "events and no longer describes the database."
+        ),
+    )
+
     # How many records actually carried each measurement. The averages below
     # are over these counts, not over total_events — on a mixed dataset the
     # two differ by an order of magnitude.
