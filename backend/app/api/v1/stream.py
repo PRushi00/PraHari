@@ -11,11 +11,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.api.auth import resolve_ingest_source
+from app.services.admission import (
+    IngestionOverloaded,
+    get_admission_controller,
+)
 from app.api.deps import get_db
-from app.storage.database import Database
+from app.storage.database import Database, EventIdentityConflictError
 from app.adapters.base import AdapterHealth, get_adapter_registry
 from app.adapters.json_stream import JsonStreamAdapter
 from app.adapters.synthetic_replay import SyntheticFlowGenerator
@@ -30,6 +35,10 @@ class IngestNdjsonRequest(BaseModel):
     source_id: str = Field(..., description="Telemetry source ID")
     ndjson_content: str = Field(..., description="Newline-delimited JSON payload")
     data_category: DataCategory = Field(default=DataCategory.HISTORICAL_IMPORT)
+    idempotency_key: Optional[str] = Field(
+        default=None,
+        description="Optional sender-provided batch idempotency key for safe retries.",
+    )
 
 
 class TriggerReplayRequest(BaseModel):
@@ -42,32 +51,134 @@ class TriggerReplayRequest(BaseModel):
 @router.post("/ingest/ndjson", response_model=ImportSummary)
 def ingest_ndjson_stream(
     req: IngestNdjsonRequest,
+    request: Request,
+    idempotency_key_header: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    x_idempotency_key_header: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
     db: Database = Depends(get_db),
 ) -> ImportSummary:
     """Ingest newline-delimited JSON records (supports Zeek conn.log & Suricata EVE)."""
-    source = db.get_source(req.source_id)
+    # Receipt time, captured at the API boundary — the first point at which
+    # this backend can attest to anything. Taken BEFORE parsing so a large
+    # or slow batch does not push the recorded receipt later than the actual
+    # arrival. The client cannot supply or influence it: there is no such
+    # field on IngestNdjsonRequest.
+    received_at = datetime.now(timezone.utc)
+    idempotency_key = req.idempotency_key or idempotency_key_header or x_idempotency_key_header
+
+    # The authenticated identity, not the request body, decides where this
+    # telemetry is filed. Resolved BEFORE anything is parsed or registered,
+    # and used for every subsequent step — including the adapter id, which
+    # is the idempotency namespace (ADR-050).
+    source_id = resolve_ingest_source(request, req.source_id)
+
+    # Bounded admission (blueprint §6). Reserved BEFORE parsing, so a
+    # flood of large bodies cannot all be normalized into memory at once.
+    # Rejected immediately rather than buffered: ingestion is synchronous
+    # and the response reports what was actually stored, so queueing here
+    # would answer the caller before the data is durable.
+    controller = get_admission_controller()
+    try:
+        admission = controller.admit()
+    except IngestionOverloaded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "1"},
+            detail={
+                "error": "ingestion_overloaded",
+                "message": (
+                    "Too much ingestion is already in flight. Nothing was "
+                    "stored; retry this batch."
+                ),
+                "in_flight": exc.in_flight,
+                "capacity": exc.capacity,
+                "stored_records": 0,
+            },
+        ) from exc
+
+    with admission:
+        return _ingest_ndjson_admitted(
+            req=req,
+            db=db,
+            source_id=source_id,
+            received_at=received_at,
+            idempotency_key=idempotency_key,
+            controller=controller,
+            admission=admission,
+        )
+
+
+def _ingest_ndjson_admitted(
+    *, req, db, source_id, received_at, idempotency_key, controller, admission
+) -> ImportSummary:
+    """
+    The ingest body, running inside an admission slot.
+
+    Split out so the slot is held for exactly the work it bounds, and
+    released by the context manager however this returns or raises.
+    """
+    source = db.get_source(source_id)
     if not source:
         source = TelemetrySource(
-            source_id=req.source_id,
-            name=f"Stream Source {req.source_id}",
+            source_id=source_id,
+            name=f"Stream Source {source_id}",
             source_type="json_stream",
             description="Auto-registered during NDJSON stream ingest",
         )
         db.upsert_source(source)
 
     adapter = get_adapter_registry().get_or_register(
-        req.source_id,
-        lambda: JsonStreamAdapter(adapter_id=req.source_id),
+        source_id,
+        lambda: JsonStreamAdapter(adapter_id=source_id),
     )
     events, summary = adapter.import_ndjson_string(
         ndjson_content=req.ndjson_content,
         data_category=req.data_category,
+        idempotency_key=idempotency_key,
     )
 
+    for event in events:
+        # Stamped after normalization because the adapter constructs the
+        # objects, but with the time captured at the boundary above.
+        event.received_at = received_at
+
     if events:
-        db.insert_events(events)
+        try:
+            stored = db.insert_events(events)
+        except EventIdentityConflictError as exc:
+            # The whole batch rolled back (get_connection rolls back on any
+            # exception), so nothing from this request was written. Record
+            # the refusal: a 409 that leaves no trace is indistinguishable
+            # from a request that never arrived.
+            controller.record_failure("conflict")
+            db.log_audit(
+                action="ingest_ndjson_stream_conflict",
+                resource_type="telemetry_source",
+                resource_id=source_id,
+                details=f"Rejected {len(events)} event(s), nothing stored: {exc}",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "event_identity_conflict",
+                    "message": str(exc),
+                    "source_id": source_id,
+                    "stored_records": 0,
+                },
+            ) from exc
+
+        # What parsed is not what was written. A retry parses perfectly and
+        # stores nothing, and the caller is entitled to know which happened.
+        summary.stored_records = stored
+        summary.duplicate_records = len(events) - stored
+        controller.record_batch(
+            stored=stored,
+            duplicates=len(events) - stored,
+            rejected=summary.rejected_records,
+            elapsed_ms=admission.elapsed_ms(),
+        )
+
         db.refresh_source_activity(
-            req.source_id,
+            source_id,
             last_event_at=max(e.observed_at for e in events),
             status="active",
         )
@@ -77,7 +188,12 @@ def ingest_ndjson_stream(
         action="ingest_ndjson_stream",
         resource_type="import_summary",
         resource_id=summary.import_id,
-        details=f"Ingested {summary.accepted_records} JSON events, rejected {summary.rejected_records}",
+        details=(
+            f"Accepted {summary.accepted_records} JSON events "
+            f"(stored {summary.stored_records}, "
+            f"duplicates {summary.duplicate_records}), "
+            f"rejected {summary.rejected_records}"
+        ),
     )
     return summary
 
@@ -85,16 +201,20 @@ def ingest_ndjson_stream(
 @router.post("/replay/synthetic", response_model=ImportSummary)
 def trigger_synthetic_replay(
     req: TriggerReplayRequest,
+    request: Request,
     db: Database = Depends(get_db),
 ) -> ImportSummary:
     """
     Generate and ingest a controlled batch of synthetic network flow events.
     Simulates background enterprise traffic interleaved with attack patterns.
     """
-    source = db.get_source(req.source_id)
+    # Replay writes events like any other path, so it is scoped the same way.
+    source_id = resolve_ingest_source(request, req.source_id)
+
+    source = db.get_source(source_id)
     if not source:
         source = TelemetrySource(
-            source_id=req.source_id,
+            source_id=source_id,
             name=req.source_name,
             source_type="synthetic_replay",
             description="Controlled deterministic flow replay generator",
@@ -102,7 +222,7 @@ def trigger_synthetic_replay(
         db.upsert_source(source)
 
     started_at = datetime.now(timezone.utc)
-    generator = SyntheticFlowGenerator(source_id=req.source_id)
+    generator = SyntheticFlowGenerator(source_id=source_id)
     events = generator.generate_scenario_batch(
         count=req.count,
         attack_ratio=req.attack_ratio,
@@ -110,7 +230,7 @@ def trigger_synthetic_replay(
 
     db.insert_events(events)
     db.refresh_source_activity(
-        req.source_id,
+        source_id,
         last_event_at=max(e.observed_at for e in events),
         status="active",
     )
@@ -119,7 +239,7 @@ def trigger_synthetic_replay(
     # one did not, so the summary reported no completion time and elapsed
     # duration was unavailable downstream.
     summary = ImportSummary(
-        source_id=req.source_id,
+        source_id=source_id,
         source_file="<synthetic_generator>",
         data_category=DataCategory.SYNTHETIC,
         started_at=started_at,

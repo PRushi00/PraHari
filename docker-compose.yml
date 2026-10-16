@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   prahari:
     build:
@@ -9,7 +7,11 @@ services:
     container_name: prahari_sentinel
     restart: unless-stopped
     ports:
-      # Enforce loopback binding on host for security compliance
+      # Loopback ONLY. The container listens on 0.0.0.0 because that is the
+      # only address reachable from outside its network namespace, but the
+      # host-side binding is pinned to 127.0.0.1 so nothing is published to
+      # the LAN. Changing this to "8000:8000" would expose the dashboard and
+      # the ingest API on every host interface.
       - "127.0.0.1:8000:8000"
     volumes:
       - prahari_data:/data
@@ -25,3 +27,15 @@ services:
 volumes:
   prahari_data:
     driver: local
+
+# Security notes
+# --------------
+# * Host binding is 127.0.0.1 by design. Do not change it without reading
+#   README §15 — local mode is unauthenticated, so an exposed port is an
+#   unauthenticated ingest and query endpoint.
+# * Central mode needs credentials and refuses to start without them. To
+#   run it here, mount a credential file and set PRAHARI_DEPLOYMENT_MODE
+#   and PRAHARI_CREDENTIALS_FILE.
+# * The named volume holds collected telemetry. Treat it as personal data.
+# * .dockerignore keeps prahari.db, secrets/ and .git out of the build
+#   context; do not remove it.

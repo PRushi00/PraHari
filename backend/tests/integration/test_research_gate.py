@@ -323,7 +323,13 @@ def test_split_report_carries_a_reproducibility_manifest(client_with):
     manifest = client.get("/api/v1/forecast/integrity").json()
 
     assert manifest["dataset_fingerprint"]
-    assert len(manifest["dataset_fingerprint"]) == 16
+    # Content fingerprint: full sha256 hex, computed with the same function
+    # the experiment manifest uses so the two values are comparable.
+    assert len(manifest["dataset_fingerprint"]) == 64
+    assert manifest["split_configuration_fingerprint"]
+    assert (
+        manifest["split_configuration_fingerprint"] != manifest["dataset_fingerprint"]
+    ), "the setup hash and the dataset identity must not be the same value"
     assert manifest["event_count"] == 800
     assert manifest["event_time_range"] and len(manifest["event_time_range"]) == 2
     assert manifest["manifest_version"]
@@ -331,7 +337,8 @@ def test_split_report_carries_a_reproducibility_manifest(client_with):
 
     # Provenance must make synthetic data obvious rather than implicit.
     assert manifest["data_category_breakdown"] == {"synthetic_demo": 800}
-    assert "rule_based" in manifest["label_provenance_breakdown"]
+    assert "synthetic_rule" in manifest["label_provenance_breakdown"]
+    assert "dataset_ground_truth" not in manifest["label_provenance_breakdown"]
 
     # The target definition travels with the evaluation.
     target = manifest["target_definition"]
@@ -342,8 +349,21 @@ def test_split_report_carries_a_reproducibility_manifest(client_with):
     assert "src_ip" not in flat and "dst_ip" not in flat
 
 
-def test_fingerprint_is_stable_for_identical_input_and_changes_otherwise():
+def test_dataset_identity_and_split_setup_are_fingerprinted_separately():
+    """
+    They answer different questions and must not be conflated.
+
+      dataset_fingerprint              -> which records were used
+      split_configuration_fingerprint  -> which protocol was applied
+
+    A different train ratio over the same corpus is a different experiment
+    but the SAME dataset, so only the setup hash may move. Both were once
+    reported under the name "dataset_fingerprint" by two different
+    algorithms, so the split report and the experiment manifest could never
+    agree although both claimed to identify the dataset.
+    """
     from app.models.forecaster import ThreatForecastingPipeline
+    from app.research.experiment import fingerprint_events
 
     gen = SyntheticFlowGenerator(seed=11, source_id="s")
     events = gen.generate_scenario_batch(count=800, attack_ratio=0.25)
@@ -351,15 +371,29 @@ def test_fingerprint_is_stable_for_identical_input_and_changes_otherwise():
     p1 = ThreatForecastingPipeline()
     p1.train_and_evaluate_all(events, train_ratio=0.7)
     first = p1.last_split_report.dataset_fingerprint
+    first_setup = p1.last_split_report.split_configuration_fingerprint
+
+    # The reported identity is the manifest's identity, not a private hash.
+    assert first == fingerprint_events(events)
 
     p2 = ThreatForecastingPipeline()
     p2.train_and_evaluate_all(events, train_ratio=0.7)
     assert p2.last_split_report.dataset_fingerprint == first
+    assert p2.last_split_report.split_configuration_fingerprint == first_setup
 
-    # A different split protocol is a different experiment.
+    # Same corpus, different protocol.
     p3 = ThreatForecastingPipeline()
     p3.train_and_evaluate_all(events, train_ratio=0.8)
-    assert p3.last_split_report.dataset_fingerprint != first
+    assert p3.last_split_report.dataset_fingerprint == first
+    assert p3.last_split_report.split_configuration_fingerprint != first_setup
+
+    # Different corpus, same protocol.
+    other = SyntheticFlowGenerator(seed=12, source_id="s").generate_scenario_batch(
+        count=800, attack_ratio=0.25
+    )
+    p4 = ThreatForecastingPipeline()
+    p4.train_and_evaluate_all(other, train_ratio=0.7)
+    assert p4.last_split_report.dataset_fingerprint != first
 
 
 def test_metrics_report_missed_events_and_false_alarm_burden(client_with):

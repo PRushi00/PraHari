@@ -443,3 +443,135 @@ Request -> CentralAuthMiddleware -> Principal(credential_id, source_id, role)
 Verified over **loopback only**. No rate limiting, no in-process TLS, and no
 exposure beyond `127.0.0.1`. Central mode is disabled by default. See
 ADR-024.
+
+---
+
+## 17. Additional Host Observation Sources
+
+`app/adapters/windows_host_observations.py` + `app/api/v1/hostobs.py`.
+
+```
+POST /hostobs/udp/poll      -> canonical events (EventType.UDP_ENDPOINT)
+GET  /hostobs/interfaces    -> its own payload, never canonical events
+GET  /hostobs/capabilities  -> declared limits of both
+```
+
+Both are unprivileged, read-only, operator-triggered, and Windows-only
+(`501 unsupported_platform` elsewhere).
+
+### Why they are kept apart
+
+They measure different things, and the schema says so:
+
+| | UDP endpoint table | Interface counters |
+|---|---|---|
+| Unit of observation | one bound local socket | one network interface |
+| Time semantics | point-in-time snapshot | cumulative since adapter reset |
+| Stored as | `normalized_events` | **never** stored as events |
+| Destination | **not applicable** — UDP has no peer here | not applicable |
+| Attributable to a flow/process | process yes, flow no | **neither** |
+
+A UDP endpoint is a socket binding, not a conversation. A destination is
+not missing from these records — it does not exist, and the capability
+profile uses `FieldAvailability.NOT_APPLICABLE` so their absence is never
+scored as a data-quality defect.
+
+Interface counters are the only genuine byte and packet measurement
+available without packet capture, and they are the easiest to misuse:
+summed beside flow byte counts from an imported dataset they produce a
+figure that means nothing. The payload therefore carries its own scope.
+
+Deltas are computed between consecutive readings held in process. A
+decreasing counter means the adapter reset, and **no delta is derived** —
+neither a negative nor a wrapped-around positive describes traffic.
+
+See ADR-027.
+
+---
+
+## 18. Lead Time, Uncertainty and the Temporal Model
+
+`app/research/evaluation.py`, plus `temporal_window_stack` in
+`app/models/forecaster.py`.
+
+```
+POST /forecast/lead-time-curve  -> performance against warning time
+GET  /forecast/uncertainty      -> bootstrap intervals for the last evaluation
+```
+
+### Lead-time sweep
+
+One full protocol run per lead time, everything else frozen and recorded in
+`LeadTimeCurve.protocol`. A lead whose windowing or split cannot support an
+honest evaluation is a `LeadTimePoint` with `evaluated=False` and a
+`refusal_reason` — present in the curve, not dropped from it.
+
+### Uncertainty
+
+Percentile bootstrap over the held-out instances, with floors below which
+an interval is refused rather than produced (20 instances, 5 positives,
+both classes). Resamples that lose a class are skipped, not scored zero.
+
+`HoldoutPredictions` stores truth **per model**, because the temporal
+model's holdout is shorter by `TEMPORAL_LAGS`; resampling its scores
+against another model's labels would misalign them silently.
+
+### Temporal model
+
+```
+instance i  ->  [ window i-3 | window i-2 | window i-1 | window i ]
+```
+
+Order matters, so this is a sequence model rather than a snapshot
+classifier. Stacking is applied **after** the chronological split,
+separately to each side. Applied before, a test instance near the boundary
+would carry training-period windows in its lags, re-importing exactly the
+contamination the purge exists to remove.
+
+It is not an LSTM. See ADR-028.
+
+---
+
+## 19. Timestamp Plausibility — One Definition
+
+`is_plausible_timestamp()`, `MIN_PLAUSIBLE_YEAR`, `MAX_CLOCK_SKEW_SECONDS`
+in `app/schemas/events.py`.
+
+Windows reports an unset socket creation time as the FILETIME epoch
+(1601-01-01). One such record implies a ~425-year span, which corrupts
+window generation, split boundaries, rate features, and any audit that
+measures elapsed observation.
+
+This rule previously existed as three independent copies, and they
+disagreed:
+
+| Module | Before | After |
+|---|---|---|
+| Windows adapter | rejected them | unchanged |
+| Readiness gate | excluded them (65,260s span) | uses the shared helper |
+| Descriptive analysis | **no check** (range began 1601) | excludes and counts them |
+| Feasibility audit | inherited the broken span, scored 100% PASSED over 425 years | **fails**, naming the count |
+
+The analysis reports `implausible_timestamp_events` and the dashboard shows
+it. The feasibility temporal score folds in the usable fraction of the time
+axis, so the number moves with the verdict.
+
+A test asserts all three modules report the same span for the same
+dataset. See ADR-029.
+
+---
+
+## 20. Measurement Denominators
+
+`DescriptiveAnalysis` carries `duration_measured_count`,
+`packets_measured_count` and `bytes_measured_count` beside the averages.
+
+On a mixed dataset these differ from `total_events` by an order of
+magnitude: 3,469 of 3,669 records on this host come from the connection
+table, which exposes no volume at all. An average over the remaining 200
+is not a property of the dataset, and an API consumer cannot tell without
+being told.
+
+The feasibility `attack_ratio` is likewise computed over the labelled
+population rather than all events, with `labelled_events` and
+`unlabelled_events` reported alongside. See ADR-030.

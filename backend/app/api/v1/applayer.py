@@ -37,9 +37,10 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
+from app.api.auth import resolve_ingest_source
 from app.api.deps import get_db
 from app.core.config import AppConfig, get_config
 from app.schemas.events import (
@@ -187,16 +188,26 @@ def get_applayer_status(config: AppConfig = Depends(get_config)) -> dict:
 @router.post("/ingest", response_model=ImportSummary)
 def ingest_application_layer(
     req: AppLayerIngestRequest,
+    request: Request,
     db: Database = Depends(get_db),
     config: AppConfig = Depends(get_config),
 ) -> ImportSummary:
     """Ingest HTTP request metadata from an authorized producer."""
+    # Receipt time, captured at the API boundary before any parsing. The
+    # producer is a separate process submitting over HTTP, so this is a
+    # genuine receipt. The client cannot supply it.
+    received_at = datetime.now(timezone.utc)
+
     _require_enabled(config)
 
-    source = db.get_source(req.source_id)
+    # Same ingestion trust boundary as the NDJSON stream: the authenticated
+    # identity decides where these events are filed, not the request body.
+    source_id = resolve_ingest_source(request, req.source_id)
+
+    source = db.get_source(source_id)
     if source is None:
         source = TelemetrySource(
-            source_id=req.source_id,
+            source_id=source_id,
             name=req.source_name,
             source_type=APPLAYER_SOURCE_TYPE,
             description=(
@@ -207,7 +218,7 @@ def ingest_application_layer(
         db.upsert_source(source)
 
     summary = ImportSummary(
-        source_id=req.source_id,
+        source_id=source_id,
         source_file=f"<applayer:{req.producer}>",
         data_category=DataCategory.LIVE_TELEMETRY,
     )
@@ -235,7 +246,7 @@ def ingest_application_layer(
         # Deterministic id so a producer retrying a batch cannot duplicate it.
         fingerprint = hashlib.sha256(
             "|".join([
-                req.source_id, rec.method, host, path or "",
+                source_id, rec.method, host, path or "",
                 observed_at.isoformat(), str(rec.status_code),
             ]).encode("utf-8")
         ).hexdigest()
@@ -245,7 +256,7 @@ def ingest_application_layer(
                 event_id=f"{fingerprint[0:8]}-{fingerprint[8:12]}-{fingerprint[12:16]}"
                          f"-{fingerprint[16:20]}-{fingerprint[20:32]}",
                 schema_version=SCHEMA_VERSION,
-                source_id=req.source_id,
+                source_id=source_id,
                 data_category=DataCategory.LIVE_TELEMETRY,
                 observed_at=observed_at,
                 event_type=EventType.HTTP_REQUEST,
@@ -270,10 +281,13 @@ def ingest_application_layer(
             )
         )
 
+    for event in events:
+        event.received_at = received_at
+
     inserted = db.insert_events(events) if events else 0
     if events:
         db.refresh_source_activity(
-            req.source_id,
+            source_id,
             last_event_at=max(e.observed_at for e in events),
             status="active",
         )

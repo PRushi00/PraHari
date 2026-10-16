@@ -220,6 +220,21 @@ export const AnalysisPage: React.FC = () => {
                   to{" "}
                   {fmtTime(analysis.time_range_end, "—")}
                 </div>
+                {(analysis.implausible_timestamp_events ?? 0) > 0 && (
+                  <div
+                    style={{
+                      fontSize: "0.7rem",
+                      color: "#f59e0b",
+                      marginTop: "0.4rem",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {analysis.implausible_timestamp_events} record(s) carry a
+                    timestamp that cannot describe a real observation (before
+                    2000 or far in the future) and are excluded from this
+                    window. Including one would imply a span of centuries.
+                  </div>
+                )}
                 <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginTop: "0.4rem" }}>
                   Computed {fmtTime(analysis.computed_at, "—")}
                 </div>

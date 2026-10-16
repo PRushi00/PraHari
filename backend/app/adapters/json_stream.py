@@ -36,6 +36,52 @@ PROTO_INT_MAP = {
     1: "ICMP",
 }
 
+# Zeek writes "-" for a field that exists but has no value.
+ZEEK_UNSET = {"-", "(empty)"}
+
+
+def _first_present(record: dict[str, Any], *keys: str) -> Any:
+    """
+    Return the first key that is actually present with a non-null value.
+
+    Deliberately not an ``or`` chain: ``0`` bytes, ``0.0`` seconds and port
+    ``0`` are real measurements, and falling through them would turn a
+    recorded zero into "no data". Those two mean different things here —
+    the whole provenance model depends on not confusing them.
+    """
+    for key in keys:
+        if key in record:
+            value = record[key]
+            if value is not None:
+                return value
+    return None
+
+
+def _extract_sender_event_id(raw_record: dict[str, Any]) -> Optional[str]:
+    """
+    Extract an explicit sender-provided event identifier if present.
+
+    Supports:
+    - standard 'event_id'
+    - Zeek 'uid' (unique connection identifier)
+    - standard 'uuid'
+    - 'record_id'
+    - scalar 'id' (when 'id' is a string or int, not a nested dict like Zeek's endpoint object)
+    """
+    for key in ("event_id", "uid", "uuid", "record_id"):
+        val = raw_record.get(key)
+        if val is not None and not isinstance(val, (dict, list)):
+            s = str(val).strip()
+            if s:
+                return s
+
+    val = raw_record.get("id")
+    if val is not None and isinstance(val, (str, int)):
+        s = str(val).strip()
+        if s:
+            return s
+    return None
+
 
 class JsonStreamAdapter(BaseTelemetryAdapter):
     """
@@ -50,6 +96,7 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
         raw_record: dict[str, Any],
         record_index: int,
         data_category: DataCategory = DataCategory.HISTORICAL_IMPORT,
+        idempotency_key: Optional[str] = None,
     ) -> ValidationResult:
         errors: list[str] = []
         warnings: list[str] = []
@@ -133,19 +180,19 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
             errors.append(f"Record {record_index}: missing dst_ip")
 
         # Ports
-        src_port_val = (
-            raw_record.get("src_port")
-            or raw_record.get("source_port")
-            or id_obj.get("orig_p")
-            or raw_record.get("id.orig_p")
+        src_port_val = _first_present(raw_record, "src_port", "source_port")
+        if src_port_val is None:
+            src_port_val = _first_present(id_obj, "orig_p")
+        if src_port_val is None:
+            src_port_val = _first_present(raw_record, "id.orig_p")
+
+        dst_port_val = _first_present(
+            raw_record, "dst_port", "dest_port", "destination_port"
         )
-        dst_port_val = (
-            raw_record.get("dst_port")
-            or raw_record.get("dest_port")
-            or raw_record.get("destination_port")
-            or id_obj.get("resp_p")
-            or raw_record.get("id.resp_p")
-        )
+        if dst_port_val is None:
+            dst_port_val = _first_present(id_obj, "resp_p")
+        if dst_port_val is None:
+            dst_port_val = _first_present(raw_record, "id.resp_p")
 
         src_port: Optional[int] = None
         dst_port: Optional[int] = None
@@ -177,16 +224,22 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
             if isinstance(proto_val, int):
                 protocol = PROTO_INT_MAP.get(proto_val, f"PROTO_{proto_val}")
             else:
-                p_str = str(proto_val).strip().upper()
-                protocol = p_str if p_str in ("TCP", "UDP", "ICMP") else p_str
+                # Pass unrecognised protocol names through unchanged rather
+                # than coercing them to a known one. An unexpected protocol
+                # is information; a silently rewritten one is not.
+                protocol = str(proto_val).strip().upper()
 
         # Metrics (Duration, Packets, Bytes)
+        flow_obj = raw_record.get("flow")
+        if not isinstance(flow_obj, dict):
+            flow_obj = {}
+
         duration = None
-        dur_val = (
-            raw_record.get("duration")
-            or raw_record.get("flow_duration")
-            or (raw_record.get("flow", {}).get("age") if isinstance(raw_record.get("flow"), dict) else None)
-        )
+        dur_val = _first_present(raw_record, "duration", "flow_duration")
+        if dur_val is None:
+            dur_val = _first_present(flow_obj, "age")
+        if isinstance(dur_val, str) and dur_val.strip() in ZEEK_UNSET:
+            dur_val = None
         if dur_val is not None:
             try:
                 duration = float(dur_val)
@@ -194,57 +247,90 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
                 quality_flags.append(QualityFlag.INVALID_VALUE)
 
         packets = None
-        pkts_val = raw_record.get("packets") or raw_record.get("tot_pkts")
+        pkts_val = _first_present(raw_record, "packets", "tot_pkts")
+        if isinstance(pkts_val, str) and pkts_val.strip() in ZEEK_UNSET:
+            pkts_val = None
         if pkts_val is not None:
             try:
                 packets = int(pkts_val)
             except (ValueError, TypeError):
                 quality_flags.append(QualityFlag.INVALID_VALUE)
-        elif isinstance(raw_record.get("flow"), dict):
-            p1 = raw_record["flow"].get("pkts_toserver") or 0
-            p2 = raw_record["flow"].get("pkts_toclient") or 0
-            if p1 or p2:
-                packets = int(p1) + int(p2)
+        elif "pkts_toserver" in flow_obj or "pkts_toclient" in flow_obj:
+            try:
+                packets = int(flow_obj.get("pkts_toserver") or 0) + int(
+                    flow_obj.get("pkts_toclient") or 0
+                )
+            except (ValueError, TypeError):
+                quality_flags.append(QualityFlag.INVALID_VALUE)
 
         bytes_total = None
-        bytes_val = raw_record.get("bytes_total") or raw_record.get("bytes")
+        bytes_val = _first_present(raw_record, "bytes_total", "bytes")
+        if isinstance(bytes_val, str) and bytes_val.strip() in ZEEK_UNSET:
+            bytes_val = None
         if bytes_val is not None:
             try:
                 bytes_total = int(bytes_val)
             except (ValueError, TypeError):
                 quality_flags.append(QualityFlag.INVALID_VALUE)
         elif "orig_bytes" in raw_record or "resp_bytes" in raw_record:
-            b1 = raw_record.get("orig_bytes") or 0
-            b2 = raw_record.get("resp_bytes") or 0
             try:
-                bytes_total = int(b1) + int(b2)
+                bytes_total = int(raw_record.get("orig_bytes") or 0) + int(
+                    raw_record.get("resp_bytes") or 0
+                )
             except (ValueError, TypeError):
                 quality_flags.append(QualityFlag.INVALID_VALUE)
-        elif isinstance(raw_record.get("flow"), dict):
-            b1 = raw_record["flow"].get("bytes_toserver") or 0
-            b2 = raw_record["flow"].get("bytes_toclient") or 0
-            if b1 or b2:
-                bytes_total = int(b1) + int(b2)
+        elif "bytes_toserver" in flow_obj or "bytes_toclient" in flow_obj:
+            try:
+                bytes_total = int(flow_obj.get("bytes_toserver") or 0) + int(
+                    flow_obj.get("bytes_toclient") or 0
+                )
+            except (ValueError, TypeError):
+                quality_flags.append(QualityFlag.INVALID_VALUE)
 
-        # Label
+        # ── Label and its provenance ──
+        #
+        # Where a label came from decides whether it may be used as a
+        # training target, so the two are resolved together and never
+        # defaulted to the strongest option.
+        #
+        #   label / classification  -> the corpus states what this was
+        #   alert.signature         -> a DETECTOR said so
+        #
+        # A Suricata signature is the IDS's opinion. Recording it as ground
+        # truth would let a forecaster be trained to predict one detector's
+        # alerts while the metrics claim it predicts attacks.
         alert_obj = raw_record.get("alert")
         if not isinstance(alert_obj, dict):
             alert_obj = {}
-        label = (
-            raw_record.get("label")
-            or alert_obj.get("signature")
-            or raw_record.get("classification")
-        )
-        if label:
-            label = str(label).strip()
 
+        label: Optional[str] = None
+        label_provenance = LabelProvenance.UNLABELED
+
+        corpus_label = _first_present(raw_record, "label", "classification")
+        if corpus_label is not None and str(corpus_label).strip():
+            label = str(corpus_label).strip()
+            label_provenance = LabelProvenance.DATASET_GROUND_TRUTH
+        else:
+            signature = alert_obj.get("signature")
+            if signature is not None and str(signature).strip():
+                label = str(signature).strip()
+                label_provenance = LabelProvenance.DETECTOR_OUTPUT
+                warnings.append("label_is_detector_output_not_ground_truth")
+
+        # ── Event type ──
+        #
+        # The event type describes WHAT WAS OBSERVED; the label describes how
+        # it was annotated. They are kept separate: a labelled flow from a
+        # historical corpus is still a flow. Collapsing every labelled record
+        # into ALERT would make an imported dataset report as nothing but
+        # alerts, and would misstate what the sensor actually saw.
         event_type = EventType.NETWORK_FLOW
         raw_type = str(raw_record.get("event_type", "")).lower()
         if "dns" in raw_type:
             event_type = EventType.DNS_QUERY
         elif "http" in raw_type:
             event_type = EventType.HTTP_REQUEST
-        elif "alert" in raw_type or (label and label.lower() != "benign"):
+        elif "alert" in raw_type or alert_obj:
             event_type = EventType.ALERT
 
         if errors:
@@ -256,8 +342,33 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
                 raw_reference=raw_ref,
             )
 
+        # Determine event identity:
+        # 1. Explicit sender-provided event ID (Zeek uid, event_id, uuid, etc.)
+        #    Scoped to source_id using UUIDv5 so cross-source collisions cannot occur.
+        # 2. Batch idempotency key + record index, allowing safe retries of batches
+        #    without collapsing distinct records in the same batch.
+        # 3. Fresh random UUID4 for legacy clients without identity metadata, preserving
+        #    documented legacy behavior.
+        sender_event_id = _extract_sender_event_id(raw_record)
+        if sender_event_id:
+            event_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"urn:prahari:source:{self.adapter_id}:event:{sender_event_id}",
+                )
+            )
+        elif idempotency_key:
+            event_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"urn:prahari:source:{self.adapter_id}:batch:{idempotency_key}:record:{record_index}",
+                )
+            )
+        else:
+            event_id = str(uuid.uuid4())
+
         event = NormalizedEvent(
-            event_id=str(uuid.uuid4()),
+            event_id=event_id,
             schema_version=SCHEMA_VERSION,
             source_id=self.adapter_id,
             data_category=data_category,
@@ -272,7 +383,7 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
             packets=packets,
             bytes_total=bytes_total,
             label=label,
-            label_provenance=LabelProvenance.DATASET_GROUND_TRUTH if label else LabelProvenance.UNLABELED,
+            label_provenance=label_provenance,
             quality_flags=quality_flags,
             raw_reference=raw_ref,
         )
@@ -290,12 +401,14 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
         ndjson_content: str,
         data_category: DataCategory = DataCategory.HISTORICAL_IMPORT,
         max_records: int = 50_000,
+        idempotency_key: Optional[str] = None,
     ) -> tuple[list[NormalizedEvent], ImportSummary]:
         """Ingest newline-delimited JSON string."""
         events: list[NormalizedEvent] = []
         rejection_reasons: dict[str, int] = {}
         warnings_count = 0
         total = 0
+        seen_batch_identities: dict[str, tuple] = {}
 
         summary = ImportSummary(
             source_id=self.adapter_id,
@@ -310,11 +423,36 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
             total += 1
             try:
                 record = json.loads(line)
-                res = self.validate_and_normalize(record, idx, data_category)
+                res = self.validate_and_normalize(
+                    record,
+                    idx,
+                    data_category,
+                    idempotency_key=idempotency_key,
+                )
                 if res.is_valid and res.event:
-                    events.append(res.event)
-                    if res.warnings:
-                        warnings_count += 1
+                    eid = res.event.event_id
+                    canonical = (
+                        res.event.observed_at.isoformat(),
+                        res.event.src_ip,
+                        res.event.dst_ip,
+                        res.event.src_port,
+                        res.event.dst_port,
+                        res.event.protocol,
+                    )
+                    if eid in seen_batch_identities:
+                        if seen_batch_identities[eid] == canonical:
+                            rejection_reasons["duplicate_event_in_batch"] = (
+                                rejection_reasons.get("duplicate_event_in_batch", 0) + 1
+                            )
+                        else:
+                            rejection_reasons["conflicting_event_id"] = (
+                                rejection_reasons.get("conflicting_event_id", 0) + 1
+                            )
+                    else:
+                        seen_batch_identities[eid] = canonical
+                        events.append(res.event)
+                        if res.warnings:
+                            warnings_count += 1
                 else:
                     for err in res.errors:
                         parts = err.split(":", 1)

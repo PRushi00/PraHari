@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from app.api.auth import require_admin_in_central
 from app.api.deps import get_db
 from app.core.config import AppConfig, get_config
 from app.storage.database import Database
@@ -41,6 +42,13 @@ class SystemConfigReport(BaseModel):
     max_request_size_mb: int
     database_url: str
     retention_days: int
+    # Enforcement, reported separately from the configured value. The
+    # size limit was a configuration number with nothing reading it, and
+    # publishing it here implied a control that did not exist (ADR-052).
+    request_size_limit_enforced: bool = True
+    rate_limit_requests: int = 0
+    rate_limit_window_seconds: float = 0.0
+    rate_limit_enforced: bool = False
     security_boundaries: dict[str, Any]
 
 
@@ -48,6 +56,7 @@ class SystemConfigReport(BaseModel):
 def list_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
     db: Database = Depends(get_db),
+    _: object = Depends(require_admin_in_central),
 ) -> list[AuditLogItem]:
     """Retrieve chronologically ordered audit logs from the persistence store."""
     with db.get_connection() as conn:
@@ -73,6 +82,7 @@ def list_audit_logs(
 def get_system_security_config(
     config: AppConfig = Depends(get_config),
     db: Database = Depends(get_db),
+    _: object = Depends(require_admin_in_central),
 ) -> SystemConfigReport:
     """
     Inspect active system configuration and operational security boundaries.
@@ -119,6 +129,10 @@ def get_system_security_config(
         max_request_size_mb=config.max_request_size_mb,
         database_url=config.database_url,
         retention_days=config.retention_days,
+        request_size_limit_enforced=True,
+        rate_limit_requests=config.rate_limit_requests,
+        rate_limit_window_seconds=config.rate_limit_window_seconds,
+        rate_limit_enforced=config.rate_limit_requests > 0,
         security_boundaries={
             "packet_capture_in_use": packet_capture_in_use,
             "live_collector_state": collector_state,

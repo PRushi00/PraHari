@@ -14,7 +14,7 @@ a recorded run are not marked verified.
 
 ## 0.-2 Session 5 — Browser Producer, Counter Correctness, Test Isolation, DNS Claim Correction
 
-**317 backend tests + 36 frontend tests pass** (backend suite: 20.95s).
+**761 backend (Windows) + 759/2-skipped (Linux) + 46 frontend tests pass.**
 Typecheck and production build clean. Live telemetry and application-layer
 contract verified against running instances.
 
@@ -637,3 +637,1107 @@ acquisition checklist, the implemented import/audit workflow, the leakage
 controls applied automatically and those that remain the operator's
 responsibility. **No dataset was downloaded** — licence acceptance and a
 multi-gigabyte transfer are a user decision.
+
+---
+
+## Session 7 — Sensor Contract, Label Provenance, Platform Assessment
+
+**343 backend + 36 frontend tests pass.** Typecheck and production build
+clean.
+
+### Zeek / Suricata ingestion contract
+
+26 new tests (`test_network_sensor_adapters.py` 21,
+`test_sensor_ingest_roundtrip.py` 5) pin the adapter against the shapes
+those tools actually emit: both Zeek connection-id forms, the `"-"` unset
+marker, zero-valued counters, second vs millisecond timestamps, non-UTC
+offsets, IPv6, EVE `dns`/`http`/`alert` mapping, unknown fields, protocol
+passthrough, and batch reconciliation with per-record rejection reasons.
+
+Writing them surfaced four real defects.
+
+**1. A Suricata signature was stored as `dataset_ground_truth`.** An IDS
+signature is the detector's opinion, not confirmation that an attack
+occurred. A forecaster trained on it learns to predict *one detector's
+alerts* while precision and recall are reported as attack prediction. Now
+recorded as `detector_output` with a warning, and surfaced in the readiness
+report as `non_ground_truth_labelled_events` with a caveat shown on the
+forecast page.
+
+**2. `SYNTHETIC_RULE` was a silent enum alias.** It shared the string value
+`"rule_based"`, so synthetic labels were indistinguishable from locally
+derived ones in every provenance breakdown — including the experiment
+manifest, whose entire purpose is recording what a result was computed on.
+Every metric this project has produced comes from synthetic data, so this
+hid the most important caveat attached to all of them. Two existing tests
+asserted `"rule_based" in ...` under a comment reading "Provenance makes
+synthetic data obvious"; they were asserting the bug.
+
+**3. Any labelled record was rewritten to `EventType.ALERT`.** An imported
+labelled corpus would have reported as nothing but alerts. The event type
+describes what was observed; the label describes how it was annotated.
+
+**4. `or`-chain field lookups discarded recorded zeros.** `0` bytes, `0.0`
+seconds and port `0` are falsy, so they fell through to the next key and
+ended as `None` — "we measured zero" became "we measured nothing". Zeek's
+`"-"` unset marker now stays absent rather than becoming `0`.
+
+All four were **mutation-checked**: each old behaviour was reintroduced and
+the corresponding test observed to fail (4/4, then the zero-counter case
+separately after it revealed a coverage hole in the first attempt).
+
+### Platform assessment
+
+[docs/PLATFORM_SUPPORT.md](docs/PLATFORM_SUPPORT.md) records what has
+actually been executed where, and what a real network sensor deployment
+requires.
+
+A pre-existing Ubuntu 26.04 / Python 3.14.4 WSL2 environment was inspected
+**read-only** — nothing installed, nothing started:
+
+```
+python 3.14.4 on linux
+compiled 48 modules from app/
+syntax errors: 0
+```
+
+No Windows-only imports exist at module scope, and `collector.py` gates on
+`sys.platform`, reporting state `unsupported` rather than raising. The
+expected Linux behaviour is therefore: everything works except live local
+collection, which says it is unavailable.
+
+**That remains an expectation, not a result.** Nothing was imported or
+executed there, because the dependencies are not installed and installing
+software is outside the agreed boundary. Linux stays **not verified**.
+
+---
+
+## Session 8 — Telemetry Breadth, Lead Time, Measurement Integrity, Linux
+
+**394 backend (Windows) · 392 passed / 2 skipped (Linux) · 36 frontend.**
+Typecheck and production build clean. All nine pages driven in a browser.
+
+### New telemetry sources
+
+Two further unprivileged, read-only Windows sources. Neither captures
+packets, elevates, installs anything or touches network configuration.
+
+**UDP endpoint table** (`POST /hostobs/udp/poll`) — locally bound UDP
+sockets as `EventType.UDP_ENDPOINT`. These are **not conversations**: UDP
+is connectionless and Windows records no peer, so `dst_ip`/`dst_port` are
+declared **not applicable** rather than missing. Inventing a destination
+would corrupt every destination-based aggregation.
+
+Live: 41 endpoints observed, 41 normalized, 0 rejected. A second poll
+persisted 1 new socket and suppressed 40 repeats — deterministic ids work.
+
+**Interface counters** (`GET /hostobs/interfaces`) — the only genuine byte
+and packet measurement available here without packet capture. They are
+**interface-level and cumulative**, so they are served from their own
+endpoint and are never written into `normalized_events`. The payload states
+its own scope (`attributable_to_flow: false`). Deltas are offered between
+readings; across an adapter reset no delta is derived, because neither a
+negative nor a wrapped-around positive describes anything real.
+
+### Forecasting: lead time, uncertainty, a temporal model
+
+`POST /forecast/lead-time-curve` re-runs the complete protocol once per
+lead time, everything else held constant. Measured decay on synthetic
+data:
+
+| Lead | 0s | 30s | 60s | 120s | 300s |
+|---|---|---|---|---|---|
+| best PR-AUC | 0.937 | 0.886 | 0.851 | 0.745 | 0.931 |
+
+A lead whose split cannot support an honest evaluation is reported as a
+**refusal with its reason**, never omitted. The 300s rebound is a
+46-instance holdout talking, which is exactly why intervals matter.
+
+`GET /forecast/uncertainty` gives percentile bootstrap intervals, and
+**refuses** below 20 instances or 5 positives, or on a single class,
+rather than returning a narrow range computed from nothing.
+
+`temporal_window_stack` concatenates the previous `TEMPORAL_LAGS` windows,
+so order matters. Lag stacking happens **after** the split, separately per
+side — applied before, a test instance near the boundary would carry
+training-period windows in its lags and re-import the contamination the
+purge removes. It is **not** an LSTM and is not described as one.
+
+### Measurement integrity — found in a browser, not by a test
+
+Driving the dashboard against the real dataset exposed a defect no test
+had caught.
+
+The **Analytics** page showed an observation window starting **1/1/1601**,
+and **Feasibility** scored "Temporal Monotonicity & Ordering" at **100%,
+PASSED**, over a span of **13,436,268,232 seconds — about 425 years**. The
+readiness gate, over the very same dataset, correctly reported 65,260
+seconds.
+
+Three modules implemented the same timestamp rule independently. The
+adapter had it, readiness had it, the descriptive analysis had never had
+it, and feasibility inherited the broken span and awarded full marks for
+temporal integrity on a dataset whose time axis was unusable. **65 records
+in the operational database carry the FILETIME epoch.**
+
+`is_plausible_timestamp()` now lives in one place and is imported
+everywhere. The analysis excludes and counts them, the UI says so, and the
+feasibility check fails with the count named.
+
+Two related corrections:
+
+- Averages now publish their denominator. `avg_bytes` was computed over
+  200 of 3,669 records and reported beside `total_events: 3669`; the
+  dashboard disclosed it, the API did not.
+- `attack_ratio` divided 50 attack labels by 3,669 total events, giving
+  "1.4% attack" for a dataset whose labelled portion is 25% attacks. It is
+  now a fraction of the labelled population, with both counts reported.
+
+### Linux: runtime verified, and it found two portability defects
+
+Ubuntu 26.04, Python 3.14.4, dependencies in a home-directory venv — no
+system packages, no root.
+
+```
+392 passed, 2 skipped in 13.29s
+GET /health               -> 200  healthy, mode=local
+GET /collector/status     -> 200  state=unsupported, platform=Linux 6.18.33.2
+POST /hostobs/udp/poll    -> 501  unsupported_platform
+```
+
+Static analysis had said the code was portable. Running it said otherwise:
+
+1. **The platform gate refused injected sources.** `collector.py` checked
+   `sys.platform` before checking whether the caller had supplied its own
+   query function, so 12 tests failed off Windows and a legitimate
+   alternative producer would have been refused for the same wrong reason.
+   The gate now applies only to the real PowerShell path — which is still
+   refused off Windows, with a test for it.
+2. **The operational-database guards tested a substring.** They asserted
+   the database URL contained `tmp`. A throwaway database under `$HOME` is
+   isolated by any reasonable reading, and they failed. They now assert the
+   property that matters: the resolved path is not the repository's
+   `prahari.db`.
+
+### Browser verification
+
+All nine pages loaded against a copy of the real dataset, with **zero
+console errors**: Overview, Live Telemetry, CSV Import, Stream & Replay,
+Events Explorer, Analytics, Feasibility, Threat Forecasting, Audit &
+Security. No blank pages, no `toFixed` crash, navigation between all pages
+without reload.
+
+### Docker
+
+**Not verified.** Docker is not installed on this host and installing it is
+outside the agreed boundary.
+
+---
+
+## Session 9 — LSTM, Generalization, Container Hardening
+
+**442 backend (Windows) · 440 passed / 2 skipped (Linux) · 42 frontend.**
+Typecheck and production build clean.
+
+Two Definition-of-Done items moved to MET. The only remaining PARTIALs
+(3 and 7) are blocked on an external dataset and an authorised network
+segment, not on implementation.
+
+### The LSTM, built and verified
+
+`models/lstm_forecaster.py` — single-layer LSTM with a sigmoid read-out,
+backpropagation through time with Adam, in **NumPy**. No new dependency:
+PyTorch would be a large install outside the agreed boundary for a model
+operating on a few hundred sequences of four timesteps.
+
+Because it is hand-written, correctness is demonstrated rather than
+assumed. A subtly wrong BPTT pass still produces a plausible loss curve.
+
+| Check | Result |
+|---|---|
+| Analytic gradients vs central finite differences | worst relative error **1.3e-07** |
+| Memory: label visible only at timestep 0 | **100%** holdout accuracy |
+| Same task, memoryless model | **below 0.70** — the task really does need memory |
+
+**The result is negative and is reported as such.** On 900 synthetic
+events the LSTM scores PR-AUC **0.751** — the worst of the four
+non-baseline models, below logistic regression. It has not been promoted,
+hidden, or re-tuned until it wins.
+
+### Generalization
+
+`POST /forecast/generalization` — leave-one-group-out transfer, with the
+within-group score computed beside it so the gap is readable. A
+cross-group number alone is not interpretable: 0.6 might be a collapse
+from 0.95 or a rise from 0.5.
+
+Measured across two synthetic environments:
+
+| Held out | Model | Cross-group | Within-group | Gap |
+|---|---|---|---|---|
+| env_a | `lstm_forecaster` | 0.716 | 0.841 | 0.126 |
+| env_b | `temporal_window_stack` | **0.494** | 0.688 | 0.194 |
+
+Mean transfer gap **0.16 PR-AUC**. On env_b performance falls to barely
+above its own positive rate.
+
+The report sets `independent_environments: false` and warns explicitly:
+both groups come from the same generator, so this measures the
+generator's consistency, not the model's generality. A real claim needs
+environments collected separately.
+
+### Model comparison, with intervals
+
+| Model | Precision | Recall | PR-AUC | 95% CI |
+|---|---|---|---|---|
+| `baseline_constant` | 0.000 | 0.000 | 0.577 | — |
+| `baseline_threshold` | 0.757 | 0.933 | 0.701 | — |
+| `logistic_regression` | 0.909 | 0.667 | 0.836 | — |
+| `random_forest_forecaster` | 0.808 | 0.700 | 0.865 | [0.750, 0.950] |
+| `temporal_window_stack` | 0.917 | 0.733 | **0.886** | [0.776, 0.965] |
+| `lstm_forecaster` | 0.647 | 0.733 | 0.751 | [0.596, 0.891] |
+
+170 instances · 109 train / 52 test · 9 purged · 30 test positives.
+
+**The intervals overlap heavily.** On ~50 held-out instances this
+evaluation cannot distinguish the top three models, and no claim that one
+beats another is supported.
+
+### Container configuration
+
+**A real disclosure defect.** There was no `.dockerignore`, so every
+`docker build` with `context: .` would send the **entire repository** to
+the Docker daemon — including `prahari.db`, two megabytes of genuine local
+network telemetry, plus `.git` and anything under `secrets/`. The `COPY`
+instructions are narrow so none of it reaches the image, but a build
+context is transferred in full, is recoverable from the daemon, and is
+routinely captured in CI logs. "Not in the image" is not "not sent".
+
+Docker is not installed here, so the configuration is validated
+**statically**: 18 tests assert the ignore coverage, that the Dockerfile's
+`/frontend/dist` target matches the path `main.py` actually resolves, that
+the database URL has four slashes (three would put telemetry in the
+container's ephemeral layer), that the runtime user owns `/data`, that the
+published port is loopback-only, and that no credential material is baked
+into a layer.
+
+**This is not a runtime check.** The image has never been built here.
+
+### Dashboard: a fabricated "best model" badge
+
+The forecasting table marked `random_forest_forecaster` as best with a
+hardcoded string comparison, whatever the evaluation returned. With six
+models it frequently sat on the second-best. `bestModelId()` now derives
+it from the measured PR-AUC, excludes baselines, and returns nothing
+rather than falling back to a default.
+
+---
+
+## Session 11 — Closing the Rehearsal Findings
+
+**554 backend (Windows) · 552 passed / 2 skipped (Linux) · 46 frontend.**
+
+The synthetic rehearsal left two issues open. Both were results that were
+arithmetically correct and misleading to read; neither is fixed by changing
+a metric.
+
+### Window truncation is now structured state
+
+`WindowingReport` gains `windows_limit`, `windows_eligible`,
+`windows_considered`, `windows_omitted` and `windows_truncated`.
+`windows_eligible` is computed from the same bound the loop uses, so it is
+derived rather than estimated.
+
+| | Complete run | Truncated run |
+|---|---|---|
+| `windows_eligible` | 389 | 143,751 |
+| `windows_considered` | 389 | 20,000 |
+| `windows_generated` | 389 | 332 |
+| `windows_omitted` | 0 | **123,751** |
+| `windows_truncated` | `false` | **`true`** |
+
+The three counts are genuinely distinct: in the truncated run only 332
+instances were emitted from 20,000 examined windows, because the rest
+failed the negative-label validity rules rather than the cap.
+
+`require_complete_windowing=True` raises `WindowCoverageIncomplete` with
+the partial report attached. Kept deliberately separate from
+`SelectionCoverage.truncated`, which reports a **record**-count cap.
+
+### Degeneracy is reported apart from computability and adequacy
+
+`metrics_interpretable` asked one question and was read as answering three.
+A constant predictor scored precision = base rate, recall = 1.0, and was
+flagged interpretable.
+
+| Field | Degenerate model | Discriminating model |
+|---|---|---|
+| `precision` / `recall` | 0.300 / 1.000 | 1.000 / 1.000 |
+| `pr_auc` vs `no_skill_pr_auc` | 0.300 vs **0.300** | 1.000 vs 0.300 |
+| `predicted_negative_count` | **0** | 28 |
+| `distinct_score_count` | **1** | 40 |
+| `predictions_degenerate` | **true** | false |
+| `discrimination_demonstrated` | **false** | true |
+
+Metrics are preserved, never blanked — a degenerate model's precision is a
+real number about a real prediction. `no_skill_pr_auc` is the positive base
+rate, the principled reference for PR-AUC rather than an arbitrary cutoff.
+`discrimination_demonstrated=True` means "better than chance on this
+sample", not "a useful model".
+
+The dashboard shows `Degenerate`, `No skill` and `Inconclusive` badges, and
+`bestModelId()` refuses to crown a model that demonstrated nothing.
+
+### Rehearsal count correction
+
+The previous report's headline, "45 of 46 checks passed", was wrong in both
+numbers. The scripts printed `{'PASS': 37}` (phases 3–5) and
+`{'PASS': 7, 'NOT VERIFIED': 1}` (phase 6). The correct total is
+**44 of 45 passed, 1 NOT VERIFIED** — and that one NOT VERIFIED is the
+window-truncation gap closed above.
+
+---
+
+## Session 12 — Time-Indexed Window Extraction
+
+**569 backend (Windows) · 567 passed / 2 skipped (Linux) · 46 frontend.**
+
+`build_dataset_instances` re-scanned every event twice per window. Replaced
+with binary-search interval boundaries and label prefix sums. Pure
+performance work: semantics are unchanged and were proved unchanged before
+adoption.
+
+### Measured (best of 3, synthetic fixtures)
+
+| events | windows | reference | optimized | speedup |
+|---|---|---|---|---|
+| 500 | 989 | 37 ms | 4 ms | 8.9x |
+| 1,000 | 1,989 | 133 ms | 9 ms | 14.8x |
+| 2,000 | 3,989 | 499 ms | 17 ms | 30.3x |
+| 4,000 | 7,989 | 2,157 ms | 37 ms | 57.7x |
+| 8,000 | 15,989 | 10,541 ms | 75 ms | **140.8x** |
+
+Growth from 500 to 2,000 events: **13.5x before, 4.0x after** — now
+tracking the event count rather than compounding with window count.
+
+Rejection-heavy corpus (20,000 windows examined, 332 emitted): 743 ms to
+31 ms, 24x. That path gained most because the old code materialised both
+intervals before discovering the horizon was empty.
+
+Peak traced memory 4.68 to 4.96 MiB at 4,000 events — two integer prefix
+arrays of length n+1.
+
+### Equivalence evidence
+
+A snapshot of the pre-edit module was imported alongside the new one and
+both run in a single process against identical inputs: **88 fixture-by-
+configuration pairs** across 11 fixtures (dense, sparse, multi-host,
+boundary-aligned, missing labels, single-class, empty, one-event,
+duplicate timestamps, implausible timestamps, rescaled) and 8
+configurations. Features, labels, observation masks, timestamps, all 27
+report counters and every note matched exactly. Separately verified below,
+exactly at, and over the window cap, and that `require_complete_windowing`
+still refuses with the partial report attached.
+
+15 permanent regression tests cover the properties that could have broken:
+half-open boundaries, tie ordering, prefix-sum label agreement with a
+direct scan, counter ordering, and determinism under shuffled input.
+
+### Deliberately unchanged
+
+- Observation features are still computed exactly per window. Distinct
+  IP/port counts cannot be maintained incrementally across a sliding
+  window without a multiset, and with stride ≠ window size the windows do
+  not nest. Correctness kept, cost accepted.
+- `MAX_WINDOWS` unchanged — raising it would hide the limit, not fix it.
+- `windows_with_attack_in_observation` still counts windows later rejected.
+
+### Noted, not changed
+
+With no generated windows the function returns shape `(0,)` while the
+early-return paths return `(0, n_features)`. Pre-existing, harmless (the
+pipeline refuses fewer than four instances before any model sees it), and
+out of scope for a performance change. Recorded in the test rather than
+quietly fixed.
+
+---
+
+## Session 13 — Research Readiness Audit
+
+**649 passed / 6 skipped (Windows) · 647 passed / 8 skipped (Linux) · 46 frontend.**
+
+Two correctness fixes, a permanent equivalence harness, and a capability
+audit. No architecture changed.
+
+### Empty-dataset shape (ADR-042)
+
+`build_dataset_instances` returned `(0, n_features)` from its early exits
+and `(0,)` when the loop ran but emitted nothing. `stack_lagged_windows`
+reads `X.shape[1]` — an IndexError on the first form, unreachable only
+because the pipeline refuses fewer than four instances first. All three
+paths now return `(0, len(FEATURE_NAMES))` float32 via one helper.
+
+### Coverage counters that could not add up (ADR-042)
+
+Writing the regression test exposed a second defect: on a 400-event
+unlabelled corpus the report showed **124 windows considered and 130
+excluded**. The event-count fallback incremented rejection counters without
+incrementing `windows_considered`, while `windows_generated` already
+included fallback output. Both the identity
+`considered == generated + rejected` and the ordering
+`eligible >= considered >= generated` now hold on every path, with
+`fallback_chunks_considered` / `fallback_chunks_excluded` keeping the two
+populations distinguishable.
+
+### `duplicate_rows_exact` was dead (ADR-043)
+
+Identity is `sha256(file_sha | row_index | content)`, so two rows in one
+file can never collide — the counter was permanently zero. It now counts
+rows whose **raw text repeats**, a documented CICFlowMeter artefact.
+`near_duplicate_flows` keeps the looser canonical-field meaning. Neither
+filters: both rows are stored.
+
+### Permanent equivalence harness
+
+`tests/unit/test_window_equivalence.py` compares the index-based extractor
+against a **naive linear-scan reference written inline in the test tree** —
+not a copy of the production algorithm, and not a git snapshot. 8 fixtures
+x 8 configurations; **63 passed, 6 skipped** (the skips take the rescaling
+or fallback path, which the reference deliberately does not reimplement,
+and are reported rather than hidden).
+
+The earlier 88-pair snapshot comparison was re-run after these changes:
+**exactly 14 differences, all intended** — 8 shape changes on the
+`one_event` fixture, 6 fallback-counter changes on three fixtures. The
+other 74 pairs are byte-identical.
+
+### Capability audit
+
+[docs/MULTI_SYSTEM_CAPABILITY.md](docs/MULTI_SYSTEM_CAPABILITY.md) traces
+multi-system monitoring through code, tests and configuration. The
+blocking findings: the collector is a **process-global singleton**
+(`collector.py:558`), so one backend process collects for one source;
+there is **no cross-source correlation** anywhere; **no Linux collector**;
+and **no backpressure or rate limiting**. No live network sensor has ever
+produced data into PraHari.
+
+---
+
+## Session 14 — Closeout Verification
+
+**729 passed, 0 skipped (Windows) · 727 passed / 2 skipped (Linux) · 46 frontend.**
+
+Verifying the previous session's changes found two further defects, both
+inside the region the equivalence harness had been skipping.
+
+### The skips were hiding the defects
+
+The harness skipped any combination that took the rescaling or fallback
+path — 6 of 64. Investigating them:
+
+- **4 were rescaling-only** and perfectly testable; the skip was
+  over-broad. Removing it exposed an off-by-one.
+- **2 were fallback**, which the reference did not implement. Mirroring it
+  exposed an inverted control.
+
+The harness now runs **143 tests with zero skips**.
+
+### Reported configuration did not describe the run (ADR-044)
+
+`WindowingReport` stored effective W/L/H/S rounded to three decimals while
+the loop used the unrounded floats. On a rescaled fixture, re-deriving the
+window count from the report gave 40 where the run produced 39. Small
+number, but it violates the project's central claim — that an evaluation
+is reproducible from its recorded parameters. Rounding now happens once,
+before the loop.
+
+### An ongoing-attack control that produced its own opposite (ADR-045)
+
+`exclude_ongoing_attack_windows=True` drops windows whose observation
+period already contains an attack. On a dense-attack dataset it drops
+*every* candidate, which empties the window list and triggers the
+event-count fallback — which did not check the flag.
+
+| run | rows | fallback | instances with attack in observation |
+|---|---|---|---|
+| `exclude=False` | 10 | no | 10 |
+| `exclude=True` | 7 | **yes** | **7 — all of them** |
+
+The caller asked for clean pre-attack instances and received a dataset
+where every instance had an attack underway, while
+`windows_excluded_ongoing_attack` reported the control as having worked.
+Worse than the flag doing nothing, because the report corroborated the
+wrong answer.
+
+After the fix the same fixture yields **0 rows** with the mask summing to
+zero — the honest answer for a dataset with no clean pre-attack window.
+
+### Counter invariants now hold universally
+
+Across all 64 fixture-by-configuration combinations, including rescaling
+and fallback paths:
+
+```
+eligible >= considered >= generated
+omitted  == eligible - considered
+considered == generated + rejected
+```
+
+No exception is required. Asserted permanently in
+`test_coverage_invariants_hold_on_every_path`.
+
+### Snapshot comparison
+
+17 differences across 88 pairs against the pre-change snapshot, **all
+intended**: 13 empty-shape changes, 2 window counts from the rounding fix,
+4 `windows_eligible` from the rounding fix, 3 emptied datasets from the
+exclusion fix.
+
+### Next phase
+
+[docs/NEXT_PHASE_MULTI_SOURCE.md](docs/NEXT_PHASE_MULTI_SOURCE.md) — an
+evidence-backed starting specification, not implemented. Top priority is
+**clock-skew estimation**, because every window, split and purge depends
+on timeline order and nothing currently detects a wrong clock.
+
+---
+
+## Session 15 — Clock Integrity and Source Health
+
+**761 passed (Windows) · 759 passed / 2 skipped (Linux) · 46 frontend.**
+
+### The plan's first priority could not be delivered as specified
+
+Inspecting the schema before designing changed the answer. **PraHari has no
+reference clock**, so clock skew cannot be measured. Two timestamps exist —
+`observed_at` (source event time) and `ingested_at` (set at object
+construction in the backend) — and no monotonic clock, sequence number or
+round-trip measurement exists anywhere.
+
+Their difference is the **ingest lag**: clock offset plus collection,
+transport, queueing and processing delay, inseparably. Reporting it as skew
+would attribute all of it to one cause the data cannot isolate.
+
+`GET /sources/clock-integrity` therefore reports ingest lag, named as such.
+One rigorous inference is drawn: delay cannot be negative, so a negative
+lag of δ proves the source clock leads this host's by **at least** δ — a
+bound, not an estimate. A positive lag supports no skew claim however
+large, and the response states that.
+
+Live-verified on a temporary database: a source with a −90s lag reports
+`source_clock_ahead` with `bound=90.0`; a normal source reports
+`no_anomaly_detected` with `bound=None`.
+
+### Source health, and why it is the same problem
+
+`GET /sources/health` classifies each source. The finding that shaped it:
+`last_event_at` is max(`observed_at`) — **event time**. A source whose
+clock runs fast looks fresher than it is and can appear healthy while
+silent; a slow clock reads as stale while reporting normally.
+
+`SILENT` never means disconnected, `NEVER_SEEN` is distinct from it, a
+recorded error outranks apparent freshness, and a future `last_event_at`
+yields `UNKNOWN`. No heartbeat was fabricated.
+
+### A defect found by driving the endpoint, not by a test
+
+The ordering check walked the supplied event order, but
+`Database.list_events` returns `ORDER BY observed_at DESC` — so every
+well-behaved source was reported as a continuous backward march. Ordering
+is now assessed by arrival (`ingested_at`), with bulk-insert ties excluded.
+Two regression tests pin it, one explicitly feeding the list in reverse.
+
+### Not implemented, deliberately
+
+Collector registry, enrollment, Linux adapter. The architecture question —
+central supervision versus per-endpoint agents — is still unresolved and
+gates the registry.
+
+---
+
+## Session 16 — Server-Receipt Timestamps
+
+**782 passed (Windows) · 780 passed / 2 skipped (Linux) · 46 frontend.**
+Typecheck and production build clean. Both operational databases byte-for-byte
+unchanged (hashes recorded below).
+
+### The Phase 1 blocker, closed
+
+Phase 1 ended with one outstanding requirement: a receiver-side timestamp on
+the ingest path, without which a consistently offset clock is undetectable.
+`received_at` now provides it — but only where a receipt genuinely exists.
+
+Tracing every caller of `insert_events` found six paths and two situations:
+
+| Path | Receipt recorded |
+|---|---|
+| `POST /stream/ingest/ndjson` | **yes** — stamped at the API boundary |
+| `POST /applayer/ingest` | **yes** — same |
+| Windows collector poll, UDP endpoint poll | no — the backend produced the event |
+| CSV import, research import | no — the *file* arrived now, the events did not |
+| Synthetic replay | no — generated |
+
+`NULL` means "not measured" and is never backfilled. The capture happens
+**before** parsing, so a large batch cannot push the recorded arrival later
+than the real one, and every event in one submission shares one receipt.
+
+The client cannot supply it: no request model carries the field, and
+`test_the_client_cannot_supply_or_influence_the_receipt` submits one in the
+body and asserts it is discarded.
+
+### What the diagnostics do with it
+
+`GET /sources/clock-integrity` now reports which reference each lag was
+measured against (`received_at` / `ingested_at` / `mixed` / `none`). The
+lower bound and the `SOURCE_CLOCK_AHEAD` verdict are asserted **only** on a
+measured receipt — an `ingested_at` lag no longer supports either.
+
+`GET /sources/health` prefers a measured receipt over event time, and reports
+`clock_dependent: false` when it does. The Phase 1 failure is pinned by
+`test_health_prefers_a_measured_receipt_over_a_skewed_event_time`: a source
+claiming an event five seconds ago, last actually heard from three days ago,
+now reports `SILENT` rather than `REPORTING`.
+
+### A finding recorded rather than fixed
+
+`/stream/ingest/ndjson` is **not idempotent**. The adapter assigns
+`uuid.uuid4()` per row (`adapters/json_stream.py:319`), so a sensor retrying
+after a timeout double-counts its own telemetry. The research importer and
+the Windows collector derive deterministic ids and are idempotent; this path
+is the exception.
+
+A retry test was originally written assuming idempotency and failed. The
+behaviour was not quietly adjusted to match the test: the test was rewritten
+to assert what the code actually does, and
+`test_the_stream_path_is_not_idempotent_on_retry` now pins the defect with
+its consequence stated. Changing event identity on a live ingestion route is
+the recommended next phase.
+
+### Migration
+
+A nullable additive column via the existing `_ADDED_COLUMNS` mechanism.
+Tested on a temporary database whose legacy schema is derived from the real
+`TABLES_DDL` with the `received_at` lines removed — an earlier hand-written
+minimal fixture passed while omitting the indexes, which hid the real
+`ALTER TABLE` path. Neither project database was opened for writing;
+`prahari.db` (2,129,920 bytes, sha256 `51d80b91…c69fa`) and
+`backend/prahari.db` (184,320 bytes, sha256 `1c9c71f1…a3b6275`) are identical
+to their pre-session hashes.
+
+### What this does not establish
+
+A measured receipt proves this backend received data at time T. It does not
+prove the endpoint is connected, running or healthy, and it does not yield
+exact clock skew — the common failure, a steadily offset clock producing a
+steadily offset *positive* lag, is still undetectable. No heartbeat exists,
+so a silent source remains indistinguishable from a healthy one with nothing
+to report. Receipts exist only for events arriving after this change.
+
+---
+
+## Session 17 — Stream Event Identity, and an Audit of It
+
+**815 passed (Windows) · 46 frontend.** Typecheck and production build clean.
+Both operational databases byte-for-byte unchanged.
+
+Phase 3 delivered the identity protocol; this session audited it against the
+code rather than against its own report, and three things did not hold.
+
+### Defect 1 — the conflict check ignored most of the event
+
+`insert_events` compared `source_id`, `observed_at` and the five-tuple, and
+nothing else. Measured directly against a temporary database before any fix:
+
+| Mutation under a re-used `event_id` | Result |
+|---|---|
+| `bytes_total` 100 → 999999 | HTTP 200, `accepted_records=1`, stored row unchanged |
+| `packets` 2 → 50000 | HTTP 200, `accepted_records=1`, stored row unchanged |
+| `duration` 1.5 → 987.0 | HTTP 200, `accepted_records=1`, stored row unchanged |
+| `event_type` flow → alert | HTTP 200, `accepted_records=1`, stored row unchanged |
+| `label` none → "DDoS" | HTTP 200, `accepted_records=1`, stored row unchanged |
+
+So the two things a forecaster actually consumes — the measurements and the
+training target — could be replaced under an existing identity and the API
+would report success while discarding them.
+
+`CONFLICT_FIELDS` now compares all twenty fields that assert something about
+the observation, and `CONFLICT_FIELDS_EXCLUDED` names the six that are not
+compared with a reason for each. The same five mutations now return **409**
+naming the differing field. Seven parametrized regression tests pin them.
+
+### Defect 2 — the response could not distinguish stored from parsed
+
+`insert_events` returns the number of rows written; the endpoint discarded
+it. A complete retry reported `accepted_records=N` exactly as a first
+delivery did. `ImportSummary` now also carries `stored_records` and
+`duplicate_records` — optional, `None` on paths that do not report storage,
+and not persisted, so no migration.
+
+### Defect 3 — a 409 left no trace
+
+The conflict path raised before any audit write, so a refused batch was
+indistinguishable from a request that never arrived. It now logs
+`ingest_ndjson_stream_conflict` before raising.
+
+### Verified, not assumed
+
+- **Batch rollback**: `get_connection` rolls back on any exception, so a
+  conflict anywhere in a batch discards the whole batch. One good record
+  plus one conflicting record stores nothing.
+- **Batch-key boundaries**: the key binds `(key, index)`, not the batch.
+  Reordering conflicts; a *shorter* retry is accepted and the missing tail
+  is **not** detected. Both are tested and documented rather than claimed
+  away — see ADR-050.
+- **Legacy senders still double-count.** `test_the_stream_path_is_not_
+  idempotent_on_retry` still passes, and its docstring was corrected: it had
+  described the defect as unfixed generally, when Phase 3 fixed it for
+  senders that supply identity and deliberately left it for those that do
+  not. Closing it for them would require content equality, which would
+  collapse genuinely distinct events.
+
+### Not claimed
+
+Not exactly-once delivery. A sender that invents a fresh identifier for an
+event it already sent is undetectable, and nothing here makes a legacy
+sensor retry-safe.
+
+---
+
+## Session 18 — The Ingestion Trust Boundary
+
+**844 passed (Windows) · 46 frontend.** Typecheck and production build clean.
+Both operational databases byte-for-byte unchanged.
+
+### The gap
+
+Central mode had credentials, hashing, roles, constant-time comparison and
+default-deny middleware. None of it reached ingestion. One grep:
+
+```
+grep -rn "scope_source|require_principal|require_admin" app/api/v1/
+  app/api/v1/events.py  ->  scope_source
+```
+
+One read path. Every write path trusted the request body's `source_id`.
+`Principal.may_write()` and `require_admin` were both defined and called
+nowhere.
+
+Measured with enforcement removed under a monkeypatch: a credential for
+`sensor-a` posting `{"source_id": "sensor-b"}` returns **HTTP 200** and one
+event appears under `sensor-b`. Because ADR-050 scopes event identity by
+source, the claimed id also selected another source's **idempotency
+namespace**.
+
+### Closed
+
+`resolve_ingest_source` is now the single ingestion boundary, called before
+parsing on all six write paths. Everything downstream — adapter id,
+idempotency namespace, `event.source_id`, source registration, audit — comes
+from its return value. Impersonation is refused with 403, not rewritten;
+`read_only` cannot write; an admin must name the source it acts for; local
+mode is unchanged.
+
+### A second bypass, found by a bad test
+
+The first admin test asked for `/audit/events`, which 404s, and passed
+without reaching any authorization check. Pointed at the real `/audit/logs`,
+an **ingest credential read the audit log** — contradicting `security.py`'s
+own stated guarantee. Both audit routes now depend on
+`require_admin_in_central`.
+
+Two other tests in the new file were also passing vacuously (a 422 from a
+malformed app-layer payload that never reached the boundary). Both were
+rebuilt to reach the code under test.
+
+### Not built, deliberately
+
+No HTTP enrollment route: `CredentialStore` is never written at runtime, and
+a minting endpoint would let a stolen admin token issue ingest credentials
+remotely. Enrollment stays in the existing offline CLI. No schema change, no
+migration, no credential fabricated for any existing source or event.
+
+### Not claimed
+
+Not cryptographic source authenticity — these are bearer tokens, and central
+mode must sit behind HTTPS. No expiry or rotation exists; revocation means
+editing the credential file and restarting. A stolen sensor credential still
+writes freely as that sensor. `source_id` on a stored row means "filed
+under", never "proved to originate from".
+
+---
+
+## Session 19 — Blueprint Audit, Enforced Limits, Linux Host Telemetry
+
+**889 passed / 4 skipped (Windows) · 46 frontend.** Typecheck and build clean.
+
+Audited all 19 blueprint sections against code rather than against earlier
+reports. Full result in [REQUIREMENTS_MATRIX.md](docs/REQUIREMENTS_MATRIX.md).
+Three things were worth implementing; the rest is either done, blocked by the
+standing safety boundary, or recorded as not attempted.
+
+### A database I should not have touched
+
+While probing a URL-routing question I ran an ad-hoc script that imported
+`app.main.app` **without overriding `get_db`**. Its lifespan opened the
+operational `prahari.db` at the repository root and applied the pending
+additive migration.
+
+`prahari.db` sha256 changed `51d80b91…c69fa` → `bb0e74d5…aacf90`. Inspected
+read-only afterwards: the change is exactly the ADR-048 `received_at` column
+(26 columns now), **all values NULL**, 3,669 event rows intact, all 7 tables
+present with their counts. No row was modified, no data lost, nothing
+fabricated. `backend/prahari.db` is untouched.
+
+Not reverted: undoing an `ALTER TABLE ADD COLUMN` in SQLite requires
+rebuilding the table, which is far riskier than the additive column it would
+remove. Reported rather than quietly restored.
+
+### Two controls that were configuration, not behaviour
+
+`max_request_size_mb` had existed since the first schema, was published by
+`/audit/config` as a security boundary, and **was read by nothing** — a body
+of any size was buffered before a validator ran. Rate limiting did not exist
+at all, though §4.2 lists "rate" among what central ingestion must validate.
+
+This is the third instance of one defect class: ADR-051 found `may_write`
+and `require_admin` defined and never called. A control that exists as a
+value while a diagnostic reports it as enforced.
+
+`app/api/limits.py` adds both, failing closed at the boundary, ordered
+`CORS → size limit → auth → rate limit → route` so an oversized body costs
+no PBKDF2 and the limiter can still key on the credential. `/audit/config`
+now reports *enforcement* separately from the configured numbers. See
+ADR-052, including the limits: per-process counter, 2x burst at a window
+boundary, and unauthenticated floods still reaching the credential check.
+
+### Linux host telemetry
+
+The blueprint names Windows and Linux as initial targets; only Windows had a
+host adapter. The service turned out to be platform-neutral already — the
+only Windows-specific parts were the default query function and one
+`sys.platform` gate — so this was an adapter gap, not a rewrite.
+
+`linux_telemetry.py` reads `/proc/net/tcp` and `/proc/net/tcp6` directly and
+emits the **same raw record shape**, so the collector, normalization and the
+deterministic event id are the same code on both platforms. Verified by
+driving a Linux-produced record through `WindowsConnectionAdapter` and
+asserting a stable identity across two polls.
+
+**Not claimed**: it has not been run against a live Linux host this session.
+The four tests that need one, or need POSIX symlinks, are skipped on Windows
+and report as skipped rather than vanishing from the count.
+
+### Still the honest headline
+
+The engineering contract is largely met. The scientific one is not: no
+labelled corpus can be acquired under the standing constraints, so no metric
+in this repository is evidence of predictive performance on real traffic.
+
+---
+
+## Session 20 — Database Integrity, Credential Lifecycle, Limit Enforcement
+
+**926 passed / 4 skipped (Windows) · 46 frontend.** Typecheck and build clean.
+
+### Database incident: investigated, not reversed
+
+Read-only forensics on the `prahari.db` change reported in Session 19.
+`backend/prahari.db` turned out to be a decisive control — same codebase,
+never started from the repository root, 7 tables, 9 indexes, and **exactly
+one fewer column** (25 vs 26).
+
+| Check | `prahari.db` | control |
+|---|---|---|
+| integrity_check / foreign_key_check | ok / 0 | ok / 0 |
+| tables / indexes | 7 / 9 | 7 / 9 |
+| `normalized_events` columns | 26 | 25 |
+| `received_at` | present, **all NULL** | absent |
+| event rows | 3,669 | 187 |
+| newest `ingested_at` | 2026-10-12 | 2026-10-11 |
+
+The newest event predates the 16 October incident by four days, so **no
+rows were written**. **No backup exists** anywhere in the repository, so
+restoration was never available. Not reversed: undoing
+`ALTER TABLE ADD COLUMN` means rebuilding a 3,669-row table with no backup
+to remove an empty nullable column the code already expects. See ADR-054.
+
+Root cause was **not** the test suite — `conftest.py` has always redirected
+`PRAHARI_DATABASE_URL` to a temp directory, and all 926 tests pass with the
+new guard, which proves every one was already isolated. The hole was an
+ad-hoc, non-pytest process: `database_url` is relative, so the working
+directory silently decides which real database gets opened.
+
+`app/storage/guard.py` now refuses, under pytest, to initialize any
+database outside a temporary directory, and a migration against a
+populated table logs at WARNING rather than INFO. 13 tests, including one
+that drives the exact incident shape and asserts it is refused.
+
+### Credential lifecycle
+
+`enabled` was the only control, and a running process honoured a change to
+it only after a restart. Added `not_after` expiry (None means "never", so
+existing stores are unaffected; an unparseable value counts as expired),
+rotation that **preserves `source_id`** so a rotated secret stays in the
+same idempotency namespace, and revocation that takes effect on the next
+request because the store re-reads its file when it changes.
+
+A corrupt or emptied credential file is refused rather than applied — an
+operator who breaks the file must not lock out the fleet. Unknown,
+disabled, revoked and expired share one message, pinned by a test
+asserting the set of four wordings has one element. 24 tests. ADR-055.
+
+### A third unenforced config value
+
+The regression sweep for "declared but not wired" found
+`max_import_records`: the request model carried its own hard-coded ceiling,
+so lowering the operator's policy did nothing. The effective limit is now
+the lower of the two. This is the same class as `max_request_size_mb`
+(Session 19) and `may_write` / `require_admin` (ADR-051) — the fourth
+instance, and worth watching for as a pattern rather than a coincidence.
+
+Also swept and found clean: no ingestion route lacks the identity boundary
+(`hostobs` uses a server-side constant, not client input), and every auth
+helper except `may_access_source` is called at an enforcement point.
+`may_access_source` is a predicate superseded by `assert_source_access`.
+
+### Unchanged
+
+The scientific position. No labelled corpus can be acquired under the
+standing constraints, so no metric here is evidence of predictive
+performance on real traffic.
+
+---
+
+## Session 21 — Admission Control, System Health, NetFlow
+
+**981 passed / 4 skipped (backend) · 54 passed (frontend).** Typecheck and
+production build clean. Both protected databases unchanged.
+
+Closed three of the five items that had stood at FAIL.
+
+### Bounded ingestion (§4.2, §6) — admission control, not a queue
+
+Ingestion is synchronous end to end, and the response reports what was
+*stored*. A queue would answer the caller before the data is durable and
+break `stored_records`, the 409 conflict and atomic rollback at once.
+
+`AdmissionController` caps concurrent in-flight ingestion instead,
+reserving a slot **before parsing** and refusing with 503 + `Retry-After`
+when saturated. Released by a context manager, so a 409 cannot leak
+capacity — pinned by a test.
+
+`queue_depth` is reported as **null with a note**, never 0: zero would
+assert an empty queue, null says there is none. 24 tests.
+
+### System Health view (§11) — `GET /system/health` plus the React page
+
+One response carrying ingestion counters and latency percentiles, source
+freshness with its basis, storage integrity and migration state, model
+availability, adapter health, and every limit **with its enforcement
+state**. The page renders unmeasured values as "not measured", and drops
+the previous reading when a refresh fails rather than leaving a stale
+number under a fresh timestamp. 8 frontend tests.
+
+### NetFlow / IPFIX adapter (§5)
+
+Parses exported flow text — nfdump, SiLK rwcut, YAF, collector CSV — into
+canonical events, with deterministic identity so re-importing overlapping
+files does not duplicate. It does **not** open a collector port or speak
+the binary protocol, and says so: it ingests what an authorized collector
+exported, and is not itself a collector. 30 tests.
+
+Three semantics handled explicitly because they are routinely got wrong:
+directional counters are summed only when both directions are present and
+flagged otherwise; `observed_at` is the flow START, not its end; an
+unparseable timestamp returns None rather than `now`.
+
+### Caught by existing tests, not by me
+
+`test_frontend_api_contract.py` failed on the two new TypeScript
+interfaces, exactly as designed — it refuses any interface that is neither
+paired with a backend schema nor declared view-model-only. Both are now
+paired, so the System Health contract cannot drift silently.
+
+One System Health test also failed only in the full suite: it asserted an
+empty model registry, which is a process-wide singleton another test had
+populated. The assertion was wrong, not the code — it now checks the
+invariant that actually matters, that `inference_available` tracks
+`model_count`.
+
+### Still open
+
+Sensor forwarding agent and source/retention administration UI remain
+FAIL. Real-data evaluation, live sensor integration and Linux execution
+remain BLOCKED on authorization or an environment, not on code.
+
+---
+
+## Session 22 — Sensor Agent, Source and Retention Administration
+
+**1070 backend passed / 4 skipped · 67 frontend passed.** Typecheck and
+production build clean. Both protected databases unchanged.
+
+The two items that had stood at FAIL are closed.
+
+### Sensor forwarding agent (§4.2, §13)
+
+`app/agents/sensor_agent.py` — bounded in-memory buffer, finite timeouts,
+bounded exponential backoff with jitter, `Retry-After` honoured, and a
+hard distinction between transient failures (retried) and permanent ones
+(400/401/403/409/413 — dropped with a counted reason, because resending
+the same bytes is a loop).
+
+It reuses the existing contracts: the real ingestion endpoint, the bearer
+credential model, and deterministic event identity plus a batch
+idempotency key derived from the event ids so a resend presents the same
+key. The transport is stdlib `urllib` — an agent is the component most
+likely to run where nothing is installed — and is injectable so no test
+opens a socket.
+
+**52 tests**, including five end to end against a genuine in-process
+PraHari on a temporary database. The resend case is the one that matters:
+four events sent twice return `stored=0, duplicates=4` and the row count
+stays at four.
+
+Stated rather than implied: **at-least-once delivery with server-side
+deduplication, not exactly-once**, and unacknowledged events are lost if
+the process is killed. `health()` carries both sentences.
+
+### Source and retention administration (§11)
+
+Two operations that did not exist:
+
+* `PATCH /sources/{id}/enabled` — admin-gated, audited, 404 on unknown.
+  Writes only the `enabled` column, so counters and last-event time
+  survive the toggle.
+* `PUT /retention/policy` — admin-gated, audited, validated server side.
+
+Retention was read-only from `AppConfig`. Rather than a second policy
+store, a `system_settings` table holds an **override** of that default,
+and every response reports `retention_days`, `origin` and
+`configured_default` together so nobody has to guess which won. An
+unreadable or out-of-range stored override falls back to the default, not
+to zero — guessing could shorten retention, the direction that destroys
+data.
+
+**The rule the feature rests on: changing the policy deletes nothing.**
+Pruning still needs the separate confirmed enforcement call. Asserted by a
+test that sets retention to one day and checks the row count is unchanged.
+
+`AdministrationPage.tsx` is wired to those endpoints, not a mockup. Every
+mutation re-reads from the server rather than patching optimistically, so
+the UI cannot report a success the backend never gave — pinned by a test
+that rejects the call and asserts no success notice appears. 13 frontend
+tests.
+
+### Caught by an existing test again
+
+`test_frontend_api_contract.py` rejected all three new TypeScript
+interfaces until they were paired with their backend schemas. That is the
+second session running in which it has caught drift before a human would
+have, and it compares fields, not just names.
+
+### Unchanged
+
+The scientific position. No labelled corpus, so no metric here is evidence
+of predictive performance on real traffic.

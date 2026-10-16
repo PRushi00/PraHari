@@ -42,6 +42,17 @@ MODEL_PAIRS = [
     ("PollResult", "PollResult"),
     ("ReadinessReport", "ReadinessReport"),
     ("SplitIntegrityReport", "SplitIntegrityReport"),
+    # System Health (§11). Paired so the dashboard's measurements cannot
+    # drift from what the backend actually reports.
+    ("SystemHealthReport", "SystemHealthReport"),
+    ("HealthBlock", "Block"),
+    # Source administration (§11). Paired so the admin table cannot drift
+    # from what /sources/health actually reports.
+    ("SourceHealthSummary", "SourceHealthSummary"),
+    ("SourceHealthRecord", "SourceHealth"),
+    # Nested inside SplitIntegrityReport. Paired so the window-truncation
+    # fields cannot drift from the backend the way earlier interfaces did.
+    ("WindowingReport", "WindowingReport"),
     ("DomainAttribution", "DomainAttribution"),
     ("SourceCapability", "SourceCapability"),
     ("AuditLog", "AuditLogItem"),
@@ -70,6 +81,7 @@ LOCAL_ONLY_INTERFACES = {
     "PaginatedConnectionsResponse",  # inline response model
     "FeasibilityMetric",            # removed legacy helper shape
     "FeatureContribution",          # dict built in forecaster code
+    "RetentionPolicy",              # plain dict response from /retention/policy
     "AppLayerStatus",               # plain dict response
     "EnrichmentStatus",             # plain dict response
     "SyntheticReplayResponse",      # alias of ImportSummary

@@ -9,12 +9,46 @@ Prediction Horizon: [t + lead_time, t + lead_time + H]
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 import numpy as np
 from pydantic import BaseModel, Field
 
 from app.schemas.events import NormalizedEvent
+
+
+def _empty_dataset() -> tuple[np.ndarray, np.ndarray, list[datetime]]:
+    """
+    The canonical "no instances" return.
+
+    Every no-data path must produce the SAME shape and dtype. Returning a
+    one-dimensional ``(0,)`` from one path and ``(0, n_features)`` from
+    another is not a cosmetic difference: a caller that reads
+    ``X.shape[1]`` — as ``stack_lagged_windows`` does — raises IndexError
+    on the first form and works on the second. That crash is currently
+    unreachable only because the pipeline refuses fewer than four
+    instances first, which is a guard, not a contract.
+    """
+    return (
+        np.empty((0, len(FEATURE_NAMES)), dtype=np.float32),
+        np.empty((0,), dtype=np.int32),
+        [],
+    )
+
+
+class WindowCoverageIncomplete(RuntimeError):
+    """
+    The window cap prevented examining every eligible window.
+
+    Raised only when a caller asked for complete coverage. The partial
+    report travels with the exception so the caller can see how far the run
+    got rather than only that it stopped.
+    """
+
+    def __init__(self, message: str, report: "WindowingReport"):
+        self.report = report
+        super().__init__(message)
 
 
 class WindowingReport(BaseModel):
@@ -41,9 +75,49 @@ class WindowingReport(BaseModel):
     windows_excluded_unlabelled_horizon: int = 0
     require_labelled_horizon: bool = True
 
+    # ── Ongoing-attack accounting ──
+    # A window whose OBSERVATION period already contains attack-labelled
+    # events is not a clean pre-attack forecast: predicting "attack soon"
+    # from "attack now" is detection, and reporting it as forecasting
+    # overstates what was demonstrated. Counted always; excluded only when
+    # the caller asks.
+    windows_with_attack_in_observation: int = 0
+    windows_excluded_ongoing_attack: int = 0
+    exclude_ongoing_attack_windows: bool = False
+
+    # Event-count chunks examined when time-based windowing produced
+    # nothing. These are NOT time windows — the stated durations do not
+    # apply to them — but they do produce instances, so they are included
+    # in windows_considered to keep the accounting identity intact.
+    fallback_chunks_considered: int = 0
+    fallback_chunks_excluded: int = 0
+
     config_was_rescaled: bool = False
     rescale_factor: Optional[float] = None
     used_fallback_chunking: bool = False
+
+    # ── Window-generation coverage (distinct from RECORD selection) ──
+    #
+    # Three different counts, deliberately named apart:
+    #   windows_eligible   — windows the data's time span and stride allow
+    #   windows_considered — windows the loop actually examined (<= limit)
+    #   windows_generated  — instances emitted (<= considered; the rest were
+    #                        excluded by the negative-label validity rules)
+    #   windows_omitted    — eligible windows never examined, because the cap
+    #                        stopped the loop first
+    #
+    # `windows_truncated` is the structured signal. The free-text note is
+    # kept for a human reader but is NOT the source of truth: a caller must
+    # be able to branch on this without parsing prose.
+    #
+    # This is NOT the same as SelectionCoverage.truncated, which reports that
+    # a record-count cap limited which EVENTS were fetched. Both can occur
+    # independently and both must be visible.
+    windows_limit: int = 0
+    windows_eligible: int = 0
+    windows_considered: int = 0
+    windows_omitted: int = 0
+    windows_truncated: bool = False
 
     event_count: int = 0
     data_span_seconds: float = 0.0
@@ -99,7 +173,21 @@ class WindowFeatureExtractor:
         prediction_horizon_seconds: float = 60.0,
         require_labelled_horizon: bool = True,
         min_horizon_events: int = 1,
+        exclude_ongoing_attack_windows: bool = False,
+        require_complete_windowing: bool = False,
     ):
+        # When True, a run that hits the window cap raises instead of
+        # returning a silently partial dataset. Off by default so existing
+        # behaviour is unchanged; research evaluations that claim to cover a
+        # dataset should turn it on.
+        self.require_complete_windowing = require_complete_windowing
+        # When True, windows already containing an attack are dropped, so the
+        # evaluation measures prediction of a NEW incident rather than
+        # continuation of one in progress. Off by default because dropping
+        # them also discards the majority of positives on bursty data; the
+        # count is always reported either way.
+        self.exclude_ongoing_attack_windows = exclude_ongoing_attack_windows
+        self.last_observation_attack_mask = np.array([], dtype=np.int32)
         self.window_size_seconds = window_size_seconds
         self.lead_time_seconds = lead_time_seconds
         self.prediction_horizon_seconds = prediction_horizon_seconds
@@ -184,7 +272,7 @@ class WindowFeatureExtractor:
 
         if not events:
             report.notes.append("No events supplied; no windows generated.")
-            return np.empty((0, len(FEATURE_NAMES))), np.empty((0,)), []
+            return _empty_dataset()
 
         # Exclude events whose timestamps cannot describe an observation.
         # One such record would otherwise stretch the windowing range across
@@ -204,7 +292,7 @@ class WindowFeatureExtractor:
             )
         if not usable:
             report.notes.append("No events with usable timestamps; no windows generated.")
-            return np.empty((0, len(FEATURE_NAMES))), np.empty((0,)), []
+            return _empty_dataset()
 
         sorted_events = sorted(usable, key=lambda e: e.observed_at)
         start_time = sorted_events[0].observed_at
@@ -236,14 +324,66 @@ class WindowFeatureExtractor:
                 f"results must NOT be cited as using the nominal W/L/H/S values."
             )
 
-        report.effective_window_seconds = round(w_size, 3)
-        report.effective_lead_seconds = round(lead_t, 3)
-        report.effective_horizon_seconds = round(pred_h, 3)
-        report.effective_stride_seconds = round(step_t, 3)
+        # Round ONCE, then use the rounded values for the loop as well as the
+        # report. Previously the report stored rounded values while the loop
+        # ran on the unrounded floats, so a run could not be reproduced from
+        # its own reported configuration — on a rescaled fixture that was a
+        # one-window difference. In a project whose central claim is
+        # reproducibility, the reported parameters must be the parameters
+        # that were used.
+        w_size = round(w_size, 3)
+        lead_t = round(lead_t, 3)
+        pred_h = round(pred_h, 3)
+        step_t = round(step_t, 3)
+
+        report.effective_window_seconds = w_size
+        report.effective_lead_seconds = lead_t
+        report.effective_horizon_seconds = pred_h
+        report.effective_stride_seconds = step_t
 
         X_list: list[list[float]] = []
         y_list: list[int] = []
         ts_list: list[datetime] = []
+        # Per-instance: did the OBSERVATION window already contain an attack?
+        # Kept beside the dataset rather than inside X, because a feature
+        # saying "an attack is happening now" would let any model score well
+        # on a task it was never asked to perform.
+        obs_attack_list: list[int] = []
+        report.exclude_ongoing_attack_windows = self.exclude_ongoing_attack_windows
+
+        # ── Time index and label prefix sums, built once ──
+        #
+        # Previously each window re-scanned the whole event list twice (once
+        # for the observation interval, once for the horizon), making the
+        # pass O(events x windows). On a long span that is the dominant cost
+        # and it is pure repetition: the events are already sorted, so the
+        # boundaries of a half-open interval are two binary searches.
+        #
+        # `bisect_left` is used for BOTH ends because every interval here is
+        # [lo, hi): the low index is the first event at or after the start,
+        # and the high index is the first event at or after the end, so the
+        # slice holds exactly `start <= t < end`. Equal timestamps all fall
+        # inside the same slice, and because `sorted` is stable the order
+        # within a tie is the input order — identical to what the list
+        # comprehension produced.
+        event_times = [e.observed_at for e in sorted_events]
+
+        # Prefix counts let "does this interval contain an attack / any
+        # label" be answered in O(1) instead of scanning the interval. That
+        # matters most for windows that are about to be REJECTED: the old
+        # code materialised both intervals before discovering the horizon
+        # was empty.
+        attack_prefix = [0] * (len(sorted_events) + 1)
+        labelled_prefix = [0] * (len(sorted_events) + 1)
+        for i, e in enumerate(sorted_events):
+            label = e.label
+            has_text = label is not None and label.strip() != ""
+            is_attack = (
+                has_text
+                and label.strip().lower() not in ("benign", "normal", "unlabeled")
+            )
+            attack_prefix[i + 1] = attack_prefix[i] + (1 if is_attack else 0)
+            labelled_prefix[i + 1] = labelled_prefix[i] + (1 if has_text else 0)
 
         current_window_end = start_time + timedelta(seconds=w_size)
 
@@ -261,47 +401,68 @@ class WindowFeatureExtractor:
             target_start = current_window_end + timedelta(seconds=lead_t)
             target_end = target_start + timedelta(seconds=pred_h)
 
-            # Observation events: [window_start, current_window_end)
-            obs_events = [e for e in sorted_events if window_start <= e.observed_at < current_window_end]
+            # Interval boundaries by binary search. Same half-open
+            # semantics as the comprehensions they replace:
+            #   observation [window_start, current_window_end)
+            #   horizon     [target_start, target_end)
+            obs_lo = bisect_left(event_times, window_start)
+            obs_hi = bisect_left(event_times, current_window_end)
+            fut_lo = bisect_left(event_times, target_start)
+            fut_hi = bisect_left(event_times, target_end)
 
-            # Future target events: [target_start, target_end)
-            future_events = [e for e in sorted_events if target_start <= e.observed_at < target_end]
+            horizon_count = fut_hi - fut_lo
 
             # ── Target label ──
             # Positive: at least one event in the horizon carries an attack
             # label. A positive is always valid — the evidence is present.
-            has_attack = any(
-                e.label is not None
-                and e.label.strip().lower() not in ("benign", "normal", "unlabeled", "")
-                for e in future_events
-            )
+            has_attack = (attack_prefix[fut_hi] - attack_prefix[fut_lo]) > 0
+
+            observation_has_attack = (
+                attack_prefix[obs_hi] - attack_prefix[obs_lo]
+            ) > 0
+            if observation_has_attack:
+                report.windows_with_attack_in_observation += 1
+                if self.exclude_ongoing_attack_windows:
+                    report.windows_excluded_ongoing_attack += 1
+                    current_window_end += timedelta(seconds=step_t)
+                    continue
 
             if has_attack:
-                X_list.append(self.extract_features_from_window(obs_events, w_size))
+                # Materialised only now: a rejected window never pays for it.
+                X_list.append(
+                    self.extract_features_from_window(
+                        sorted_events[obs_lo:obs_hi], w_size
+                    )
+                )
                 y_list.append(1)
                 ts_list.append(current_window_end)
+                obs_attack_list.append(int(observation_has_attack))
             else:
                 # Negative labels require a horizon complete enough to
                 # support the claim "no attack occurred here".
-                if len(future_events) < self.min_horizon_events:
+                if horizon_count < self.min_horizon_events:
                     # Nothing observed in the horizon: a gap, not a negative.
                     report.windows_excluded_empty_horizon += 1
                     current_window_end += timedelta(seconds=step_t)
                     continue
 
-                if self.require_labelled_horizon and not any(
-                    e.label is not None and e.label.strip() != ""
-                    for e in future_events
-                ):
+                if self.require_labelled_horizon and (
+                    labelled_prefix[fut_hi] - labelled_prefix[fut_lo]
+                ) == 0:
                     # Traffic was observed but carries no ground truth, so
                     # its benignity is unknown, not established.
                     report.windows_excluded_unlabelled_horizon += 1
                     current_window_end += timedelta(seconds=step_t)
                     continue
 
-                X_list.append(self.extract_features_from_window(obs_events, w_size))
+                X_list.append(
+                    self.extract_features_from_window(
+                        sorted_events[obs_lo:obs_hi], w_size
+                    )
+                )
                 y_list.append(0)
                 ts_list.append(current_window_end)
+                obs_attack_list.append(int(observation_has_attack))
 
             current_window_end += timedelta(seconds=step_t)
 
@@ -322,6 +483,29 @@ class WindowFeatureExtractor:
                 future_chunk = sorted_events[idx + chunk_size:idx + chunk_size * 2]
                 if not future_chunk:
                     break
+                # Counted as considered. `windows_generated` is set from
+                # len(X_list) AFTER this loop, so it already includes what
+                # the fallback emits; leaving `windows_considered` out of
+                # step made the accounting incoherent — rejections could
+                # exceed the number of candidates examined.
+                report.fallback_chunks_considered += 1
+                iterations += 1
+
+                # The exclusion must hold here too. Without this, asking to
+                # exclude ongoing-attack windows could EMPTY the time-window
+                # loop, trigger this fallback, and have it re-emit chunks
+                # whose observation period contains an attack — producing the
+                # exact opposite of what was requested, while
+                # `windows_excluded_ongoing_attack` reported the control as
+                # having worked.
+                if self.exclude_ongoing_attack_windows and any(
+                    e.label is not None
+                    and e.label.strip().lower() not in ("benign", "normal", "unlabeled", "")
+                    for e in chunk
+                ):
+                    report.windows_excluded_ongoing_attack += 1
+                    report.fallback_chunks_excluded += 1
+                    continue
                 has_attack = any(
                     e.label is not None
                     and e.label.strip().lower() not in ("benign", "normal", "unlabeled", "")
@@ -336,18 +520,56 @@ class WindowFeatureExtractor:
                         for e in future_chunk
                     ):
                         report.windows_excluded_unlabelled_horizon += 1
+                        report.fallback_chunks_excluded += 1
                         continue
                 feat = self.extract_features_from_window(chunk, w_size)
                 X_list.append(feat)
                 y_list.append(1 if has_attack else 0)
                 ts_list.append(chunk[-1].observed_at)
+                obs_attack_list.append(
+                    int(any(
+                        e.label is not None
+                        and e.label.strip().lower() not in ("benign", "normal", "unlabeled", "")
+                        for e in chunk
+                    ))
+                )
 
-        if iterations >= MAX_WINDOWS:
+        # How many windows the span and stride actually allow. Derived from
+        # the same loop bound, so it is a computed quantity rather than an
+        # estimate: the loop runs while
+        #   (start + W) + k*S + L + H <= end
+        last_start = (end_time - start_time).total_seconds() - (w_size + lead_t + pred_h)
+        report.windows_limit = MAX_WINDOWS
+        report.windows_considered = iterations
+        report.windows_eligible = (
+            int(last_start // step_t) + 1 if last_start >= 0 and step_t > 0 else 0
+        )
+        # When the fallback ran, the candidate population is the time windows
+        # PLUS the event-count chunks. Counting only the former would leave
+        # eligible below considered, which reads as a corrupt report.
+        report.windows_eligible += report.fallback_chunks_considered
+        report.windows_omitted = max(0, report.windows_eligible - report.windows_considered)
+        report.windows_truncated = report.windows_omitted > 0
+
+        if report.windows_truncated:
             report.notes.append(
                 f"Window generation stopped at the {MAX_WINDOWS} window safety "
-                "limit; the dataset's time span is too large for this stride. "
-                "Results cover only the earliest portion of the data."
+                f"limit after examining {report.windows_considered} of "
+                f"{report.windows_eligible} eligible windows; "
+                f"{report.windows_omitted} were never examined. Results cover "
+                "only the earliest portion of the data. See windows_truncated."
             )
+            if self.require_complete_windowing:
+                raise WindowCoverageIncomplete(
+                    f"Window generation covered {report.windows_considered} of "
+                    f"{report.windows_eligible} eligible windows "
+                    f"({report.windows_omitted} omitted at the {MAX_WINDOWS} "
+                    "limit). This evaluation would describe only the earliest "
+                    "part of the data. Widen the stride, narrow the time range, "
+                    "or set require_complete_windowing=False and read "
+                    "windows_truncated.",
+                    report,
+                )
 
         report.require_labelled_horizon = self.require_labelled_horizon
         excluded = (
@@ -366,5 +588,17 @@ class WindowFeatureExtractor:
         report.windows_generated = len(X_list)
         report.positive_windows = int(sum(y_list))
         report.negative_windows = len(y_list) - int(sum(y_list))
+
+        # Exposed as an attribute rather than a fourth return value so every
+        # existing caller keeps working. The persistence baseline and the
+        # ongoing-attack audit read it from here.
+        self.last_observation_attack_mask = np.array(obs_attack_list, dtype=np.int32)
+
+        if not X_list:
+            # Windows were considered but none survived the validity rules.
+            # The report above already records why; the arrays must still
+            # carry the feature dimension so a caller can inspect the shape
+            # without a special case for "empty".
+            return _empty_dataset()
 
         return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int32), ts_list

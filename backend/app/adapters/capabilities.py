@@ -24,6 +24,7 @@ from app.schemas.events import (
 POP = FieldAvailability.POPULATED
 MISS = FieldAvailability.MISSING_UNEXPECTED
 UNSUP = FieldAvailability.UNSUPPORTED_BY_SOURCE
+NA = FieldAvailability.NOT_APPLICABLE
 
 
 def _cap(source_type: str, description: str, supported: dict, limitations: list[str]) -> SourceCapability:
@@ -59,6 +60,47 @@ WINDOWS_CONNECTION_TABLE = _cap(
         "A destination hostname is not reported by this source; hostnames are inferred separately from local DNS observations and carry their own confidence.",
         "Snapshot polling: connections opening and closing entirely between polls are never observed.",
         "No attack labels exist for locally observed traffic, so none are assigned.",
+    ],
+)
+
+WINDOWS_UDP_ENDPOINT = _cap(
+    source_type="windows_udp_endpoint",
+    description="Local Windows UDP endpoint table (Get-NetUDPEndpoint).",
+    supported={
+        "src_ip": POP,
+        "src_port": POP,
+        "protocol": POP,
+        # UDP is connectionless. Windows records no peer for an unconnected
+        # socket, so a destination is not "missing" here — it does not exist.
+        "dst_ip": NA,
+        "dst_port": NA,
+    },
+    limitations=[
+        "Reports locally BOUND UDP sockets, not UDP conversations. There is no remote peer to report.",
+        "Answers 'which process holds which local UDP port', and nothing more.",
+        "Byte counts, packet counts and duration are not exposed by the endpoint table and are never populated.",
+        "Snapshot polling: sockets bound and released between polls are never observed.",
+        "No attack labels exist for locally observed sockets, so none are assigned.",
+    ],
+)
+
+WINDOWS_INTERFACE_COUNTERS = _cap(
+    source_type="windows_interface_counters",
+    description=(
+        "Per-interface cumulative byte and packet counters "
+        "(Get-NetAdapterStatistics). Reported through its own endpoint; "
+        "never written into normalized_events."
+    ),
+    supported={
+        # Deliberately empty. These counters are not canonical events: they
+        # cannot be attributed to a connection, process or destination, so
+        # none of the canonical per-event fields apply to them.
+    },
+    limitations=[
+        "Interface-level and cumulative since the adapter last reset — NOT flow metrics.",
+        "Cannot be attributed to a connection, a process or a destination.",
+        "Must never be summed alongside per-flow byte counts from an imported dataset; the two measure different things.",
+        "A decreasing counter means the adapter reset; no delta is derived across a reset.",
     ],
 )
 
@@ -141,6 +183,8 @@ _REGISTRY: dict[str, SourceCapability] = {
     c.source_type: c
     for c in (
         WINDOWS_CONNECTION_TABLE,
+        WINDOWS_UDP_ENDPOINT,
+        WINDOWS_INTERFACE_COUNTERS,
         CSV_IMPORT,
         JSON_STREAM,
         SYNTHETIC_REPLAY,

@@ -174,3 +174,98 @@ def scope_source(request: Request, requested: Optional[str]) -> Optional[str]:
             },
         )
     return scoped or requested
+
+
+def resolve_ingest_source(request: Request, claimed: Optional[str]) -> str:
+    """
+    The source identity telemetry will actually be stored under.
+
+    This is the ingestion trust boundary. Everything downstream — the
+    adapter id, the UUIDv5 idempotency namespace, `event.source_id`, the
+    source-health record — is derived from the value returned here, so a
+    caller that cannot influence this value cannot impersonate another
+    source anywhere in the pipeline.
+
+    Local (loopback) mode is unauthenticated by design: there is no
+    principal, the operator is the only caller, and the claimed value
+    passes through unchanged. That is the pre-existing contract and this
+    function does not alter it.
+
+    Central mode:
+
+    * A principal is required. There is no fallback to the request body —
+      if authentication did not happen, ingestion does not happen.
+    * The credential must carry a write role. A `read_only` credential
+      submitting telemetry is a misconfiguration, and silently accepting
+      it would make the role meaningless.
+    * A non-admin principal ingests as itself. Claiming another source is
+      **refused**, not quietly rewritten: a sensor sending the wrong id is
+      misconfigured and should be told so rather than having its data
+      filed somewhere it did not intend.
+    * An admin may ingest on behalf of any source, but must say which —
+      an admin credential is not itself a sensor.
+    """
+    principal = get_principal(request)
+    if principal is None:
+        # Local mode. Unauthenticated by design; see module docstring.
+        return claimed or ""
+
+    if not principal.may_write():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "write_not_permitted",
+                "message": (
+                    f"Role {principal.role.value!r} may not submit telemetry; "
+                    "an ingest credential is required."
+                ),
+            },
+        )
+
+    if principal.is_admin:
+        if not claimed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "source_id_required",
+                    "message": (
+                        "An admin credential is not bound to a source. State "
+                        "the source_id this telemetry belongs to."
+                    ),
+                },
+            )
+        return claimed
+
+    if claimed and claimed != principal.source_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "source_identity_mismatch",
+                # Names only the caller's own identity. Confirming whether
+                # the claimed source exists would enumerate the fleet.
+                "message": (
+                    "This credential may only submit telemetry for source "
+                    f"{principal.source_id!r}."
+                ),
+            },
+        )
+    return principal.source_id
+
+
+def require_admin_in_central(request: Request) -> Optional[Principal]:
+    """
+    Admin-only in central mode; a no-op on a loopback deployment.
+
+    Used as a route dependency. The local-mode pass-through mirrors
+    `scope_source`: there is no principal to check, the operator is the
+    only caller, and `require_admin` alone would turn every local request
+    into a 401.
+
+    `security.py` states that a sensor's credential cannot read the audit
+    log. That was a property of the design, not of the code — nothing
+    called `require_admin` — so an ingest credential could read the audit
+    trail of the whole fleet. This closes it.
+    """
+    if get_principal(request) is None:
+        return None
+    return require_admin(request)

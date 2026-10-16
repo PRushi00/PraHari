@@ -11,6 +11,7 @@ import { api } from "../services/api";
 import { ModelMetrics, PredictionResult, TelemetrySource } from "../types";
 
 import { fmtFixed, fmtPercent, isNum, safeSeries } from "../utils/format";
+import { bestModelId } from "../utils/models";
 export const ForecastPage: React.FC = () => {
   const [models, setModels] = useState<Record<string, ModelMetrics>>({});
   const [sources, setSources] = useState<TelemetrySource[]>([]);
@@ -19,6 +20,9 @@ export const ForecastPage: React.FC = () => {
   const [predicting, setPredicting] = useState(false);
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [activeModelId, setActiveModelId] = useState<string>("random_forest_forecaster");
+
+  // Best = highest measured PR-AUC among non-baseline models.
+  const best = React.useMemo(() => bestModelId(models), [models]);
   const [threshold, setThreshold] = useState<number>(0.5);
   const [trainRatio, setTrainRatio] = useState<number>(0.7);
   const [error, setError] = useState<string | null>(null);
@@ -218,6 +222,26 @@ export const ForecastPage: React.FC = () => {
         </table>
       </div>
 
+      {Array.isArray(readiness.label_caveats) && readiness.label_caveats.length > 0 && (
+        <div
+          style={{
+            marginTop: "1rem",
+            padding: "0.75rem 0.9rem",
+            borderLeft: "3px solid #f59e0b",
+            background: "rgba(245, 158, 11, 0.07)",
+          }}
+        >
+          <div style={{ fontSize: "0.75rem", color: "#f59e0b", marginBottom: "0.35rem" }}>
+            These labels are not ground truth
+          </div>
+          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.75rem", lineHeight: 1.7 }}>
+            {readiness.label_caveats.map((c, i) => (
+              <li key={i}>{c}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {readiness.next_steps.length > 0 && (
         <div style={{ marginTop: "1rem" }}>
           <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
@@ -394,7 +418,7 @@ export const ForecastPage: React.FC = () => {
               Competitive Model Benchmarking (Temporal Evaluation)
             </h2>
             <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.2rem" }}>
-              Strict chronological past-train / future-test split. Baselines vs Logistic Regression vs Random Forest.
+              Strict chronological past-train / future-test split, with the contaminated boundary purged. Two baselines, logistic regression, random forest, a window-sequence model and an LSTM — all on the same target, dataset and split.
             </p>
           </div>
           {modelKeys.length > 0 && (
@@ -447,7 +471,13 @@ export const ForecastPage: React.FC = () => {
               <tbody>
                 {modelKeys.map((k) => {
                   const m = models[k];
-                  const isBest = k === "random_forest_forecaster";
+                  // Derived from the measured PR-AUC, never hardcoded. This
+                  // previously named random_forest_forecaster the best model
+                  // whatever the numbers said — and with the temporal and
+                  // LSTM models added it is frequently not. Baselines are
+                  // excluded: a baseline winning is a finding to read, not a
+                  // model to recommend.
+                  const isBest = k === best;
                   return (
                     <tr
                       key={k}
@@ -467,6 +497,43 @@ export const ForecastPage: React.FC = () => {
                           {isBest && (
                             <span className="badge" style={{ fontSize: "0.65rem", background: "rgba(16, 185, 129, 0.2)", color: "#10b981" }}>
                               Best ML
+                            </span>
+                          )}
+                          {/* A degenerate model has computable metrics and made
+                              no distinctions. Saying so beside the figures stops
+                              class-balance arithmetic reading as performance. */}
+                          {m.predictions_degenerate && (
+                            <span
+                              className="badge"
+                              title={
+                                m.scores_constant
+                                  ? "The model produced one score for every held-out window, so it ranked nothing."
+                                  : "The model predicted a single class for every held-out window."
+                              }
+                              style={{ fontSize: "0.65rem", background: "rgba(244, 63, 94, 0.2)", color: "#f43f5e" }}
+                            >
+                              Degenerate
+                            </span>
+                          )}
+                          {!m.predictions_degenerate &&
+                            m.discrimination_demonstrated === false && (
+                              <span
+                                className="badge"
+                                title={`PR-AUC does not exceed the no-skill base rate${
+                                  m.no_skill_pr_auc != null ? ` (${m.no_skill_pr_auc})` : ""
+                                }.`}
+                                style={{ fontSize: "0.65rem", background: "rgba(245, 158, 11, 0.2)", color: "#f59e0b" }}
+                              >
+                                No skill
+                              </span>
+                            )}
+                          {m.discrimination_demonstrated == null && m.sample_adequate === false && (
+                            <span
+                              className="badge"
+                              title="Too few held-out instances, or only one class, to establish anything."
+                              style={{ fontSize: "0.65rem", background: "rgba(148, 163, 184, 0.2)", color: "var(--text-dim)" }}
+                            >
+                              Inconclusive
                             </span>
                           )}
                         </div>

@@ -1,0 +1,86 @@
+# PraHari — Docker build context exclusions
+#
+# Without this file the ENTIRE repository is sent to the Docker daemon as
+# build context — including prahari.db, which holds genuine local network
+# telemetry (local and remote addresses, ports, owning process ids). None
+# of it is needed to build the image, and a build context is trivially
+# recoverable from a daemon or a CI log.
+#
+# The COPY instructions in the Dockerfile are narrow, so this data would
+# not reach the final image; it would still leave the machine.
+
+# ── Telemetry and secrets: never, under any circumstances ──
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+secrets/
+credentials.json
+*credentials*.json
+experiments/
+.env
+.env.*
+
+# ── Version control and history ──
+.git/
+.gitignore
+.github/
+
+# ── Build outputs and caches (rebuilt inside the image) ──
+node_modules/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/.venv/
+.venv/
+venv/
+*.egg-info/
+
+# ── Tests and docs: not needed at runtime ──
+backend/tests/
+docs/
+*.md
+!README.md
+
+# ── Editor and OS noise ──
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# ── Local tooling ──
+.claude/
+scripts/__pycache__/
+
+# ── Research corpora and local data (added for benchmark readiness) ──
+# Benchmark CSVs are large third-party artefacts with their own licence and
+# attribution terms. They are never committed: the repository would carry
+# redistributed data, and a multi-hundred-megabyte file would be in every
+# clone forever. Small synthetic fixtures written BY the test suite are not
+# affected — they live in temporary directories, not here.
+# Root-anchored on purpose. An unanchored `research/` would match
+# backend/app/research/ — the source package — and silently hide it from
+# version control. Verified with `git check-ignore`.
+/research/
+/research-data/
+/datasets/
+/data/raw/
+/data/corpora/
+*.pcap
+*.pcapng
+
+# Local CSV data. Deliberately scoped so documentation, source and small
+# committed fixtures are untouched; only the data drop locations above and
+# top-level stray CSVs are excluded.
+/*.csv
+/backend/*.csv
+/frontend/*.csv
+
+# Research import manifests sit beside the research database and record
+# local filenames and hashes.
+manifests/

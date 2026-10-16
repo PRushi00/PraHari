@@ -19,6 +19,7 @@ export type EventType =
   | "connection"
   | "dns_query"
   | "http_request"
+  | "udp_endpoint"
   | "alert"
   | "host_event"
   | "unknown";
@@ -26,6 +27,8 @@ export type EventType =
 export type LabelProvenance =
   | "dataset_ground_truth"
   | "rule_based"
+  | "synthetic_rule"
+  | "detector_output"
   | "model_prediction"
   | "analyst_annotation"
   | "unlabeled";
@@ -112,6 +115,10 @@ export interface DescriptiveAnalysis {
   events_by_protocol: Record<string, number>;
   time_range_start?: string | null;
   time_range_end?: string | null;
+  implausible_timestamp_events?: number;
+  duration_measured_count?: number;
+  packets_measured_count?: number;
+  bytes_measured_count?: number;
   missing_field_counts: Record<string, number>;
   quality_flag_counts: Record<string, number>;
   records_with_warnings: number;
@@ -228,6 +235,21 @@ export interface ModelMetrics {
   evaluated_on_holdout: boolean;
   test_positive_count: number;
   test_negative_count: number;
+  // Three separate questions, deliberately not collapsed:
+  //  metrics_computable  — both classes present, so the figures are defined
+  //  sample_adequate     — enough held-out instances to mean anything
+  //  predictions_degenerate — the model emitted one class, or ranked nothing
+  //  discrimination_demonstrated — PR-AUC above the no-skill base rate.
+  //    true means "better than chance on this sample", NOT "a useful model".
+  metrics_computable?: boolean;
+  sample_adequate?: boolean;
+  predictions_degenerate?: boolean;
+  predicted_positive_count?: number;
+  predicted_negative_count?: number;
+  distinct_score_count?: number;
+  scores_constant?: boolean;
+  no_skill_pr_auc?: number | null;
+  discrimination_demonstrated?: boolean | null;
   metrics_interpretable: boolean;
   interpretation_warnings: string[];
 }
@@ -452,6 +474,8 @@ export interface ReadinessReport {
   time_span_seconds: number;
   data_categories: Record<string, number>;
   label_provenances: Record<string, number>;
+  non_ground_truth_labelled_events: number;
+  label_caveats: string[];
   prediction_target: string;
   prediction_horizon_seconds: number;
   observation_window_seconds: number;
@@ -459,7 +483,24 @@ export interface ReadinessReport {
   evaluated_at: string;
 }
 
+export interface WindowingReport {
+  windows_limit: number;
+  windows_eligible: number;
+  windows_considered: number;
+  windows_generated: number;
+  windows_omitted: number;
+  windows_truncated: boolean;
+  windows_with_attack_in_observation?: number;
+  windows_excluded_ongoing_attack?: number;
+  notes?: string[];
+}
+
 export interface SplitIntegrityReport {
+  // Window-generation truncation. Distinct from SelectionCoverage.truncated,
+  // which reports a record-count cap on which EVENTS were fetched.
+  windowing_truncated?: boolean;
+  windows_omitted?: number;
+  windowing?: WindowingReport | null;
   total_instances: number;
   train_instances: number;
   test_instances: number;
@@ -483,4 +524,81 @@ export interface AppLayerStatus {
   never_accepted: string[];
   producer_required: boolean;
   notes: string[];
+}
+
+/**
+ * System Health (blueprint §11).
+ *
+ * `data` is deliberately loose: the backend owns the shape of each
+ * block, and pinning it here would mean editing two places whenever a
+ * measurement is added. `available` and `reason` are the contract.
+ */
+export interface HealthBlock {
+  available: boolean;
+  reason?: string | null;
+  data?: Record<string, any>;
+}
+
+export interface SystemHealthReport {
+  generated_at: string;
+  schema_version: string;
+  deployment_mode: string;
+  uptime_seconds: number;
+  ingestion: HealthBlock;
+  sources: HealthBlock;
+  storage: HealthBlock;
+  models: HealthBlock;
+  adapters: HealthBlock;
+  limits: HealthBlock;
+  notes: string[];
+}
+
+/** One source's health, as `GET /sources/health` reports it. */
+export interface SourceHealthRecord {
+  source_id: string;
+  name: string;
+  source_type: string;
+  state: string;
+  enabled: boolean;
+  recorded_status?: string | null;
+  event_count: number;
+  last_event_at?: string | null;
+  seconds_since_last_event?: number | null;
+  fresh_threshold_seconds: number;
+  stale_threshold_seconds: number;
+  evaluated_at: string;
+  last_received_at?: string | null;
+  seconds_since_last_receipt?: number | null;
+  receipt_evidence_available: boolean;
+  freshness_basis: string;
+  clock_dependent: boolean;
+  reasons: string[];
+  limitations: string[];
+}
+
+export interface SourceHealthSummary {
+  evaluated_at: string;
+  sources: SourceHealthRecord[];
+  counts_by_state: Record<string, number>;
+  fresh_threshold_seconds: number;
+  stale_threshold_seconds: number;
+  notes: string[];
+}
+
+/**
+ * `GET`/`PUT /retention/policy`. A plain dict response on the backend,
+ * so this shape is maintained here and is not schema-paired.
+ */
+export interface RetentionPolicy {
+  retention_days: number;
+  origin: string;
+  configured_default?: number;
+  default_eligible_categories?: string[];
+  enforcement?: string;
+  automatic_pruning?: boolean;
+  confirmation_required?: boolean;
+  notes?: string[];
+  override_cleared?: boolean;
+  previous_retention_days?: number;
+  note?: string;
 }

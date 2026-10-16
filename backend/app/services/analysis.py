@@ -30,6 +30,7 @@ from app.schemas.events import (
     DescriptiveAnalysis,
     NormalizedEvent,
     QualityFlag,
+    is_plausible_timestamp,
     is_quality_defect,
 )
 
@@ -208,6 +209,8 @@ def compute_descriptive_analysis(
     else:
         derived_category = DataCategory(next(iter(categories)))
 
+    plausible_timestamps = [t for t in timestamps if is_plausible_timestamp(t)]
+
     avg_duration = sum(durations) / len(durations) if durations else None
     avg_packets = sum(packets_list) / len(packets_list) if packets_list else None
     avg_bytes = sum(bytes_list) / len(bytes_list) if bytes_list else None
@@ -223,8 +226,19 @@ def compute_descriptive_analysis(
         events_by_type=dict(type_counter),
         events_by_label=dict(label_counter),
         events_by_protocol=dict(protocol_counter),
-        time_range_start=min(timestamps) if timestamps else None,
-        time_range_end=max(timestamps) if timestamps else None,
+        # Implausible timestamps (the FILETIME epoch, far-future values) are
+        # excluded from the reported range. Including one made this summary
+        # claim a ~425-year observation window while the readiness gate, over
+        # the same dataset, correctly reported hours.
+        time_range_start=min(plausible_timestamps) if plausible_timestamps else None,
+        time_range_end=max(plausible_timestamps) if plausible_timestamps else None,
+        implausible_timestamp_events=len(timestamps) - len(plausible_timestamps),
+        # Denominators for the averages below. An average over 200 of 3,669
+        # records is not a property of the dataset, and an API consumer
+        # cannot tell without being told.
+        duration_measured_count=len(durations),
+        packets_measured_count=len(packets_list),
+        bytes_measured_count=len(bytes_list),
         missing_field_counts=dict(missing_counter),
         unsupported_field_counts=dict(unsupported_counter),
         source_limitations=limitations,

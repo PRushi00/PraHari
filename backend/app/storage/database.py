@@ -16,8 +16,9 @@ import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Generator
+from typing import Any, Callable, Optional, Generator
 
+from app.storage.guard import assert_safe_to_initialize
 from app.schemas.events import (
     NormalizedEvent,
     TelemetrySource,
@@ -30,6 +31,20 @@ from app.schemas.events import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _column_present(row, name: str) -> bool:
+    """
+    Whether a sqlite3.Row actually carries a column.
+
+    A database opened read-only, or one from before the migration, has no
+    `received_at` at all — indexing it raises IndexError rather than
+    returning None. Reads must stay backward compatible with such a file.
+    """
+    try:
+        return name in row.keys()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -56,6 +71,10 @@ CREATE TABLE IF NOT EXISTS normalized_events (
     data_category   TEXT NOT NULL,
     observed_at     TEXT NOT NULL,
     ingested_at     TEXT NOT NULL,
+    -- Nullable by design: NULL means "no measured receipt time", which is
+    -- correct for locally collected events, historical imports, and rows
+    -- written before this column existed. Never backfilled.
+    received_at     TEXT,
     event_type      TEXT NOT NULL DEFAULT 'network_flow',
     src_ip          TEXT,
     dst_ip          TEXT,
@@ -170,7 +189,93 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
+
+-- Operator-set overrides of configuration defaults (ADR-059).
+--
+-- NOT a second policy store: AppConfig remains the source of defaults,
+-- and a row here is an explicit, audited override of one of them. The
+-- effective value and its origin are reported together so a reader is
+-- never left guessing which won.
+CREATE TABLE IF NOT EXISTS system_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    updated_by  TEXT
+);
 """
+
+
+class EventIdentityConflictError(sqlite3.IntegrityError):
+    """
+    Raised when an event ID is re-submitted with conflicting canonical content.
+
+    Prevents silent merging or overwrite of distinct telemetry under an already
+    persisted event identity.
+    """
+
+
+# ── Canonical identity-conflict policy (ADR-050) ──
+#
+# The fields that define WHAT AN EVENT CLAIMS HAPPENED. Re-using an event
+# identity while changing any of them is a conflict, not a retry: the sender
+# is asserting something different under an identity that is already taken,
+# and keeping the first version silently would discard telemetry that feature
+# extraction, labelling and forecasting all read.
+#
+# Each entry maps a stored column to the comparable value on a NormalizedEvent.
+CONFLICT_FIELDS: dict[str, Callable[[NormalizedEvent], Any]] = {
+    # Provenance and time
+    "source_id": lambda e: e.source_id,
+    "observed_at": lambda e: e.observed_at.isoformat(),
+    "data_category": lambda e: e.data_category.value,
+    # What was observed
+    "event_type": lambda e: e.event_type.value,
+    # The connection five-tuple
+    "src_ip": lambda e: e.src_ip,
+    "dst_ip": lambda e: e.dst_ip,
+    "src_port": lambda e: e.src_port,
+    "dst_port": lambda e: e.dst_port,
+    "protocol": lambda e: e.protocol,
+    # The measurements — these feed the forecasting features directly
+    "duration": lambda e: e.duration,
+    "packets": lambda e: e.packets,
+    "bytes_total": lambda e: e.bytes_total,
+    # The training target and its provenance
+    "label": lambda e: e.label,
+    "label_provenance": lambda e: e.label_provenance.value,
+    # Application layer
+    "app_protocol": lambda e: e.app_protocol,
+    "http_method": lambda e: e.http_method,
+    "http_path": lambda e: e.http_path,
+    "http_status_code": lambda e: e.http_status_code,
+    "http_duration_ms": lambda e: e.http_duration_ms,
+    "dst_hostname": lambda e: e.dst_hostname,
+}
+
+# Deliberately NOT compared. Each exclusion is a decision, not an oversight:
+#
+#   event_id        the identity being checked, not evidence about it.
+#   ingested_at     backend object-construction time. Differs on every
+#                   redelivery by definition.
+#   received_at     when THIS delivery arrived. A retry necessarily has a
+#                   later one, and ADR-048 keeps the original, so comparing
+#                   it would make every legitimate retry a conflict.
+#   raw_reference   "json:record:N" — the record's POSITION in the submitted
+#                   batch. The same event resent at a different position is
+#                   still the same event.
+#   schema_version  describes the encoding, not the observation. A normalizer
+#                   upgrade must not turn retries into conflicts; any real
+#                   change it causes surfaces in the compared values above.
+#   quality_flags   derived by the normalizer FROM the compared fields rather
+#                   than asserted independently by the sender.
+CONFLICT_FIELDS_EXCLUDED = (
+    "event_id",
+    "ingested_at",
+    "received_at",
+    "raw_reference",
+    "schema_version",
+    "quality_flags",
+)
 
 
 class Database:
@@ -197,6 +302,9 @@ class Database:
             ("http_status_code", "INTEGER"),
             ("http_duration_ms", "REAL"),
             ("dst_hostname", "TEXT"),
+            # Phase 2. Nullable with no default, so existing rows keep
+            # "unknown" rather than acquiring a fabricated receipt time.
+            ("received_at", "TEXT"),
         ],
         "descriptive_analyses": [
             ("unsupported_field_counts", "TEXT NOT NULL DEFAULT '{}'"),
@@ -214,6 +322,7 @@ class Database:
 
     def initialize(self) -> None:
         """Create tables if absent, then add any columns introduced later."""
+        assert_safe_to_initialize(self.db_path)
         with self.get_connection() as conn:
             conn.executescript(TABLES_DDL)
             self._migrate_columns(conn)
@@ -230,8 +339,25 @@ class Database:
             for name, ddl in columns:
                 if name in existing:
                     continue
+                # A migration against a table that already holds data is
+                # a real change to someone's records, even when additive.
+                # It was previously an INFO line indistinguishable from
+                # ordinary startup noise, which is how one slipped past
+                # unnoticed (ADR-054).
+                try:
+                    rows = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                except sqlite3.Error:
+                    rows = -1
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-                logger.info("Migrated %s: added column %s", table, name)
+                if rows:
+                    logger.warning(
+                        "SCHEMA MIGRATION: added column %s to %s, which already "
+                        "holds %s row(s), in database %s. Existing rows keep NULL "
+                        "for this column.",
+                        name, table, rows, self.db_path,
+                    )
+                else:
+                    logger.info("Migrated %s: added column %s", table, name)
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -369,6 +495,36 @@ class Database:
                 return None
             return self._row_to_source(row)
 
+    def latest_received_at_by_source(self) -> dict[str, datetime]:
+        """
+        Most recent server-measured receipt per source.
+
+        Only rows with a non-NULL ``received_at`` contribute, so a source
+        that has never submitted over the API is simply absent — it is not
+        given a fabricated receipt.
+        """
+        results: dict[str, datetime] = {}
+        with self.get_connection() as conn:
+            try:
+                rows = conn.execute(
+                    """SELECT source_id, MAX(received_at) AS latest
+                       FROM normalized_events
+                       WHERE received_at IS NOT NULL
+                       GROUP BY source_id"""
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Database predates the column; no receipt evidence exists.
+                return {}
+        for row in rows:
+            if row["latest"]:
+                try:
+                    results[row["source_id"]] = datetime.fromisoformat(row["latest"])
+                except ValueError:
+                    logger.warning(
+                        "Unparseable received_at for source %s", row["source_id"]
+                    )
+        return results
+
     def list_sources(self) -> list[TelemetrySource]:
         """List all telemetry sources."""
         with self.get_connection() as conn:
@@ -403,14 +559,14 @@ class Database:
                     cursor = conn.execute(
                         """INSERT OR IGNORE INTO normalized_events
                            (event_id, schema_version, source_id, data_category,
-                            observed_at, ingested_at, event_type,
+                            observed_at, ingested_at, received_at, event_type,
                             src_ip, dst_ip, src_port, dst_port, protocol,
                             duration, packets, bytes_total,
                             label, label_provenance, quality_flags, raw_reference,
                             app_protocol, http_method, http_path,
                             http_status_code, http_duration_ms, dst_hostname)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                   ?, ?, ?, ?, ?, ?)""",
+                                   ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             event.event_id,
                             event.schema_version,
@@ -418,6 +574,11 @@ class Database:
                             event.data_category.value,
                             event.observed_at.isoformat(),
                             event.ingested_at.isoformat(),
+                            # NULL when no receipt was measured. INSERT OR
+                            # IGNORE means a re-delivered event keeps its
+                            # ORIGINAL receipt time rather than acquiring the
+                            # retry's — see ADR-048.
+                            event.received_at.isoformat() if event.received_at else None,
                             event.event_type.value,
                             event.src_ip,
                             event.dst_ip,
@@ -441,6 +602,35 @@ class Database:
                     )
                     if cursor.rowcount > 0:
                         count += 1
+                    else:
+                        # Existing event with same ID exists. Verify that this is
+                        # a legitimate retry/duplicate of the same logical event
+                        # rather than conflicting reuse of the event ID.
+                        existing = conn.execute(
+                            "SELECT " + ", ".join(CONFLICT_FIELDS) + " "
+                            "FROM normalized_events WHERE event_id = ?",
+                            (event.event_id,),
+                        ).fetchone()
+                        if existing is not None:
+                            # Every canonical field, not just the five-tuple.
+                            # A changed byte count or label under a reused
+                            # identity is a different claim about the world,
+                            # and dropping it silently would corrupt the
+                            # features and the training target alike.
+                            differing = [
+                                column
+                                for column, extract in CONFLICT_FIELDS.items()
+                                if existing[column] != extract(event)
+                            ]
+                            if differing:
+                                raise EventIdentityConflictError(
+                                    f"Event '{event.event_id}' already exists for source "
+                                    f"'{existing['source_id']}' with different content. "
+                                    f"Conflicting field(s): {', '.join(differing)}. "
+                                    "The stored event was NOT modified."
+                                )
+                except EventIdentityConflictError:
+                    raise
                 except sqlite3.IntegrityError as exc:
                     # INSERT OR IGNORE already absorbs duplicate primary keys
                     # (rowcount 0, no exception). Anything that still raises
@@ -544,6 +734,11 @@ class Database:
             data_category=DataCategory(row["data_category"]),
             observed_at=datetime.fromisoformat(row["observed_at"]),
             ingested_at=datetime.fromisoformat(row["ingested_at"]),
+            received_at=(
+                datetime.fromisoformat(row["received_at"])
+                if _column_present(row, "received_at") and row["received_at"]
+                else None
+            ),
             event_type=EventType(row["event_type"]),
             src_ip=row["src_ip"],
             dst_ip=row["dst_ip"],
@@ -656,6 +851,53 @@ class Database:
             ).fetchone()[0]
 
     # ──────────────── Import Summaries ────────────────
+
+    # ──────────────── operator setting overrides (ADR-059) ────────────────
+
+    def get_setting(self, key: str) -> Optional[str]:
+        """The stored override for `key`, or None when none is set."""
+        try:
+            with self.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT value FROM system_settings WHERE key = ?", (key,)
+                ).fetchone()
+        except sqlite3.OperationalError:
+            # A database that predates the table. No override exists.
+            return None
+        return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str, updated_by: str = "operator") -> None:
+        """Store an override. One statement, so it applies entirely or not at all."""
+        with self.get_connection() as conn:
+            conn.execute(
+                """INSERT INTO system_settings (key, value, updated_at, updated_by)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET
+                       value = excluded.value,
+                       updated_at = excluded.updated_at,
+                       updated_by = excluded.updated_by""",
+                (key, value, datetime.now(timezone.utc).isoformat(), updated_by),
+            )
+
+    def clear_setting(self, key: str) -> bool:
+        """Remove an override so the configured default applies again."""
+        with self.get_connection() as conn:
+            cur = conn.execute("DELETE FROM system_settings WHERE key = ?", (key,))
+            return cur.rowcount > 0
+
+    def set_source_enabled(self, source_id: str, enabled: bool) -> bool:
+        """
+        Enable or disable one source. Returns False when it does not exist.
+
+        Only the `enabled` column is touched: an administrative toggle
+        must not silently rewrite a source's counters or last-event time.
+        """
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE telemetry_sources SET enabled = ? WHERE source_id = ?",
+                (1 if enabled else 0, source_id),
+            )
+            return cur.rowcount > 0
 
     def save_import_summary(self, summary: ImportSummary) -> None:
         """Save an import summary."""

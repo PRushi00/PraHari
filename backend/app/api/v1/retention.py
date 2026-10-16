@@ -10,11 +10,14 @@ available and changes nothing.
 
 from __future__ import annotations
 
+import logging
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.api.auth import require_admin_in_central
 from app.api.deps import get_db
 from app.core.config import AppConfig, get_config
 from app.services.retention import (
@@ -25,6 +28,8 @@ from app.services.retention import (
     RetentionService,
 )
 from app.storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/retention", tags=["Retention"])
 
@@ -68,11 +73,120 @@ def _policy(req: RetentionRequest, config: AppConfig) -> RetentionPolicy:
     )
 
 
-@router.get("/policy")
-def get_policy(config: AppConfig = Depends(get_config)) -> dict:
-    """Report the configured retention policy and how it is applied."""
+RETENTION_DAYS_KEY = "retention_days"
+MIN_RETENTION_DAYS = 1
+MAX_RETENTION_DAYS = 36_500  # a century; beyond this the value is a mistake
+
+
+class RetentionPolicyUpdate(BaseModel):
+    """An operator's override of the configured retention period."""
+
+    retention_days: Optional[int] = Field(
+        default=None,
+        ge=MIN_RETENTION_DAYS,
+        le=MAX_RETENTION_DAYS,
+        description=(
+            "Days of telemetry to keep. Omit (null) to clear the override "
+            "and fall back to the configured default."
+        ),
+    )
+    reason: str = Field(default="", max_length=500)
+
+
+def effective_retention_days(db: Database, config: AppConfig) -> tuple[int, str]:
+    """
+    The retention period actually in force, and where it came from.
+
+    Precedence is explicit and reported: a stored operator override beats
+    the configured default. An unreadable override is ignored rather than
+    guessed at, so a corrupt row cannot silently shorten retention — the
+    direction that destroys data.
+    """
+    raw = db.get_setting(RETENTION_DAYS_KEY)
+    if raw is None:
+        return config.retention_days, "configured_default"
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.error(
+            "Stored retention override %r is not an integer; using the "
+            "configured default instead.", raw,
+        )
+        return config.retention_days, "configured_default_override_unreadable"
+    if not (MIN_RETENTION_DAYS <= value <= MAX_RETENTION_DAYS):
+        logger.error(
+            "Stored retention override %d is out of range; using the "
+            "configured default instead.", value,
+        )
+        return config.retention_days, "configured_default_override_out_of_range"
+    return value, "operator_override"
+
+
+@router.put("/policy")
+def update_policy(
+    req: RetentionPolicyUpdate,
+    db: Database = Depends(get_db),
+    config: AppConfig = Depends(get_config),
+    _: object = Depends(require_admin_in_central),
+) -> dict:
+    """
+    Set or clear the retention-period override.
+
+    **Changes a policy. Deletes nothing.** Pruning still happens only when
+    an operator calls POST /retention/enforce with its confirmation token,
+    so shortening retention here cannot destroy data as a side effect —
+    which is why this endpoint and enforcement stay separate.
+
+    Administrative in central mode; unrestricted on a loopback
+    deployment, matching the rest of the API.
+    """
+    previous, previous_origin = effective_retention_days(db, config)
+
+    if req.retention_days is None:
+        cleared = db.clear_setting(RETENTION_DAYS_KEY)
+        action_detail = (
+            f"cleared override (was {previous} via {previous_origin}); "
+            f"configured default {config.retention_days} now applies"
+        )
+    else:
+        db.set_setting(RETENTION_DAYS_KEY, str(req.retention_days))
+        cleared = False
+        action_detail = f"retention_days {previous} -> {req.retention_days}"
+
+    db.log_audit(
+        action="update_retention_policy",
+        resource_type="configuration",
+        resource_id=RETENTION_DAYS_KEY,
+        details=action_detail + (f"; reason={req.reason}" if req.reason else ""),
+    )
+
+    # Re-read rather than echoing the request: the response must describe
+    # what was persisted, not what was asked for.
+    effective, origin = effective_retention_days(db, config)
     return {
-        "retention_days": config.retention_days,
+        "retention_days": effective,
+        "origin": origin,
+        "configured_default": config.retention_days,
+        "override_cleared": cleared,
+        "previous_retention_days": previous,
+        "note": (
+            "Policy only. No record was deleted by this call; enforcement "
+            "remains a separate, confirmed operation."
+        ),
+    }
+
+
+@router.get("/policy")
+def get_policy(
+    db: Database = Depends(get_db),
+    config: AppConfig = Depends(get_config),
+) -> dict:
+    """Report the configured retention policy and how it is applied."""
+    effective, origin = effective_retention_days(db, config)
+    return {
+        "retention_days": effective,
+        "origin": origin,
+        "configured_default": config.retention_days,
         "default_eligible_categories": list(DEFAULT_ELIGIBLE_CATEGORIES),
         "enforcement": "manual",
         "automatic_pruning": False,

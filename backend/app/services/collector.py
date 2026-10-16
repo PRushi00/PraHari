@@ -28,6 +28,10 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 
 from app.adapters.base import get_adapter_registry
+from app.adapters.linux_telemetry import (
+    platform_is_linux,
+    query_linux_connections,
+)
 from app.adapters.windows_telemetry import (
     DEFAULT_TCP_STATES,
     WINDOWS_SOURCE_TYPE,
@@ -43,6 +47,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_SOURCE_ID = "windows_local_host"
 MIN_INTERVAL_SECONDS = 2.0
 MAX_CONSECUTIVE_FAILURES = 5
+
+
+
+def default_host_query_fn():
+    """
+    The host connection-table query for THIS platform.
+
+    Selected at construction rather than at import, so a test that
+    monkeypatches the platform sees the choice it expects. On an
+    unsupported platform the Windows function is returned and
+    `platform_supported` is False, so the collector refuses to start
+    rather than calling it.
+    """
+    if platform_is_linux():
+        return query_linux_connections
+    return query_windows_connections
 
 
 class CollectionGap(BaseModel):
@@ -136,8 +156,10 @@ class WindowsTelemetryCollectorService:
         self.source_id = source_id
         self.interval_seconds = max(MIN_INTERVAL_SECONDS, float(interval_seconds))
         self.include_loopback = include_loopback
-        # Injectable for tests; defaults to the real OS query.
-        self._query_fn = query_fn or query_windows_connections
+        # Injectable for tests and for any alternative producer; defaults to
+        # the real OS query.
+        self._query_fn = query_fn or default_host_query_fn()
+        self._uses_injected_source = query_fn is not None
 
         # Snapshot the local DNS cache alongside each poll so hostname
         # evidence is captured close in time to the connections it explains.
@@ -191,7 +213,26 @@ class WindowsTelemetryCollectorService:
 
     @property
     def platform_supported(self) -> bool:
-        return sys.platform == "win32"
+        """
+        Whether this collector can actually poll.
+
+        The gate exists to stop the **PowerShell connection-table probe**
+        running on a host that has no such table — not to stop collection
+        as such. When a caller injects its own query function, no Windows
+        facility is touched, so refusing would be refusing on a ground that
+        does not apply.
+
+        Found by running the suite on Linux: twelve collector tests that
+        inject a fake query were failing with "unavailable on platform
+        'linux'", and a genuine alternative producer would have been
+        refused for the same wrong reason.
+        """
+        if self._uses_injected_source:
+            return True
+        # Windows reads the PowerShell connection table; Linux reads
+        # /proc/net/tcp. Both produce the same raw record shape, so the
+        # rest of this service is identical on either (blueprint §4.4).
+        return sys.platform == "win32" or platform_is_linux()
 
     # ──────────────── lifecycle ────────────────
 
@@ -317,7 +358,9 @@ class WindowsTelemetryCollectorService:
         if not self.platform_supported:
             msg = (
                 f"Windows connection-table collection is unavailable on "
-                f"platform '{sys.platform}'"
+                f"platform '{sys.platform}'. This host has no Windows "
+                "connection table; supply an alternative query function or "
+                "ingest from a network sensor instead."
             )
             return self._record_failed_poll(polled_at, msg, state="unsupported")
 

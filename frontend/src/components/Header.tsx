@@ -22,6 +22,8 @@ export type NavTab =
   | "analysis"
   | "research"
   | "forecast"
+  | "system"
+  | "admin"
   | "audit";
 
 interface HeaderProps {

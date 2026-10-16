@@ -44,6 +44,17 @@ class AppConfig(BaseSettings):
     database_url: str = "sqlite:///./prahari.db"
     test_database_url: str = "sqlite:///./prahari_test.db"
 
+    # ── Research data store (separate from operational telemetry) ──
+    # Benchmark corpora (CSE-CIC-IDS2018 and similar) are third-party
+    # artefacts with their own labels, provenance and licence. They are kept
+    # out of the operational telemetry database, which is the operator's only
+    # copy of genuine local observations.
+    #
+    # Empty by default and deliberately NOT defaulted to a path: a research
+    # import with no dedicated store configured is refused, not redirected.
+    # See app/core/research_store.py.
+    research_database_url: str = ""
+
     # Paths
     data_dir: str = "./data"
     models_dir: str = "./models"
@@ -53,9 +64,18 @@ class AppConfig(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "json"
 
-    # Request limits
+    # Request limits (blueprint §4.2, §12). Enforced by
+    # app/api/limits.py — see ADR-052. These were configuration values
+    # with no enforcement until that record.
     max_request_size_mb: int = 50
     max_import_records: int = 100_000
+
+    # Rate limiting. Generous by default: the limiter exists to bound
+    # resource exhaustion, not to police a legitimate sensor's cadence,
+    # and no numerical service target is claimed without the measurement
+    # §16 requires. Set max_requests_per_window to 0 to disable.
+    rate_limit_requests: int = 600
+    rate_limit_window_seconds: float = 60.0
 
     # Retention
     retention_days: int = 365
@@ -111,6 +131,29 @@ class AppConfig(BaseSettings):
         if candidate.is_absolute():
             return candidate
         return (self.project_root / candidate).resolve()
+
+    def get_research_database_path(self) -> Path:
+        """
+        Absolute path of the research database, or raise.
+
+        Deliberately raises rather than returning a default: see
+        app.core.research_store.resolve_research_database for why there is no
+        fallback to the operational database.
+        """
+        from app.core.research_store import resolve_research_database
+
+        return resolve_research_database(self)
+
+    @property
+    def research_database_configured(self) -> bool:
+        """Whether a research store is configured and usable."""
+        from app.core.research_store import ResearchStoreError
+
+        try:
+            self.get_research_database_path()
+        except ResearchStoreError:
+            return False
+        return True
 
     @property
     def project_root(self) -> Path:

@@ -390,13 +390,14 @@ def test_collector_status_endpoint_before_any_collection(api_client):
 
 
 def test_collector_poll_endpoint_ingests_and_reports(api_client):
+    """
+    Runs on every platform: this fixture injects its own query function, so
+    no Windows facility is involved. Previously it was skipped off Windows
+    because the platform gate refused injected sources too — which also
+    meant the collector API had no Linux coverage at all.
+    """
     client, db = api_client
     res = client.post("/api/v1/collector/poll")
-
-    if sys.platform != "win32":
-        # Off Windows the endpoint must refuse clearly rather than pretend.
-        assert res.status_code == 501
-        return
 
     assert res.status_code == 200
     body = res.json()
@@ -414,10 +415,6 @@ def test_collector_poll_endpoint_ingests_and_reports(api_client):
 def test_collector_start_stop_endpoints(api_client):
     client, _ = api_client
     start = client.post("/api/v1/collector/start", json={"interval_seconds": 5})
-
-    if sys.platform != "win32":
-        assert start.status_code == 501
-        return
 
     assert start.status_code == 200
     assert start.json()["state"] == "running"
@@ -684,3 +681,24 @@ async def test_real_collection_still_refreshes_dns_evidence(temp_db):
         db=temp_db, source_id="y", query_fn=_fake_connections(1), refresh_dns=True
     )
     assert on.refresh_dns is True
+
+
+def test_real_os_collection_is_refused_off_windows(temp_db):
+    """
+    The platform gate still applies to the genuine connection-table probe.
+    Relaxing it for injected sources must not let the PowerShell path run
+    on a host that has no Windows connection table.
+    """
+    reset_collector(db=temp_db, source_id="real_os", query_fn=None)
+    app.dependency_overrides[get_db] = lambda: temp_db
+    try:
+        with TestClient(app) as client:
+            res = client.post("/api/v1/collector/poll")
+            if sys.platform == "win32":
+                assert res.status_code in (200, 503)
+            else:
+                assert res.status_code == 501
+                assert "connection-table" in str(res.json()["detail"]).lower()
+    finally:
+        app.dependency_overrides.clear()
+        reset_collector(None)

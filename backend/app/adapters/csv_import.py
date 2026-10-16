@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import csv
 import ipaddress
+import math
+import re
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -31,6 +33,8 @@ from app.schemas.events import (
 )
 
 logger = logging.getLogger(__name__)
+
+_AMBIGUOUS_SLASH_DATE = re.compile(r"^\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})")
 
 # ──────────────────────────────────────────────────────────────────
 # Known field mappings for CIC-IDS2018 CSV format
@@ -79,6 +83,19 @@ def _parse_timestamp(value: Optional[str]) -> tuple[Optional[datetime], list[str
     warnings = []
     if not value:
         return None, ["missing_timestamp"]
+
+    # A slash date whose first two components are both 1..12 cannot be read
+    # without knowing the convention: 02/03/2018 is 2 March or 3 February.
+    # Trying day-first then month-first "succeeds" on the first pattern and
+    # silently reorders the dataset — and chronological order is what every
+    # window, split and purge depends on. Such a value is rejected here; the
+    # research importer (adapters/research_csv.py) takes an explicit format
+    # for corpora where the convention is known.
+    ambiguous = _AMBIGUOUS_SLASH_DATE.match(value.strip())
+    if ambiguous:
+        first, second = int(ambiguous.group(1)), int(ambiguous.group(2))
+        if 1 <= first <= 12 and 1 <= second <= 12:
+            return None, ["ambiguous_date_format"]
 
     formats = [
         "%Y-%m-%d %H:%M:%S",
@@ -136,16 +153,42 @@ def _safe_int(value: Optional[str]) -> Optional[int]:
 
 
 def _safe_float(value: Optional[str]) -> Optional[float]:
-    """Safely convert to float, returning None on failure."""
+    """
+    Convert to a non-negative float, or None.
+
+    Returns None for missing, malformed, non-finite and negative input
+    alike. Callers that need to tell those apart should use
+    ``_safe_float_detailed``; this wrapper is kept for existing callers.
+    """
+    parsed, _ = _safe_float_detailed(value)
+    return parsed
+
+
+def _safe_float_detailed(value: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+    """
+    Convert to a non-negative float, reporting WHY when it fails.
+
+    "Absent", "unparseable", "not finite" and "negative where a count is
+    required" are four different facts about the data. Collapsing them into
+    a bare None loses the only signal that would tell an operator their file
+    is malformed rather than merely sparse.
+    """
     if value is None:
-        return None
+        return None, None
+    text = str(value).strip()
+    if not text:
+        return None, None
+    if text.lower() in ("nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"):
+        return None, "non_finite_value"
     try:
-        f = float(value.strip())
-        if f < 0:
-            return None
-        return f
+        number = float(text)
     except (ValueError, TypeError):
-        return None
+        return None, "malformed_number"
+    if not math.isfinite(number):
+        return None, "non_finite_value"
+    if number < 0:
+        return None, "invalid_negative_value"
+    return number, None
 
 
 def validate_and_normalize_row(
@@ -226,7 +269,12 @@ def validate_and_normalize_row(
 
 
     # --- Flow metrics ---
-    duration = _safe_float(_find_field(row, CIC_FIELD_MAP["duration"]))
+    duration, duration_issue = _safe_float_detailed(
+        _find_field(row, CIC_FIELD_MAP["duration"])
+    )
+    if duration_issue:
+        warnings.append(f"duration:{duration_issue}")
+        quality_flags.append(QualityFlag.INVALID_VALUE)
     packets = _safe_int(_find_field(row, CIC_FIELD_MAP["packets"]))
     bytes_total = _safe_int(_find_field(row, CIC_FIELD_MAP["bytes"]))
 

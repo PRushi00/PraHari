@@ -45,6 +45,18 @@ SALT_BYTES = 16
 TOKEN_BYTES = 32  # 256-bit tokens
 
 
+
+def _file_stamp(path: Optional[Path]) -> Optional[tuple[float, int]]:
+    """(mtime, size) for change detection, or None when unreadable."""
+    if path is None:
+        return None
+    try:
+        st = path.stat()
+        return (st.st_mtime, st.st_size)
+    except OSError:
+        return None
+
+
 class Role(str, Enum):
     """
     Capability granted by a credential.
@@ -98,10 +110,62 @@ class Credential:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     description: str = ""
+    # ── Lifecycle (ADR-055) ──
+    # Optional, UTC, ISO-8601. None means "does not expire", which is the
+    # behaviour every credential had before this field existed — adding it
+    # must not silently invalidate a store an operator is already running.
+    not_after: Optional[str] = None
+    # Set when a credential is deliberately withdrawn. Distinct from
+    # `enabled=False`: disabled is a pause an operator may undo, revoked is
+    # permanent and is recorded with its reason.
+    revoked_at: Optional[str] = None
+    revoked_reason: str = ""
+    # The credential this one replaces, recorded so an operator can see a
+    # rotation rather than two unrelated credentials for one source.
+    replaces_credential_id: Optional[str] = None
 
-    def verify(self, token: str) -> bool:
-        """Constant-time verification."""
-        if not self.enabled or not token:
+    def is_expired(self, now: Optional[datetime] = None) -> bool:
+        """
+        Whether `not_after` has passed.
+
+        An unparseable `not_after` counts as EXPIRED. The alternative —
+        treating a value we cannot read as "no expiry" — would turn a
+        corrupted store into an indefinitely valid credential.
+        """
+        if not self.not_after:
+            return False
+        now = now or datetime.now(timezone.utc)
+        try:
+            deadline = datetime.fromisoformat(self.not_after)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Credential %s has an unreadable not_after; treating as expired.",
+                self.credential_id,
+            )
+            return True
+        if deadline.tzinfo is None:
+            # A naive deadline is read as UTC rather than as local time, so
+            # the same store behaves identically on every host.
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        return now >= deadline
+
+    @property
+    def is_revoked(self) -> bool:
+        return bool(self.revoked_at)
+
+    def usable(self, now: Optional[datetime] = None) -> bool:
+        """Every lifecycle gate, independent of whether a token matches."""
+        return self.enabled and not self.is_revoked and not self.is_expired(now)
+
+    def verify(self, token: str, now: Optional[datetime] = None) -> bool:
+        """
+        Constant-time verification, after the lifecycle gates.
+
+        The gates are checked first deliberately: an expired or revoked
+        credential must fail whether or not the presented token is the
+        right one.
+        """
+        if not token or not self.usable(now):
             return False
         candidate = hash_token(token, bytes.fromhex(self.salt))
         return hmac.compare_digest(candidate, self.token_hash)
@@ -116,6 +180,10 @@ class Credential:
             "enabled": self.enabled,
             "created_at": self.created_at,
             "description": self.description,
+            "not_after": self.not_after,
+            "revoked_at": self.revoked_at,
+            "revoked_reason": self.revoked_reason,
+            "replaces_credential_id": self.replaces_credential_id,
         }
 
     @classmethod
@@ -124,6 +192,8 @@ class Credential:
         source_id: str,
         role: Role = Role.INGEST,
         description: str = "",
+        not_after: Optional[str] = None,
+        replaces_credential_id: Optional[str] = None,
     ) -> tuple["Credential", str]:
         """
         Mint a credential.
@@ -141,6 +211,8 @@ class Credential:
                 salt=salt.hex(),
                 token_hash=hash_token(token, salt),
                 description=description,
+                not_after=not_after,
+                replaces_credential_id=replaces_credential_id,
             ),
             token,
         )
@@ -198,10 +270,65 @@ class CredentialStore:
     during normal operation, and its path is excluded from version control.
     """
 
-    def __init__(self, credentials: Optional[list[Credential]] = None):
+    def __init__(
+        self,
+        credentials: Optional[list[Credential]] = None,
+        source_path: Optional[Path] = None,
+    ):
         self._by_id: dict[str, Credential] = {}
         for cred in credentials or []:
             self._by_id[cred.credential_id] = cred
+        # When the store came from a file, remember it so a revocation
+        # written by the admin CLI takes effect without a restart
+        # (ADR-055).
+        self._source_path = source_path
+        self._stamp = _file_stamp(source_path) if source_path else None
+
+    def reload_if_changed(self) -> bool:
+        """
+        Re-read the credential file when it has changed on disk.
+
+        Revocation has to be fast. Before this, `disable` edited the file
+        and the running process kept honouring the credential until
+        someone restarted it — which is not revocation, it is a note to
+        self.
+
+        Change is detected by (mtime, size). A corrupt or unreadable file
+        leaves the in-memory store **untouched**: an operator who breaks
+        the file must not thereby unauthenticate the whole fleet, and
+        must not have a half-parsed store silently swapped in either.
+        """
+        if self._source_path is None:
+            return False
+        stamp = _file_stamp(self._source_path)
+        if stamp == self._stamp:
+            return False
+
+        try:
+            records = json.loads(self._source_path.read_text(encoding="utf-8"))
+            replacement = self.from_records(records)
+        except (OSError, json.JSONDecodeError, MissingCredentialsError) as exc:
+            logger.error(
+                "Credential file changed but could not be re-read (%s); "
+                "keeping the previously loaded credentials.", exc,
+            )
+            # Do not advance the stamp: retry on the next request, so a
+            # fixed file is picked up without a restart.
+            return False
+
+        if not replacement._by_id:
+            logger.error(
+                "Credential file changed to an empty set; refusing to apply it."
+            )
+            return False
+
+        self._by_id = replacement._by_id
+        self._stamp = stamp
+        logger.info(
+            "Reloaded %d credential(s) after a change to the credential file",
+            len(self._by_id),
+        )
+        return True
 
     def __len__(self) -> int:
         return len(self._by_id)
@@ -222,11 +349,19 @@ class CredentialStore:
         if not token:
             raise InvalidCredentialError("No credential presented.")
 
+        # Pick up a revocation written since the last request.
+        self.reload_if_changed()
+
+        now = datetime.now(timezone.utc)
         matched: Optional[Credential] = None
         for cred in self._by_id.values():
-            if cred.verify(token):
+            if cred.verify(token, now=now):
                 matched = cred
         if matched is None:
+            # One wording for unknown, disabled, revoked and expired. The
+            # caller learns that it may not proceed and nothing else:
+            # distinguishing them would confirm which source ids exist and
+            # which credentials were once valid.
             raise InvalidCredentialError("Credential is not recognised.")
         return Principal(
             credential_id=matched.credential_id,
@@ -251,6 +386,18 @@ class CredentialStore:
                         enabled=bool(rec.get("enabled", True)),
                         created_at=str(rec.get("created_at", "")),
                         description=str(rec.get("description", "")),
+                        not_after=(
+                            str(rec["not_after"]) if rec.get("not_after") else None
+                        ),
+                        revoked_at=(
+                            str(rec["revoked_at"]) if rec.get("revoked_at") else None
+                        ),
+                        revoked_reason=str(rec.get("revoked_reason", "")),
+                        replaces_credential_id=(
+                            str(rec["replaces_credential_id"])
+                            if rec.get("replaces_credential_id")
+                            else None
+                        ),
                     )
                 )
             except (KeyError, ValueError) as exc:
@@ -312,6 +459,9 @@ class CredentialStore:
             )
 
         store = cls.from_records(records)
+        if path_value and not raw_json:
+            store._source_path = Path(path_value)
+            store._stamp = _file_stamp(store._source_path)
         logger.info(
             "Loaded %d central credential(s) from %s", len(store), origin
         )

@@ -70,7 +70,9 @@ Implementation/
 │   │   ├── schemas/           # Pydantic canonical models (events.py)
 │   │   ├── services/          # analysis.py (descriptive engine),
 │   │   │                      #   collector.py (live telemetry polling service)
-│   │   ├── storage/           # SQLite database layer with WAL mode
+│   │   ├── storage/           # SQLite database layer with WAL mode,
+│   │   │                      #   protected-database guard
+│   │   ├── agents/            # sensor_agent.py (optional forwarding agent)
 │   │   └── main.py            # FastAPI application & SPA static server
 │   ├── tests/
 │   │   ├── fixtures/          # sample_flows.csv (45-row fixture with valid & malformed rows)
@@ -310,7 +312,7 @@ with `synthetic`, `sim` or `test`.
 
 ## 6. Verification & Automated Test Suites
 
-### Run the automated test suite (317 backend tests)
+### Run the automated test suite (1070 backend tests, 4 skipped)
 
 ```bash
 cd backend && .venv/Scripts/python.exe -m pytest tests/ -v
@@ -559,3 +561,363 @@ the audit log.
 > Central mode has been verified **over loopback only**. Exposing a
 > listener beyond 127.0.0.1 is outside this project's safety boundary and
 > has not been done or tested.
+
+---
+
+## 16. Platform Support and Network Sensors
+
+PraHari runs on **Windows 11** (fully verified) and on **Linux** (the
+application starts, serves and shuts down cleanly; verified on Ubuntu
+26.04 / Python 3.14.4 in an earlier run).
+
+**Linux host telemetry is implemented but not yet executed on Linux.**
+`app/adapters/linux_telemetry.py` reads `/proc/net/tcp` and
+`/proc/net/tcp6` and emits the same raw record shape as the Windows
+adapter, so the collector, normalization and deterministic event identity
+are the same code on both. It is tested against real `/proc` text and
+synthetic `/proc` trees, and four tests that need a live Linux host or
+POSIX symlinks are **declared skips** on Windows. Until those run on
+Linux, this README does not call Linux host collection verified.
+
+To verify on an authorized Linux host:
+
+```bash
+cd backend && python -m pytest tests/unit/test_linux_telemetry.py -v
+```
+
+macOS is unassessed and Docker is unverified. See
+[docs/PLATFORM_SUPPORT.md](docs/PLATFORM_SUPPORT.md) for what was checked.
+
+PraHari **does not capture packets** and will not. For network-wide
+telemetry it ingests JSON from an existing sensor:
+
+- **Suricata** — enable `eve-log` with `flow`, `dns`, `http`, `alert`.
+- **Zeek** — `redef LogAscii::use_json = T;`
+
+POST the records to `/api/v1/stream/ingest/ndjson`. The adapter contract is
+pinned by 26 tests.
+
+> A Suricata signature is stored as `detector_output`, never as ground
+> truth. It is the detector's opinion. Training on detector labels produces
+> a model that predicts that detector's alerts, and PraHari says so in the
+> readiness report rather than letting the metrics imply otherwise.
+
+Monitoring a network you do not own or administer requires the owner's
+written authorization. That is a prerequisite, not a configuration step.
+
+---
+
+## 17. Additional Host Observations (Windows)
+
+Two further unprivileged, read-only sources. Neither captures packets.
+
+### UDP endpoints
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/hostobs/udp/poll
+```
+
+Locally **bound UDP sockets** — which process holds which local port. UDP
+is connectionless and Windows records no peer, so these events carry no
+destination at all, and the capability profile declares `dst_ip` /
+`dst_port` *not applicable* rather than missing. Pass `?persist=false` to
+inspect the source without adding to the dataset.
+
+### Interface counters
+
+```bash
+curl http://127.0.0.1:8000/api/v1/hostobs/interfaces
+```
+
+Real cumulative bytes and packets **per network interface** — the only
+genuine volume measurement available without packet capture.
+
+> These are **not flow metrics**. They cannot be attributed to a
+> connection, a process or a destination, and they must never be summed
+> alongside per-flow byte counts from an imported dataset. The payload
+> carries `measurement_scope: "interface_cumulative"` and
+> `attributable_to_flow: false` so this cannot be lost in transit. They are
+> never written into `normalized_events`.
+
+A delta against the previous reading is included when one exists. Across an
+adapter reset no delta is derived.
+
+Both endpoints return `501 unsupported_platform` off Windows.
+
+---
+
+## 18. Lead Time and Uncertainty
+
+**How far ahead can it warn?**
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/forecast/lead-time-curve -H "Content-Type: application/json" -d "{\"lead_times_seconds\":[0,30,60,120]}"
+```
+
+Re-runs the complete protocol once per lead time with everything else held
+constant. A lead time whose split cannot support an honest evaluation comes
+back as a **refusal with its reason**, never silently omitted — omitting it
+would imply the curve was measured and flat there.
+
+**How much of the number is noise?**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/forecast/uncertainty
+```
+
+Percentile bootstrap intervals over the held-out instances. Refused, with a
+stated reason, when the holdout has fewer than 20 instances or 5 positives,
+or only one class.
+
+Both are subject to the same research gate as training.
+
+---
+
+## 19. Models
+
+| Model | Kind |
+|---|---|
+| `baseline_constant` | Majority class |
+| `baseline_threshold` | Interpretable rate heuristic |
+| `logistic_regression` | Interpretable linear |
+| `random_forest_forecaster` | Nonlinear ensemble |
+| `temporal_window_stack` | **Temporal** — the previous N windows concatenated, so order matters |
+| `lstm_forecaster` | **LSTM** — single layer, BPTT with Adam, implemented in NumPy |
+
+All five are evaluated on the same target, dataset and purged chronological
+split. Lag stacking for the temporal model is applied **after** the split,
+separately per side, so a test instance can never carry a training-period
+window in its lags.
+
+The LSTM is hand-written, so its correctness is **demonstrated**: analytic
+gradients match central finite differences to a worst relative error of
+1.3e-07, and it reaches 100% holdout accuracy on a task whose answer is
+visible only in the first timestep (a memoryless model scores below 0.70
+on the same task).
+
+> **It is the worst non-baseline model on the data available here** —
+> PR-AUC 0.751 against 0.886 for the window-stack model. That is reported,
+> not buried. There is no Transformer.
+
+Add generalization to the picture:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/forecast/generalization -H "Content-Type: application/json" -d "{\"group_by\":\"source_id\"}"
+```
+
+Leave-one-group-out transfer, with the within-group score beside it so the
+**gap** is readable. The report states whether the groups are genuinely
+independent environments — several synthetic groups from one generator are
+not, and it says so.
+
+---
+
+## 20. Research Data Isolation
+
+Benchmark corpora and operational telemetry do not share a database.
+
+The operational store is the only copy of genuine observations from this
+host. A benchmark corpus is a third-party artefact with its own labels,
+provenance and licence. PraHari keeps them apart and **fails closed**.
+
+```bash
+export PRAHARI_RESEARCH_DATABASE_URL=sqlite:///./research/benchmark.db
+```
+
+```bash
+curl http://127.0.0.1:8000/api/v1/research/import/status
+```
+
+A research import is refused **before any row is read** when the setting is
+missing, invalid, or resolves to the operational database — including
+through `..` or the legacy `backend/prahari.db`. There is no fallback. The
+general CSV endpoints also refuse `data_category=historical_import` aimed at
+the operational store.
+
+See [.env.research.example](.env.research.example) for the full setup and
+[docs/DATASET_ACQUISITION.md](docs/DATASET_ACQUISITION.md) for the import
+policy, manifest fields and outstanding prerequisites.
+
+> No dataset has been acquired, licensed, inspected, imported or validated.
+> The workflow is built and tested against synthetic fixtures only.
+
+---
+
+## 21. Bounded Ingestion and System Health
+
+Ingestion is **synchronous**: a request is parsed, stored and answered in
+the handler, and the response reports what was actually written
+(`stored_records` / `duplicate_records`). There is therefore **no queue**,
+and the API says so rather than reporting a queue depth of zero — a zero
+would assert an empty queue, and `null` says there is none.
+
+Bounding is applied at admission instead. `AdmissionController` caps
+concurrent in-flight ingestion; a request that cannot be admitted is
+refused with **503 and `Retry-After`**, carrying `stored_records: 0`. The
+slot is reserved before parsing, so a flood of large bodies cannot all be
+normalized into memory at once.
+
+`GET /api/v1/system/health` returns everything the dashboard's **System
+Health** view needs, in one response:
+
+| Block | Contents |
+|---|---|
+| `ingestion` | admitted / refused, stored / duplicate / rejected, conflicts, processing-latency percentiles |
+| `sources` | per-source state with the freshness basis and whether it depends on the source's clock |
+| `storage` | `integrity_check`, size, journal mode, migration state |
+| `models` | trained models, whether inference is available |
+| `adapters` | per-adapter processed / rejected counters |
+| `limits` | each configured limit **with whether it is enforced** |
+
+Every field obeys one rule: a value that was not measured is `null`,
+never `0`. The UI renders those as "not measured".
+
+```bash
+curl http://127.0.0.1:8000/api/v1/system/health
+```
+
+## 22. Request Limits
+
+| Control | Default | Enforced by |
+|---|---|---|
+| Max request body | 50 MB | `RequestSizeLimitMiddleware` → 413 |
+| Max import records | 100,000 | lower of the request's and the configured ceiling |
+| Rate limit | 600 / 60s per caller | `RateLimitMiddleware` → 429 + `Retry-After` |
+| Ingestion concurrency | 8 | `AdmissionController` → 503 + `Retry-After` |
+
+Rate limiting is keyed by **authenticated credential** where there is one,
+and by client address otherwise, so one sensor cannot spend another's
+allowance. `/health` is exempt so an operator can still diagnose a
+deployment that is refusing them.
+
+**Both limiters are per process.** Running several workers multiplies the
+effective allowance by the worker count. No throughput figure is claimed:
+none has been benchmarked.
+
+## 23. Sensor Forwarding Agent (optional)
+
+`backend/app/agents/sensor_agent.py` forwards locally collected events to
+a central PraHari over the **existing** ingestion contract — no second
+event schema and no second identity mechanism. The transport is the
+standard library, so it adds no dependency on a sensor host.
+
+```python
+from app.agents.sensor_agent import AgentConfig, SensorAgent
+
+agent = SensorAgent(AgentConfig(
+    endpoint="https://prahari.example/api/v1/stream/ingest/ndjson",
+    source_id="sensor-a",
+    token=os.environ["PRAHARI_SENSOR_TOKEN"],   # never hard-code this
+    buffer_capacity=10_000,
+    batch_size=100,
+))
+agent.offer(event_dict)
+agent.flush_once()
+print(agent.health())      # statistics; never contains the token
+agent.shutdown(drain=True)
+```
+
+**Delivery is at-least-once with server-side deduplication — not
+exactly-once.** The agent retries until acknowledged and the server stores
+at most one copy because event identity is deterministic, but a response
+lost in transit causes a resend and the duplicate is absorbed at the
+database, not prevented on the wire.
+
+The buffer is **bounded and in memory**: unacknowledged events are lost if
+the process is killed. Other deliberate behaviours:
+
+- 400 / 401 / 403 / 409 / 413 are **not retried** — resending the same
+  bytes is a loop. The batch is dropped with a counted, logged reason.
+- Transient failures retry with bounded exponential backoff and jitter; a
+  server-supplied `Retry-After` wins.
+- Plaintext HTTP to a non-loopback host is **refused at configuration
+  time**: a bearer credential over plaintext is compromised on first use.
+- The agent registers no service, opens no port and changes no firewall
+  rule. Starting it is the operator's explicit act.
+
+## 24. Administration
+
+The **Administration** view is wired to real endpoints; it is not a mockup.
+
+| Operation | Endpoint | Authorization |
+|---|---|---|
+| Enable / disable a source | `PATCH /api/v1/sources/{id}/enabled` | admin in central mode |
+| Set or clear retention | `PUT /api/v1/retention/policy` | admin in central mode |
+
+**Changing the retention policy deletes nothing.** It sets a number;
+pruning still requires `POST /api/v1/retention/enforce` with its
+confirmation token. The UI says so before you submit.
+
+Retention is reported as three values together — the period in force, its
+`origin` (configured default or operator override), and the configured
+default — so it is never ambiguous which one won. An unreadable stored
+override falls back to the default rather than to zero, because guessing
+could shorten retention, which is the direction that destroys data.
+
+Credentials are **not** managed from the UI. They are issued, rotated and
+revoked offline with `scripts/manage_credentials.py`:
+
+```bash
+python scripts/manage_credentials.py add    --file creds.json --source-id sensor-a --role ingest --expires-in-days 90
+python scripts/manage_credentials.py rotate --file creds.json --credential-id <id> --overlap-days 7
+python scripts/manage_credentials.py revoke --file creds.json --credential-id <id> --reason "host decommissioned"
+```
+
+A rotation keeps the `source_id`, so a rotated secret stays in the same
+idempotency namespace. A revocation takes effect **on the next request**,
+without restarting the backend. A remote credential-minting route was
+deliberately not built: it would require the server to write the
+credential store, turning a stolen admin token into the power to issue
+credentials.
+
+## 25. Telemetry Adapters: What Each One Actually Does
+
+| Adapter | Status | Boundary |
+|---|---|---|
+| Windows host (`windows_telemetry.py`) | Live-verified | Connection-table polling; metadata only, no packet capture |
+| Linux host (`linux_telemetry.py`) | Implemented, **not run on Linux** | `/proc/net/tcp`; process attribution is partial without elevation |
+| CSV / NDJSON / Zeek / Suricata | Verified against fixtures | Parses exports; no live sensor has fed PraHari |
+| NetFlow / IPFIX (`netflow.py`) | Implemented | Parses **exported** flow text (nfdump, SiLK, YAF). **Not a collector**: it does not speak the binary protocol or open a UDP port |
+| Synthetic replay | Verified | Test fixtures; never evidence of real-world performance |
+
+The NetFlow distinction matters: PraHari ingests what an authorized
+collector exported. Opening a listener would mean collecting from the
+network, which is out of scope without explicit authorization.
+
+## 26. Protected Databases and Test Isolation
+
+`prahari.db` holds genuine telemetry from the operator's host. It is
+gitignored and must never be used by tests.
+
+`app/storage/guard.py` enforces that: under pytest, `Database.initialize()`
+**refuses** any database outside a temporary directory, because
+`initialize()` creates tables and applies migrations. Outside pytest it is
+a no-op, so a real deployment upgrades exactly as before.
+
+This exists because of a real incident, recorded in ADR-054: an ad-hoc
+diagnostic imported the app without overriding the database dependency,
+the FastAPI lifespan ran `initialize()`, and a pending additive migration
+was applied to the live database. The data survived intact, but the guard
+and a WARNING-level log on any migration against a populated table were
+added so it cannot happen silently again.
+
+## 27. What PraHari Does Not Establish
+
+Read this before drawing conclusions from anything above.
+
+- **No real-data predictive performance.** No labelled corpus has been
+  acquired. Every metric in this repository comes from synthetic fixtures
+  and is labelled as such. The scientific acceptance criteria are
+  **BLOCKED**, not met.
+- **No live network-sensor integration.** The Zeek/Suricata adapters are
+  verified against fixtures; no real sensor has fed this system.
+- **No Linux host-collection run.** The adapter exists and is tested on
+  fixtures; the Linux-only tests are declared skips on Windows.
+- **No cryptographic source authenticity.** Credentials are bearer tokens.
+  PraHari does not terminate TLS, so central mode must sit behind HTTPS —
+  a deployment prerequisite, not a property of this code.
+- **No exactly-once delivery** anywhere, and no automatic blocking,
+  isolation or remediation. PraHari is advisory.
+
+A passing test suite shows the software behaves as specified. It is not
+evidence that PraHari can forecast attacks.

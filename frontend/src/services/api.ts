@@ -6,6 +6,9 @@ import {
   NormalizedEvent,
   PaginatedEventsResponse,
   TelemetrySource,
+  SystemHealthReport,
+  SourceHealthSummary,
+  RetentionPolicy,
 } from "../types";
 
 const BASE_URL = "/api/v1";
@@ -38,6 +41,37 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
 export const api = {
   // System Health
   getHealth: (): Promise<HealthResponse> => request<HealthResponse>("/health"),
+
+  getSystemHealth: (): Promise<SystemHealthReport> =>
+    request<SystemHealthReport>("/system/health"),
+
+  getSourceHealth: (): Promise<SourceHealthSummary> =>
+    request<SourceHealthSummary>("/sources/health"),
+
+  setSourceEnabled: (
+    sourceId: string,
+    enabled: boolean,
+    reason = ""
+  ): Promise<TelemetrySource> =>
+    request<TelemetrySource>(`/sources/${encodeURIComponent(sourceId)}/enabled`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, reason }),
+    }),
+
+  getRetentionPolicy: (): Promise<RetentionPolicy> =>
+    request<RetentionPolicy>("/retention/policy"),
+
+  /** `null` clears the override and restores the configured default. */
+  updateRetentionPolicy: (
+    retentionDays: number | null,
+    reason = ""
+  ): Promise<RetentionPolicy> =>
+    request<RetentionPolicy>("/retention/policy", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retention_days: retentionDays, reason }),
+    }),
 
   // Telemetry Sources
   getSources: (): Promise<TelemetrySource[]> => request<TelemetrySource[]>("/sources"),

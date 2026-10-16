@@ -99,7 +99,12 @@ def test_manifest_records_everything_needed_to_rebuild(seeded_db):
 
     # Provenance makes synthetic data obvious.
     assert m.data_category_breakdown == {"synthetic_demo": 800}
-    assert "rule_based" in m.label_provenance_breakdown
+    # Synthetic labels must be reported as synthetic, not as locally derived
+    # rules and certainly not as ground truth. Every metric this project has
+    # produced so far rests on them.
+    assert "synthetic_rule" in m.label_provenance_breakdown
+    assert "rule_based" not in m.label_provenance_breakdown
+    assert "dataset_ground_truth" not in m.label_provenance_breakdown
 
     # Environment and dependencies, for diagnosis.
     assert m.environment.python_version and m.environment.platform

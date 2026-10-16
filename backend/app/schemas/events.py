@@ -28,6 +28,9 @@ class EventType(str, Enum):
     CONNECTION = "connection"
     DNS_QUERY = "dns_query"
     HTTP_REQUEST = "http_request"
+    # A locally bound UDP socket. NOT a conversation: UDP is connectionless
+    # and the OS records no peer, so these carry no destination.
+    UDP_ENDPOINT = "udp_endpoint"
     ALERT = "alert"
     HOST_EVENT = "host_event"
     UNKNOWN = "unknown"
@@ -50,10 +53,31 @@ class DataCategory(str, Enum):
 
 
 class LabelProvenance(str, Enum):
-    """How a label was assigned to an event."""
+    """
+    How a label was assigned to an event.
+
+    These are not interchangeable. A label's provenance determines whether it
+    may be treated as a training target: dataset ground truth and analyst
+    annotation are evidence about what happened, whereas a detector's output
+    or a generator's rule is evidence about what some *system decided*.
+    """
+
+    # A label supplied by the corpus itself (e.g. a CSE-CIC-IDS2018 flow label).
     DATASET_GROUND_TRUTH = "dataset_ground_truth"
+
+    # Derived locally by a deterministic rule over observed fields.
     RULE_BASED = "rule_based"
-    SYNTHETIC_RULE = "rule_based"
+
+    # Produced by the synthetic generator. MUST remain distinguishable from
+    # RULE_BASED: synthetic labels describe data that was invented, so a
+    # metric computed over them is not evidence about real traffic.
+    SYNTHETIC_RULE = "synthetic_rule"
+
+    # Emitted by a detector (Suricata signature, Zeek notice, EDR verdict).
+    # This is the detector's opinion, NOT confirmation that an attack
+    # occurred, and must never be presented as ground truth.
+    DETECTOR_OUTPUT = "detector_output"
+
     MODEL_PREDICTION = "model_prediction"
     ANALYST_ANNOTATION = "analyst_annotation"
     UNLABELED = "unlabeled"
@@ -92,6 +116,48 @@ class FieldAvailability(str, Enum):
 
 
 # Canonical fields whose availability varies by telemetry source.
+# ──────────────────────────────────────────────────────────────────
+# Timestamp plausibility — ONE policy, in one place
+# ──────────────────────────────────────────────────────────────────
+#
+# Windows reports an unset socket creation time as the FILETIME epoch
+# (1601-01-01). A single such record implies a ~425-year observation span,
+# which silently corrupts every time-ordered calculation: window
+# generation, split boundaries, rate features, and any audit that measures
+# elapsed observation.
+#
+# This policy previously existed as three separate copies — in the adapter,
+# the readiness gate and (not at all) in the descriptive analysis. They
+# disagreed: readiness reported an 18-hour span for the same dataset the
+# feasibility audit scored at 100% temporal integrity across 425 years.
+# One definition, imported everywhere, is the fix.
+
+MIN_PLAUSIBLE_YEAR = 2000
+MAX_CLOCK_SKEW_SECONDS = 3600.0
+
+
+def is_plausible_timestamp(
+    value: "datetime | None", now: "datetime | None" = None
+) -> bool:
+    """
+    True when a timestamp could describe a real observation on this host.
+
+    Rejects pre-2000 values (the FILETIME epoch and similar sentinels) and
+    anything more than an hour in the future (clock skew beyond this is not
+    skew). Naive datetimes are read as UTC.
+    """
+    if value is None:
+        return False
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    if value.year < MIN_PLAUSIBLE_YEAR:
+        return False
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return (value - reference).total_seconds() <= MAX_CLOCK_SKEW_SECONDS
+
+
 CAPABILITY_FIELDS = (
     "src_ip", "dst_ip", "src_port", "dst_port", "protocol",
     "duration", "packets", "bytes_total",
@@ -244,7 +310,24 @@ class NormalizedEvent(BaseModel):
     )
     ingested_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        description="When PraHari ingested/processed this event."
+        description=(
+            "When this event object was CONSTRUCTED inside the backend. "
+            "Close to processing time, but NOT a receipt timestamp: for a "
+            "bulk import it is when the row was normalized, not when the "
+            "data arrived. Use received_at for receipt."
+        ),
+    )
+    received_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Server receipt time, captured at the API boundary when a remote "
+            "source SUBMITTED this event. Never supplied by the client. "
+            "None means 'no measured receipt time' and is the correct value "
+            "for events the backend produced itself (local collection), for "
+            "historical imports whose original arrival time is unknown, and "
+            "for records written before this field existed. It is never "
+            "backfilled or inferred."
+        ),
     )
 
     # Event classification
@@ -419,6 +502,30 @@ class ImportSummary(BaseModel):
     rejection_reasons: dict[str, int] = Field(default_factory=dict)
     schema_version: str = SCHEMA_VERSION
 
+    # ── Storage outcome (ADR-050) ──
+    #
+    # accepted_records counts what PARSED and validated. It says nothing
+    # about what was STORED: a retry of an already-ingested batch parses
+    # perfectly and stores nothing. These two separate the cases so a
+    # caller is not told "accepted 500" for a request that wrote no rows.
+    #
+    # Optional, and None on every path that does not report storage
+    # (file imports, synthetic replay), so existing consumers are
+    # unaffected. Neither field is persisted to import_summaries — see
+    # save_import_summary — so no migration is required.
+    stored_records: Optional[int] = Field(
+        default=None,
+        description="Rows newly written by this request. None when not reported.",
+    )
+    duplicate_records: Optional[int] = Field(
+        default=None,
+        description=(
+            "Records that parsed and were already present under the same "
+            "event identity with identical canonical content, so nothing "
+            "was written. None when not reported."
+        ),
+    )
+
 
 class TelemetrySource(BaseModel):
     """Registered telemetry source."""
@@ -455,6 +562,17 @@ class DescriptiveAnalysis(BaseModel):
     # Time range
     time_range_start: Optional[datetime] = None
     time_range_end: Optional[datetime] = None
+
+    # Records whose observed_at could not describe a real observation
+    # (FILETIME epoch, far future). Excluded from the range above.
+    implausible_timestamp_events: int = 0
+
+    # How many records actually carried each measurement. The averages below
+    # are over these counts, not over total_events — on a mixed dataset the
+    # two differ by an order of magnitude.
+    duration_measured_count: int = 0
+    packets_measured_count: int = 0
+    bytes_measured_count: int = 0
 
     # ── Derived provenance ──
     # Computed FROM the analyzed events, never supplied by the caller. The

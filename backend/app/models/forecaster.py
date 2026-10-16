@@ -33,6 +33,7 @@ from app.models.feature_extractor import (
     WindowFeatureExtractor,
     WindowingReport,
 )
+from app.models.lstm_forecaster import LSTMForecaster, to_sequences
 from app.schemas.events import NormalizedEvent
 
 logger = logging.getLogger(__name__)
@@ -60,11 +61,29 @@ class SplitIntegrityReport(BaseModel):
     test_start_timestamp: Optional[datetime] = None
     windowing: Optional[WindowingReport] = None
 
+    # Mirrored from the windowing report so a caller reading split integrity
+    # cannot miss it. Deliberately named apart from SelectionCoverage's
+    # `truncated`, which reports a RECORD-count cap: the two are independent
+    # and an evaluation can be limited by either, or both.
+    windowing_truncated: bool = False
+    windows_omitted: int = 0
+
     # ── Reproducibility manifest (blueprint sections 8 and 16) ──
     # Enough to reconstruct exactly which instances were used, without
     # embedding any telemetry.
     manifest_version: str = "1.0.0"
+
+    # Content fingerprint of the event set, computed with the SAME function
+    # the experiment manifest uses, so the two agree. Previously this field
+    # held a hash of counts and window parameters, which could never match
+    # the manifest's value although both were called "dataset_fingerprint".
     dataset_fingerprint: Optional[str] = None
+
+    # Hash of the evaluation SETUP (instance counts, window parameters,
+    # split ratio, positives, time range). Useful for spotting that a run
+    # used a different protocol; it is not content-addressed over the
+    # records and must not be read as a dataset identity.
+    split_configuration_fingerprint: Optional[str] = None
     source_breakdown: dict[str, int] = Field(default_factory=dict)
     label_provenance_breakdown: dict[str, int] = Field(default_factory=dict)
     data_category_breakdown: dict[str, int] = Field(default_factory=dict)
@@ -133,6 +152,37 @@ class ModelMetrics(BaseModel):
     evaluated_on_holdout: bool = True
     test_positive_count: int = 0
     test_negative_count: int = 0
+
+    # ── Three separate questions, deliberately not collapsed ──
+    #
+    # A number that can be calculated, an evaluation large enough to mean
+    # something, and a model that actually discriminates are three different
+    # claims. Reporting one flag for all three is how a chance-level result
+    # gets read as a weak-but-real one.
+    #
+    #   metrics_computable  — both classes present, so precision / recall /
+    #                         PR-AUC / ROC-AUC are mathematically defined
+    #   sample_adequate     — enough held-out instances for the figures to
+    #                         carry a usable confidence interval
+    #   predictions_degenerate — the model emitted a single class, or ranked
+    #                         nothing (constant scores). Metrics are still
+    #                         computed and reported; they simply describe a
+    #                         model that made no distinctions
+    #   discrimination_demonstrated — PR-AUC above the no-skill base rate on
+    #                         an adequate sample. None when undeterminable.
+    #                         True here means "better than chance on this
+    #                         sample", NOT "a useful forecasting model"
+    metrics_computable: bool = True
+    sample_adequate: bool = True
+    predictions_degenerate: bool = False
+    predicted_positive_count: int = 0
+    predicted_negative_count: int = 0
+    distinct_score_count: int = 0
+    scores_constant: bool = False
+    no_skill_pr_auc: Optional[float] = None
+    discrimination_demonstrated: Optional[bool] = None
+
+    # Composite kept for existing consumers: computable AND adequate.
     metrics_interpretable: bool = True
     interpretation_warnings: list[str] = Field(default_factory=list)
 
@@ -213,6 +263,129 @@ class BaselineThresholdModel:
             probs.append(min(1.0, score))
         p = np.array(probs)
         return np.column_stack([1.0 - p, p])
+
+
+# ──────────────────────────────────────────────────────────────────
+# Temporal (sequence) modelling
+# ──────────────────────────────────────────────────────────────────
+
+# Below this many held-out instances the figures carry confidence intervals
+# too wide to support any comparison between models.
+MIN_INTERPRETABLE_TEST_INSTANCES = 20
+
+TEMPORAL_LAGS = 3
+
+# LSTM sequence settings. Deliberately small: on the few hundred sequences
+# this data yields, a larger network memorises the training period rather
+# than learning anything that transfers.
+LSTM_TIMESTEPS = 4
+LSTM_HIDDEN = 12
+LSTM_EPOCHS = 120
+LSTM_LEARNING_RATE = 0.03
+
+
+def stack_lagged_windows(
+    X: np.ndarray, y: np.ndarray, lags: int = TEMPORAL_LAGS
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Turn each instance into a short sequence of consecutive windows.
+
+    Instance *i* becomes the concatenation of windows ``i-lags … i``, so the
+    model sees how the features **moved** rather than a single snapshot.
+    That is what makes it a temporal model: order matters, and the same
+    feature values in a different sequence give a different input.
+
+    Stacking is applied **separately to the training and test matrices**,
+    never to the full dataset before splitting. Done before the split, a
+    test instance near the boundary would carry training-period windows in
+    its lags, re-importing exactly the contamination the purge removes. The
+    cost is the first ``lags`` instances of each side, which are dropped
+    because they have no complete history.
+
+    This is NOT an LSTM — see the module note on what that would require.
+    """
+    if lags < 1:
+        raise ValueError("lags must be at least 1")
+    if len(X) <= lags:
+        return np.empty((0, X.shape[1] * (lags + 1))), np.empty((0,))
+
+    rows = [
+        np.concatenate([X[i - k] for k in range(lags, -1, -1)])
+        for i in range(lags, len(X))
+    ]
+    return np.asarray(rows), y[lags:]
+
+
+class PersistenceBaseline:
+    """
+    "An attack is happening now, so one will happen next."
+
+    The baseline that matters most on bursty attack data and the one most
+    often missing from published results. A long DDoS episode spans many
+    consecutive windows, so simply carrying the current state forward scores
+    very well — and any model that cannot beat it has demonstrated nothing
+    about forecasting.
+
+    It is fitted on the OBSERVATION-window attack indicator only. That
+    indicator describes `[t-W, t)`, strictly before the target interval
+    `[t+L, t+L+H)`, so no future label is used. It is passed in separately
+    rather than added to the feature matrix, because a feature meaning
+    "an attack is in progress" would hand every other model the same
+    shortcut and turn the whole evaluation into detection.
+    """
+
+    def __init__(self) -> None:
+        self.rate_when_active: float = 0.5
+        self.rate_when_quiet: float = 0.5
+
+    def fit(self, observation_attack: np.ndarray, y: np.ndarray) -> "PersistenceBaseline":
+        observation_attack = np.asarray(observation_attack).astype(int).ravel()
+        y = np.asarray(y).astype(int).ravel()
+        active = observation_attack == 1
+        quiet = ~active
+        # Empirical P(incident ahead | state now), from TRAINING rows only.
+        self.rate_when_active = float(y[active].mean()) if active.any() else 0.5
+        self.rate_when_quiet = float(y[quiet].mean()) if quiet.any() else 0.0
+        return self
+
+    def predict_proba(self, observation_attack: np.ndarray) -> np.ndarray:
+        state = np.asarray(observation_attack).astype(int).ravel()
+        p = np.where(state == 1, self.rate_when_active, self.rate_when_quiet)
+        return np.column_stack([1.0 - p, p])
+
+    def predict(self, observation_attack: np.ndarray) -> np.ndarray:
+        return (self.predict_proba(observation_attack)[:, 1] >= 0.5).astype(int)
+
+
+def score_positive_class(model: Any, X: np.ndarray) -> np.ndarray:
+    """Probability of the positive class, or a hard prediction as a fallback."""
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(X)
+        return probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+    return np.asarray(model.predict(X)).astype(float)
+
+
+class HoldoutPredictions:
+    """
+    Held-out truth and scores from the last evaluation, kept in memory so
+    uncertainty can be estimated without retraining.
+
+    Truth is stored **per model** because the temporal model's holdout is
+    shorter: lag stacking drops the first instances, which have no complete
+    history. Resampling one model's scores against another's labels would
+    silently misalign them.
+    """
+
+    def __init__(self) -> None:
+        self.scores: dict[str, np.ndarray] = {}
+        self._truth: dict[str, np.ndarray] = {}
+
+    def record(self, model_id: str, y_true: np.ndarray, scores: np.ndarray) -> None:
+        self._truth[model_id] = np.asarray(y_true).astype(int)
+        self.scores[model_id] = np.asarray(scores).astype(float)
+
+    def y_true_for(self, model_id: str) -> np.ndarray:
+        return self._truth[model_id]
 
 
 def evaluate_model_on_split(
@@ -305,15 +478,68 @@ def evaluate_model_on_split(
             "Test split contains ZERO negative windows; false-positive rate and "
             "specificity cannot be estimated."
         )
-    if len(y_test) < 20:
+    if len(y_test) < MIN_INTERPRETABLE_TEST_INSTANCES:
         interpretation_warnings.append(
             f"Test split contains only {len(y_test)} windows; metrics carry very wide "
             "confidence intervals and are not a reliable performance estimate."
         )
 
+    # ── Degeneracy: did the model actually make distinctions? ──
+    predicted_pos = int(np.sum(preds == 1))
+    predicted_neg = int(np.sum(preds == 0))
+    distinct_scores = int(len(np.unique(np.round(p_pos, 10))))
+    scores_constant = distinct_scores <= 1
+    degenerate = (predicted_pos == 0 or predicted_neg == 0) or scores_constant
+
+    computable = test_pos > 0 and test_neg > 0
+    adequate = computable and len(y_test) >= MIN_INTERPRETABLE_TEST_INSTANCES
+
+    # The no-skill reference for PR-AUC is the positive base rate, not an
+    # arbitrary cutoff: a classifier that ranks at random achieves it.
+    no_skill = (test_pos / len(y_test)) if len(y_test) else None
+
+    discrimination: Optional[bool] = None
+    if not adequate:
+        discrimination = None
+    elif degenerate:
+        discrimination = False
+    elif pr_auc is not None and no_skill is not None:
+        discrimination = bool(pr_auc > no_skill)
+
+    if degenerate:
+        if scores_constant:
+            interpretation_warnings.append(
+                f"DEGENERATE: the model produced a single score "
+                f"({float(p_pos[0]) if len(p_pos) else float('nan'):.4f}) for every "
+                "held-out window, so it ranked nothing. The metrics below are "
+                "arithmetic over a constant prediction, not evidence of skill."
+            )
+        else:
+            only = "positive" if predicted_neg == 0 else "negative"
+            interpretation_warnings.append(
+                f"DEGENERATE: the model predicted the {only} class for all "
+                f"{len(y_test)} held-out windows. Recall and precision reduce to "
+                "the class balance; this is not evidence of discrimination."
+            )
+    if discrimination is False and not degenerate:
+        interpretation_warnings.append(
+            f"PR-AUC {pr_auc} does not exceed the no-skill base rate "
+            f"{round(no_skill, 4) if no_skill is not None else None}; the model "
+            "did not outperform random ranking on this sample."
+        )
+
     metrics = ModelMetrics(
         model_name=model_name,
         model_type=model_type,
+        metrics_computable=computable,
+        sample_adequate=adequate,
+        predictions_degenerate=degenerate,
+        predicted_positive_count=predicted_pos,
+        predicted_negative_count=predicted_neg,
+        distinct_score_count=distinct_scores,
+        scores_constant=scores_constant,
+        no_skill_pr_auc=round(no_skill, 4) if no_skill is not None else None,
+        discrimination_demonstrated=discrimination,
         detected_events=int(tp),
         missed_events=int(fn),
         false_alarms=int(fp),
@@ -323,7 +549,7 @@ def evaluate_model_on_split(
         evaluated_on_holdout=True,
         test_positive_count=test_pos,
         test_negative_count=test_neg,
-        metrics_interpretable=(test_pos > 0 and test_neg > 0 and len(y_test) >= 20),
+        metrics_interpretable=adequate,
         interpretation_warnings=interpretation_warnings,
         accuracy=round(acc, 4),
         precision=round(prec, 4),
@@ -367,6 +593,11 @@ class ThreatForecastingPipeline:
         self.model_metrics: dict[str, ModelMetrics] = {}
         self.active_model_id = "random_forest_forecaster"
         self.last_split_report: Optional[SplitIntegrityReport] = None
+        self.last_holdout: Optional[HoldoutPredictions] = None
+        # Set by the API layer: what was selected, out of what, and whether
+        # the selection was truncated. Carried here so every consumer of a
+        # result can see the coverage it was computed over.
+        self.last_selection_coverage: Any = None
 
     def train_and_evaluate_all(
         self,
@@ -428,20 +659,29 @@ class ThreatForecastingPipeline:
 
         purged = int(test_start - train_end)
 
-        # A fingerprint of the exact instance set, so an evaluation can be
-        # tied to its inputs without storing any telemetry.
-        fingerprint_src = "|".join([
-            str(len(events)),
-            str(len(X)),
-            f"{eff_window}/{eff_lead}/{eff_horizon}/{eff_stride}",
-            str(train_ratio),
-            str(int(y.sum())),
-            (min(e.observed_at for e in events).isoformat() if events else ""),
-            (max(e.observed_at for e in events).isoformat() if events else ""),
-        ])
-        dataset_fingerprint = hashlib.sha256(
-            fingerprint_src.encode("utf-8")
+        # Two distinct fingerprints, deliberately named for what they are.
+        #
+        # The setup hash ties an evaluation to the protocol that produced
+        # it. It is NOT a dataset identity: two different corpora with the
+        # same counts, positives and time range would collide.
+        split_configuration_fingerprint = hashlib.sha256(
+            "|".join([
+                str(len(events)),
+                str(len(X)),
+                f"{eff_window}/{eff_lead}/{eff_horizon}/{eff_stride}",
+                str(train_ratio),
+                str(int(y.sum())),
+                (min(e.observed_at for e in events).isoformat() if events else ""),
+                (max(e.observed_at for e in events).isoformat() if events else ""),
+            ]).encode("utf-8")
         ).hexdigest()[:16]
+
+        # The dataset identity is content-addressed over the records, using
+        # the same function the experiment manifest uses so that the value
+        # reported here and the value stored in a manifest are comparable.
+        from app.research.experiment import fingerprint_events
+
+        dataset_fingerprint = fingerprint_events(events)
 
         src_breakdown: dict[str, int] = {}
         prov_breakdown: dict[str, int] = {}
@@ -460,6 +700,7 @@ class ThreatForecastingPipeline:
         self.last_split_report = SplitIntegrityReport(
             configured_train_ratio=train_ratio,
             dataset_fingerprint=dataset_fingerprint,
+            split_configuration_fingerprint=split_configuration_fingerprint,
             source_breakdown=src_breakdown,
             label_provenance_breakdown=prov_breakdown,
             data_category_breakdown=cat_breakdown,
@@ -486,6 +727,8 @@ class ThreatForecastingPipeline:
             train_end_timestamp=ts[train_end - 1] if ts and 0 < train_end <= len(ts) else None,
             test_start_timestamp=ts[test_start] if ts and test_start < len(ts) else None,
             windowing=report,
+            windowing_truncated=bool(report.windows_truncated) if report else False,
+            windows_omitted=int(report.windows_omitted) if report else 0,
         )
 
         span_requirement = (
@@ -524,30 +767,138 @@ class ThreatForecastingPipeline:
                 split_report=self.last_split_report,
             )
 
+        holdout = HoldoutPredictions()
+
+        # 0. Persistence baseline — "attack now ⇒ attack next".
+        #
+        # Uses the same rows and the same split as every other model. It is
+        # skipped rather than faked when the observation-attack indicator is
+        # unavailable (for example after fallback chunking changed the row
+        # count).
+        obs_mask = getattr(self.extractor, "last_observation_attack_mask", None)
+        if obs_mask is not None and len(obs_mask) == len(y):
+            m0 = PersistenceBaseline()
+            met0, m0 = evaluate_model_on_split(
+                m0, "Persistence Baseline (attack now ⇒ attack next)",
+                "baseline_persistence",
+                obs_mask[:train_end], y_train,
+                obs_mask[test_start:], y_test,
+            )
+            self.trained_models["baseline_persistence"] = m0
+            self.model_metrics["baseline_persistence"] = met0
+            holdout.record(
+                "baseline_persistence", y_test,
+                score_positive_class(m0, obs_mask[test_start:]),
+            )
+        else:
+            logger.info(
+                "Persistence baseline skipped: observation-attack indicator "
+                "unavailable or misaligned (%s vs %d instances).",
+                None if obs_mask is None else len(obs_mask), len(y),
+            )
+
         # 1. Baseline Constant
         m1 = BaselineConstantModel()
         met1, m1 = evaluate_model_on_split(m1, "Majority Class Baseline", "baseline_constant", X_train, y_train, X_test, y_test)
         self.trained_models["baseline_constant"] = m1
         self.model_metrics["baseline_constant"] = met1
+        holdout.record("baseline_constant", y_test, score_positive_class(m1, X_test))
 
         # 2. Baseline Threshold
         m2 = BaselineThresholdModel()
         met2, m2 = evaluate_model_on_split(m2, "Rate Threshold Baseline", "baseline_threshold", X_train, y_train, X_test, y_test)
         self.trained_models["baseline_threshold"] = m2
         self.model_metrics["baseline_threshold"] = met2
+        holdout.record("baseline_threshold", y_test, score_positive_class(m2, X_test))
 
         # 3. Logistic Regression
         m3 = LogisticRegression(max_iter=1000, random_state=42)
         met3, m3 = evaluate_model_on_split(m3, "Logistic Regression", "logistic_regression", X_train, y_train, X_test, y_test)
         self.trained_models["logistic_regression"] = m3
         self.model_metrics["logistic_regression"] = met3
+        holdout.record("logistic_regression", y_test, score_positive_class(m3, X_test))
 
         # 4. Random Forest / Tree Ensemble
         m4 = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=42)
         met4, m4 = evaluate_model_on_split(m4, "Random Forest Forecaster", "random_forest", X_train, y_train, X_test, y_test)
         self.trained_models["random_forest_forecaster"] = m4
         self.model_metrics["random_forest_forecaster"] = met4
+        holdout.record("random_forest_forecaster", y_test, score_positive_class(m4, X_test))
 
+        # 5. Temporal window-sequence model.
+        #
+        # Evaluated under the SAME target, dataset and split as the others,
+        # so the comparison is like for like. It is skipped — not faked —
+        # when stacking leaves too little data or only one class, because a
+        # metric computed on such a holdout would not be interpretable.
+        Xtr_seq, ytr_seq = stack_lagged_windows(X_train, y_train)
+        Xte_seq, yte_seq = stack_lagged_windows(X_test, y_test)
+        if (
+            len(Xtr_seq) >= 4
+            and len(Xte_seq) >= 1
+            and len(np.unique(ytr_seq)) == 2
+        ):
+            m5 = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=42)
+            met5, m5 = evaluate_model_on_split(
+                m5,
+                f"Temporal Window Sequence (lag {TEMPORAL_LAGS})",
+                "temporal_window_stack",
+                Xtr_seq, ytr_seq, Xte_seq, yte_seq,
+            )
+            self.trained_models["temporal_window_stack"] = m5
+            self.model_metrics["temporal_window_stack"] = met5
+            # Its holdout is shorter than the others by TEMPORAL_LAGS.
+            holdout.record("temporal_window_stack", yte_seq, score_positive_class(m5, Xte_seq))
+        else:
+            logger.info(
+                "Temporal window-sequence model skipped: lag stacking left "
+                "%d train / %d test instances with %d class(es).",
+                len(Xtr_seq), len(Xte_seq), len(np.unique(ytr_seq)) if len(ytr_seq) else 0,
+            )
+
+        # 6. LSTM sequence model (the blueprint's intended architecture).
+        #
+        # Sequences are built AFTER the split, separately per side, for the
+        # same reason as the stacked temporal model: a test sequence built
+        # before the split would reach back into the training period.
+        #
+        # Skipped — not faked — when the split leaves too little data or one
+        # class, because a metric from such a holdout is uninterpretable.
+        Xtr_lstm, ytr_lstm = to_sequences(X_train, y_train, LSTM_TIMESTEPS)
+        Xte_lstm, yte_lstm = to_sequences(X_test, y_test, LSTM_TIMESTEPS)
+        if (
+            len(Xtr_lstm) >= 8
+            and len(Xte_lstm) >= 1
+            and len(np.unique(ytr_lstm)) == 2
+        ):
+            try:
+                m6 = LSTMForecaster(
+                    hidden_size=LSTM_HIDDEN,
+                    epochs=LSTM_EPOCHS,
+                    learning_rate=LSTM_LEARNING_RATE,
+                    seed=42,
+                )
+                met6, m6 = evaluate_model_on_split(
+                    m6, f"LSTM Sequence (t={LSTM_TIMESTEPS})", "lstm",
+                    Xtr_lstm, ytr_lstm, Xte_lstm, yte_lstm,
+                )
+                self.trained_models["lstm_forecaster"] = m6
+                self.model_metrics["lstm_forecaster"] = met6
+                holdout.record(
+                    "lstm_forecaster", yte_lstm, score_positive_class(m6, Xte_lstm)
+                )
+            except Exception:  # noqa: BLE001
+                # A failed LSTM must not take the whole evaluation with it;
+                # the other five models are still valid results.
+                logger.warning("LSTM evaluation failed; omitted", exc_info=True)
+        else:
+            logger.info(
+                "LSTM skipped: %d train / %d test sequences, %d class(es).",
+                len(Xtr_lstm), len(Xte_lstm),
+                len(np.unique(ytr_lstm)) if len(ytr_lstm) else 0,
+            )
+
+        self.last_holdout = holdout
         return self.model_metrics
 
     def predict_recent_window(

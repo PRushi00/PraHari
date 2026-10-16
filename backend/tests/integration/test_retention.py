@@ -356,10 +356,34 @@ def test_nothing_prunes_automatically_on_startup(db, tmp_path):
 
 
 def test_retention_tests_never_touch_the_operational_database():
-    """Guard: the suite must be pinned to a throwaway database."""
+    """
+    The suite must never open the operator's live telemetry store.
+
+    Checks the property that matters — the resolved path is not the
+    repository's prahari.db — rather than looking for "tmp" in the string.
+    The substring form failed on Linux purely because the throwaway
+    database sat under $HOME, which is isolation by any reasonable reading.
+    """
     import os
+    from pathlib import Path
+
+    from app.core.config import get_config
 
     url = os.environ.get("PRAHARI_DATABASE_URL", "")
-    assert url and ("tmp" in url.lower() or "temp" in url.lower()), (
-        f"tests are not isolated from the operational store: {url!r}"
+    assert url, "tests must pin an isolated database URL"
+
+    resolved = Path(str(get_config().get_database_path())).resolve()
+    operational = (Path(__file__).resolve().parents[3] / "prahari.db").resolve()
+    legacy = (Path(__file__).resolve().parents[2] / "prahari.db").resolve()
+
+    assert resolved != operational, (
+        f"tests resolved to the OPERATIONAL database at {resolved}"
     )
+    assert resolved != legacy, (
+        f"tests resolved to the legacy backend database at {resolved}"
+    )
+    assert resolved.name != "prahari.db", (
+        f"tests resolved to a file named prahari.db ({resolved}); name the "
+        "throwaway database distinctly so this guard cannot be fooled"
+    )
+

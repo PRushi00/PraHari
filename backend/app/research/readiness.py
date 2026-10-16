@@ -23,7 +23,12 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.schemas.events import DataCategory, NormalizedEvent
+from app.schemas.events import (
+    DataCategory,
+    LabelProvenance,
+    NormalizedEvent,
+    is_plausible_timestamp,
+)
 
 # A supervised forecaster needs enough windows to train on the past and
 # evaluate on strictly later data after the contaminated boundary is purged.
@@ -35,8 +40,12 @@ MIN_TIME_SPAN_SECONDS = 1800.0  # 30 minutes
 
 # Mirrors the adapter's guard: a stored timestamp outside this range cannot
 # describe an observed event and must not contribute to the span.
-MIN_PLAUSIBLE_YEAR = 2000
-MAX_CLOCK_SKEW_SECONDS = 3600.0
+# Re-exported from the schema module, which owns the single definition.
+# Kept as names here because existing tests and callers import them.
+from app.schemas.events import (  # noqa: E402
+    MAX_CLOCK_SKEW_SECONDS,
+    MIN_PLAUSIBLE_YEAR,
+)
 
 
 class ReadinessState(str, Enum):
@@ -88,6 +97,15 @@ class ReadinessReport(BaseModel):
     time_span_seconds: float = 0.0
     data_categories: dict[str, int] = Field(default_factory=dict)
     label_provenances: dict[str, int] = Field(default_factory=dict)
+
+    # Labels that are not statements about what happened. A detector's
+    # signature is its own opinion, a model prediction is an inference, and a
+    # synthetic rule describes invented data. They are still labels and are
+    # still counted, but a result computed over them is not evidence about
+    # real incidents, so they are surfaced rather than silently pooled with
+    # corpus ground truth.
+    non_ground_truth_labelled_events: int = 0
+    label_caveats: list[str] = Field(default_factory=list)
 
     # Target definition this assessment is made against
     prediction_target: str = ""
@@ -147,10 +165,7 @@ def assess_readiness(
     # of centuries and satisfy the duration requirement on nonsense.
     now = datetime.now(timezone.utc)
     plausible_times = sorted(
-        e.observed_at
-        for e in events
-        if e.observed_at.year >= MIN_PLAUSIBLE_YEAR
-        and e.observed_at <= now + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS)
+        e.observed_at for e in events if is_plausible_timestamp(e.observed_at, now)
     )
     implausible_count = total - len(plausible_times)
     span = (
@@ -195,8 +210,11 @@ def assess_readiness(
             required=f">= {MIN_LABELLED_EVENTS} labelled events",
             observed=f"{len(labelled)} labelled",
             detail=(
-                "Supervised forecasting needs ground truth. Unlabelled traffic is "
-                "not counted as benign: absence of a label is not evidence of safety."
+                "Supervised forecasting needs labels. Unlabelled traffic is not "
+                "counted as benign: absence of a label is not evidence of safety. "
+                "Labels that are a detector's or a model's output, or that were "
+                "generated synthetically, are counted here but reported "
+                "separately — they are not ground truth."
             ),
         ),
         Requirement(
@@ -216,6 +234,34 @@ def assess_readiness(
     ]
 
     unmet = [r.name for r in requirements if not r.satisfied]
+
+    # ── Label-provenance caveats (reported, never silently blocking) ──
+    NOT_GROUND_TRUTH = {
+        LabelProvenance.DETECTOR_OUTPUT: (
+            "{n} labelled event(s) carry a detector's signature as their label. "
+            "That is the detector's opinion, not confirmation that an incident "
+            "occurred. A model trained on these learns to predict that "
+            "detector's alerts."
+        ),
+        LabelProvenance.MODEL_PREDICTION: (
+            "{n} labelled event(s) are labelled by a model's own prediction. "
+            "Training on these would evaluate a model against itself."
+        ),
+        LabelProvenance.SYNTHETIC_RULE: (
+            "{n} labelled event(s) were generated synthetically. Results over "
+            "them demonstrate that the pipeline runs; they are not evidence of "
+            "real-world forecasting effectiveness."
+        ),
+    }
+    label_caveats: list[str] = []
+    non_ground_truth = 0
+    for provenance, template in NOT_GROUND_TRUTH.items():
+        count = sum(
+            1 for e in labelled if e.label_provenance is provenance
+        )
+        if count:
+            non_ground_truth += count
+            label_caveats.append(template.format(n=count))
 
     # ── Determine state: report the nearest blocking cause ──
     if not requirements[0].satisfied or not requirements[1].satisfied:
@@ -295,6 +341,8 @@ def assess_readiness(
         time_span_seconds=round(span, 1),
         data_categories=categories,
         label_provenances=provenances,
+        non_ground_truth_labelled_events=non_ground_truth,
+        label_caveats=label_caveats,
         prediction_target=TARGET_DESCRIPTION,
         prediction_horizon_seconds=prediction_horizon_seconds,
         observation_window_seconds=observation_window_seconds,
