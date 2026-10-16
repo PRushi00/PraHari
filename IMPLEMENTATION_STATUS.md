@@ -1741,3 +1741,47 @@ have, and it compares fields, not just names.
 
 The scientific position. No labelled corpus, so no metric here is evidence
 of predictive performance on real traffic.
+
+---
+
+## Session 23 — Timestamp Investigation and Verification Audit
+
+**1088 backend passed / 4 skipped · 67 frontend passed.** Typecheck and
+build clean. No code defect was found; one evidence gap was closed.
+
+### The 65 implausible timestamps: diagnosed, not a live defect
+
+All 65 are `1601-01-01T00:00:00Z` — the Windows FILETIME epoch — from
+`windows_local_host`, every one a `TimeWait` socket with `pid=0`.
+
+The adapter guard that rejects this **already exists and works**. Proof
+from the operational database, read-only: the 65 were ingested in a single
+26-minute window on 2026-10-11, carry only `missing_field` (the current
+code adds `invalid_value` + `timestamp_uncertainty`), 1,612 later rows
+carry those flags, and of 3,263 Windows events ingested afterwards, zero
+have a 1601 timestamp.
+
+So they are **pre-fix residue in the protected database**, left untouched.
+The feasibility gate's refusal is correct and stays. See ADR-060.
+
+### What was actually missing
+
+Coverage. The unit tests stopped at `validate_and_normalize` and the
+research-gate test injected 1601 straight onto an event object — neither
+proved a sentinel cannot survive persistence and serialization.
+`test_timestamp_integrity_roundtrip.py` adds 18 tests across the whole
+path, five sentinel shapes, and the gate's behaviour with and without bad
+records.
+
+### Verified by existing evidence, not re-asserted
+
+| Area | Evidence |
+|---|---|
+| Live Windows telemetry | 49 passed — dedup across polls, port reuse, failure surfaced, gaps recorded, restart safety, unavailable metrics null not invented, no app-layer fields fabricated, four-way accounting balances |
+| Provenance and the research gate | 58 passed |
+| Security and authorization | 129 passed — central auth, identity boundary, credential lifecycle, administration, limits |
+
+### Unchanged
+
+No labelled corpus, so forecasting remains correctly gated and no metric
+here is evidence of predictive performance.

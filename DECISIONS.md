@@ -2623,3 +2623,68 @@ Credential rotation and revocation are **not** exposed in the UI. They
 remain operator-run CLI commands by the decision in ADR-051: a remote
 minting or revocation route would require the server to write the
 credential store, which is the property that decision rested on.
+
+---
+
+## ADR-060: The 65 Implausible Timestamps Are Pre-Fix Residue, Not a Live Defect
+
+### Context
+The Feasibility screen reports 65 records with implausible timestamps out
+of 5,524 audited, and the temporal-integrity criterion fails, so the gate
+refuses to approve forecasting. The question was whether this is a live
+code defect or historical data.
+
+### Evidence (read-only inspection of the operational database)
+Every one of the 65 is identical in shape:
+
+| Property | Value |
+|---|---|
+| `observed_at` | `1601-01-01T00:00:00+00:00` — the **Windows FILETIME epoch** |
+| `source_id` | `windows_local_host` (all 65) |
+| `raw_reference` | `windows:tcp;state=TimeWait;pid=0` |
+| `quality_flags` | `["missing_field"]` |
+
+Windows returns an unset `CreationTime` as the FILETIME zero point for a
+socket with no recorded start — PID 0 TimeWait entries. An early adapter
+stored that verbatim as the observation time.
+
+Four facts establish that the defect is already fixed:
+
+1. All 65 were ingested in **one 26-minute window**, 2026-10-11 17:33–17:59.
+2. They carry only `missing_field`. The current code adds `invalid_value`
+   **and** `timestamp_uncertainty` to exactly this case, so these rows
+   cannot have been written by it.
+3. **1,612** rows elsewhere carry both of those flags — the guard working.
+4. Of **3,263** Windows events ingested after that window, **zero** have a
+   1601 timestamp.
+
+The fix lives in `WindowsConnectionAdapter.validate_and_normalize`: an
+implausible `creation_time` is discarded, the record falls back to the
+**poll time** — which is genuine evidence, PraHari did see the connection
+then — and is flagged so the substitution is visible.
+
+### Decision
+**The 65 records are left exactly as they are.** They sit in the protected
+operational database, which this work may not modify. Rewriting them would
+destroy the only record of what was actually stored, and the alternative —
+deleting them — would make a failing gate pass by hiding its cause.
+
+The feasibility gate's refusal is **correct behaviour and stays**. Its
+score is `order_ratio × plausible_fraction`, so it moves with the verdict
+rather than printing 100% beside a failure, and the detail names the
+count, the exclusion and the reason.
+
+### What was added
+`tests/integration/test_timestamp_integrity_roundtrip.py` — 18 tests. The
+existing unit tests stop at `validate_and_normalize`, and the research-gate
+test injects 1601 directly onto an event object; neither proved a sentinel
+cannot survive **persistence and serialization**. These do: adapter →
+database → API, plus five sentinel shapes (FILETIME, OLE, Unix epoch,
+unparseable, absent), a future creation time, and proof that the
+substituted value is the recorded poll time and not `now()`.
+
+### Remaining
+Clearing the 65 rows requires either an approved, audited data-repair
+operation on the operational database, or accepting that the gate stays
+closed for any audit whose window includes 2026-10-11 17:33–17:59. Neither
+is a code change, and neither was authorised here.
