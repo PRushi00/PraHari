@@ -2688,3 +2688,65 @@ Clearing the 65 rows requires either an approved, audited data-repair
 operation on the operational database, or accepting that the gate stays
 closed for any audit whose window includes 2026-10-11 17:33–17:59. Neither
 is a code change, and neither was authorised here.
+
+---
+
+## ADR-061: Measured Counts Were Computed and Then Dropped on Save
+
+### Context
+Tracing dashboard metrics from the UI back to storage found a stored
+analysis reporting, simultaneously:
+
+```
+avg_bytes                    11474.63      bytes_measured_count      0
+avg_duration               877145.7048     duration_measured_count   0
+implausible_timestamp_events      0        (65 such records exist)
+```
+
+Two different failures in one row. An average printed beside "0 measured"
+is self-contradictory. Worse, the anomaly count flatly denied the 65
+FILETIME records that the Feasibility screen reports in the same session.
+
+### Root cause
+`services/analysis.py` computes all four correctly — `bytes_measured_count
+= len(bytes_list)` at line 241. The `descriptive_analyses` table had **no
+column for any of them**, so `save_analysis` silently discarded them and
+`_row_to_analysis` rebuilt the object with the Pydantic default `0`.
+
+A comparison of the model against the schema found exactly four such
+fields: `bytes_measured_count`, `packets_measured_count`,
+`duration_measured_count`, `implausible_timestamp_events`. Every one is a
+"how much of this was actually measured" counter — precisely the fields
+whose whole purpose is to stop a reader trusting an average, and each
+defaulted to the most misleading possible value.
+
+This is the same defect class as ADR-052 and ADR-051: a value that exists
+in one place, is lost at a boundary, and is read back as a confident zero.
+
+### Decision
+The four columns are added through the existing `_ADDED_COLUMNS` additive
+mechanism, persisted by `save_analysis` and read by `_row_to_analysis`.
+
+**`-1` is the sentinel for "this row predates the column"**, surfaced as
+`None`. The model fields widen from `int = 0` to `Optional[int] = None`.
+A stored analysis cannot be recomputed retroactively; backfilling 0 would
+invent a measurement nobody took, which is the error being fixed. The
+three states stay distinct:
+
+| Value | Meaning |
+|---|---|
+| a number | that many events carried the field |
+| `0` | measured, and none carried it — correct for the Windows table, which supplies no byte counts |
+| `None` | not recorded; this analysis predates the column |
+
+### Consequences
+- **Positive**: an average can no longer appear beside a contradictory
+  count, and a new analysis reports the real implausible-timestamp total
+  instead of 0.
+- **Negative**: the 30 analyses already stored keep `None`. They are not
+  backfilled, deliberately.
+- The operational database gains the columns on its next startup, through
+  the same additive path as ADR-048. Not applied here: this work does not
+  migrate the protected database. Tested on temporary databases only —
+  `test_analysis_persistence.py`, 14 tests, including the migration from a
+  pre-column schema and proof that `-1` reads as `None` and never as `0`.

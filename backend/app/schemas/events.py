@@ -565,14 +565,14 @@ class DescriptiveAnalysis(BaseModel):
 
     # Records whose observed_at could not describe a real observation
     # (FILETIME epoch, far future). Excluded from the range above.
-    implausible_timestamp_events: int = 0
+    implausible_timestamp_events: Optional[int] = None
 
     # How many records actually carried each measurement. The averages below
     # are over these counts, not over total_events — on a mixed dataset the
     # two differ by an order of magnitude.
-    duration_measured_count: int = 0
-    packets_measured_count: int = 0
-    bytes_measured_count: int = 0
+    duration_measured_count: Optional[int] = None
+    packets_measured_count: Optional[int] = None
+    bytes_measured_count: Optional[int] = None
 
     # ── Derived provenance ──
     # Computed FROM the analyzed events, never supplied by the caller. The

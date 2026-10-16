@@ -1785,3 +1785,54 @@ records.
 
 No labelled corpus, so forecasting remains correctly gated and no metric
 here is evidence of predictive performance.
+
+---
+
+## Session 24 — Dashboard Trace, Persistence Defect, Live Verification
+
+**1102 backend passed / 4 skipped · 67 frontend passed.** Typecheck, build
+and `git diff --check` clean.
+
+### Counts reconcile exactly
+
+Traced UI metrics to API to database:
+
+| Source | Value |
+|---|---|
+| Database (read-only) | 5674 = 3774 live + 1900 synthetic |
+| `/health` | 5674 |
+| `/events` total | 5674 |
+| `/events?data_category=live_telemetry` | 3774 |
+| `/events?data_category=synthetic_demo` | 1900 |
+| `/analysis/latest` | 5674 |
+| `/research/audit` | 5674, 65 implausible |
+
+The walkthrough's apparent mismatch (3,582 + 1,900 vs 5,479) was two
+snapshots taken while the collector was running, not a defect.
+`events_by_label` also reconciles: 3774 unlabeled + 1900 synthetic labels.
+
+### Defect found and fixed
+
+A stored analysis reported `avg_bytes 11474.63` beside
+`bytes_measured_count 0`, and `implausible_timestamp_events 0` while 65
+exist. Four computed fields had no column in `descriptive_analyses` and
+were dropped on save, reading back as the default 0. Fixed with additive
+columns and a `-1` → `None` sentinel so "not recorded" stays distinct
+from "zero". See ADR-061. 14 tests.
+
+### Live verification
+
+Collection was stopped gracefully through the app's own API for the
+maintenance window. Source health then correctly reported `silent` — the
+honest state, not a stale "reporting".
+
+An earlier bounded run over three polls reconciled exactly:
+**327 observed = 12 accepted + 199 duplicates + 116 filtered + 0
+rejected**, with accepted equal to persisted, nulls preserved for fields
+the Windows table cannot supply, and no attack label invented.
+
+### Not verified
+
+Linux (Windows-only host), live NetFlow collection (the adapter parses
+exports only), and any real-data forecasting claim. The research gate
+remains closed and correctly so.

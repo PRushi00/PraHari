@@ -205,6 +205,24 @@ CREATE TABLE IF NOT EXISTS system_settings (
 """
 
 
+
+def _measured(value) -> "int | None":
+    """
+    Read a measured-count column.
+
+    -1 is the sentinel for "this row predates the column", and becomes
+    None so a reader sees "not recorded" instead of a confident 0. A
+    missing column (an even older database) reads the same way.
+    """
+    if value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number < 0 else number
+
+
 class EventIdentityConflictError(sqlite3.IntegrityError):
     """
     Raised when an event ID is re-submitted with conflicting canonical content.
@@ -317,6 +335,20 @@ class Database:
             ("top_dst_hostnames", "TEXT NOT NULL DEFAULT '[]'"),
             ("hostname_attributed_count", "INTEGER NOT NULL DEFAULT 0"),
             ("events_per_hour", "TEXT NOT NULL DEFAULT '{}'"),
+            # These four were COMPUTED by analysis.py and then dropped on
+            # save: the table had no column for them, so they read back as
+            # the Pydantic default 0. That turned "we measured nothing"
+            # and "we measured zero" into the same answer, and reported
+            # implausible_timestamp_events as 0 while 65 existed.
+            #
+            # -1 means "this analysis predates the column", which is
+            # distinct from a genuine 0. A stored analysis cannot be
+            # recomputed retroactively, and backfilling it with 0 would
+            # invent a measurement nobody took.
+            ("bytes_measured_count", "INTEGER NOT NULL DEFAULT -1"),
+            ("packets_measured_count", "INTEGER NOT NULL DEFAULT -1"),
+            ("duration_measured_count", "INTEGER NOT NULL DEFAULT -1"),
+            ("implausible_timestamp_events", "INTEGER NOT NULL DEFAULT -1"),
         ],
     }
 
@@ -977,9 +1009,11 @@ class Database:
                     unsupported_field_counts, source_limitations,
                     data_categories, source_breakdown, is_mixed_provenance,
                     events_by_connection_state, events_by_process,
-                    top_dst_hostnames, hostname_attributed_count, events_per_hour)
+                    top_dst_hostnames, hostname_attributed_count, events_per_hour,
+                    bytes_measured_count, packets_measured_count,
+                    duration_measured_count, implausible_timestamp_events)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     analysis.analysis_id,
                     analysis.analysis_type,
@@ -1017,6 +1051,10 @@ class Database:
                     json.dumps(analysis.top_dst_hostnames),
                     analysis.hostname_attributed_count,
                     json.dumps(analysis.events_per_hour),
+                    analysis.bytes_measured_count,
+                    analysis.packets_measured_count,
+                    analysis.duration_measured_count,
+                    analysis.implausible_timestamp_events,
                 ),
             )
 
@@ -1081,6 +1119,15 @@ class Database:
             top_dst_hostnames=self._json_opt(row, "top_dst_hostnames", []),
             hostname_attributed_count=self._opt(row, "hostname_attributed_count") or 0,
             events_per_hour=self._json_opt(row, "events_per_hour", {}),
+            # A pre-column analysis stores -1. It is surfaced as None —
+            # "not recorded" — rather than 0, which would claim a
+            # measurement of nothing.
+            bytes_measured_count=_measured(self._opt(row, "bytes_measured_count")),
+            packets_measured_count=_measured(self._opt(row, "packets_measured_count")),
+            duration_measured_count=_measured(self._opt(row, "duration_measured_count")),
+            implausible_timestamp_events=_measured(
+                self._opt(row, "implausible_timestamp_events")
+            ),
         )
 
     def _json_opt(self, row: sqlite3.Row, column: str, default):
