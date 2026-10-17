@@ -34,9 +34,13 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from app.models.feature_extractor import FEATURE_NAMES
-from app.schemas.events import SCHEMA_VERSION, NormalizedEvent
+from app.schemas.events import SCHEMA_VERSION, DataCategory, NormalizedEvent
 
-MANIFEST_VERSION = "1.0.0"
+# 1.1.0 - additive (ADR-070): structured target, label policy, git revision,
+#         configuration hash, package versions, model parameters, threshold
+#         procedure, late-arrival exclusions and limitations. 1.0.0 manifests
+#         still load; the new fields are absent from them, not invented.
+MANIFEST_VERSION = "1.1.0"
 
 # Outputs guaranteed identical on a successful replay of the same dataset.
 DETERMINISTIC_OUTPUTS = (
@@ -143,6 +147,19 @@ class ExperimentManifest(BaseModel):
 
     environment: EnvironmentRecord
 
+    # ── Added in 1.1.0 (ADR-070). Optional so a 1.0.0 manifest loads. ──
+    target_specification: Optional[dict[str, Any]] = None
+    target_fingerprint: Optional[str] = None
+    label_policy: Optional[dict[str, Any]] = None
+    git_revision: Optional[str] = None
+    git_worktree_dirty: Optional[bool] = None
+    configuration_hash: Optional[str] = None
+    package_versions: dict[str, Optional[str]] = Field(default_factory=dict)
+    model_parameters: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    threshold_selection: Optional[str] = None
+    late_arrival_exclusions: Optional[int] = None
+    limitations: list[str] = Field(default_factory=list)
+
     @field_validator("manifest_version")
     @classmethod
     def _supported_version(cls, v: str) -> str:
@@ -211,7 +228,79 @@ def fingerprint_events(events: list[NormalizedEvent]) -> str:
             f"{e.event_id}|{e.observed_at.isoformat()}|{e.label or ''}|"
             f"{e.source_id}|{e.data_category.value}".encode()
         )
+        # Receipt time changes the features of LIVE events (ADR-069), so two
+        # sets differing only in arrival must not fingerprint alike. Added
+        # only where it can matter, so every other fingerprint is unchanged.
+        if e.data_category is DataCategory.LIVE_TELEMETRY and e.received_at is not None:
+            hasher.update(f"|rx:{e.received_at.isoformat()}".encode())
     return hasher.hexdigest()
+
+
+def _git_revision() -> tuple[Optional[str], Optional[bool]]:
+    """
+    The commit the code ran from, and whether tracked files had changes.
+
+    None when git or the repository is unavailable - recorded as unknown
+    rather than guessed. Read-only: rev-parse and status only.
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parents[3]
+    try:
+        rev = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+            text=True, timeout=5,
+        )
+        if rev.returncode != 0:
+            return None, None
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
+            capture_output=True, text=True, timeout=5,
+        )
+        dirty = bool(status.stdout.strip()) if status.returncode == 0 else None
+        return rev.stdout.strip() or None, dirty
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+
+
+def _package_versions() -> dict[str, Optional[str]]:
+    from importlib import metadata
+
+    out: dict[str, Optional[str]] = {"python": sys.version.split()[0]}
+    for dist in ("numpy", "scikit-learn", "pandas", "pydantic", "fastapi"):
+        try:
+            out[dist] = metadata.version(dist)
+        except metadata.PackageNotFoundError:
+            out[dist] = None
+    return out
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return repr(value)
+
+
+def _model_parameters(pipeline) -> dict[str, dict[str, Any]]:
+    params: dict[str, dict[str, Any]] = {}
+    for name, model in getattr(pipeline, "trained_models", {}).items():
+        getter = getattr(model, "get_params", None)
+        if callable(getter):
+            raw = getter()
+        else:
+            raw = {k: v for k, v in vars(model).items() if not k.startswith("_")
+                   and isinstance(v, (bool, int, float, str))}
+        params[name] = {"class": type(model).__name__, **_json_safe(raw)}
+    return params
+
+
+def configuration_hash(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _environment() -> EnvironmentRecord:
@@ -278,7 +367,37 @@ def build_manifest(
         for name, m in pipeline.model_metrics.items()
     }
 
-    return ExperimentManifest(
+    from app.research.label_policy import assess_label_provenance
+    from app.research.target import build_target_specification
+
+    policy = getattr(pipeline, "last_label_policy", None) or assess_label_provenance(events)
+    extractor = pipeline.extractor
+    target = build_target_specification(
+        window_seconds=windowing.effective_window_seconds if windowing else extractor.window_size_seconds,
+        lead_seconds=windowing.effective_lead_seconds if windowing else extractor.lead_time_seconds,
+        horizon_seconds=(
+            windowing.effective_horizon_seconds if windowing else extractor.prediction_horizon_seconds
+        ),
+        stride_seconds=windowing.effective_stride_seconds if windowing else 15.0,
+        min_horizon_events=getattr(extractor, "min_horizon_events", 1),
+        require_labelled_horizon=getattr(extractor, "require_labelled_horizon", True),
+        exclude_ongoing_attack_windows=getattr(extractor, "exclude_ongoing_attack_windows", False),
+        label_provenance=policy.label_provenance,
+        evidence_class=policy.evidence_class,
+        evidence_meaning=policy.evidence_meaning,
+    )
+    target_fp = target.fingerprint()
+    git_rev, git_dirty = _git_revision()
+    limitations = list(target.scope_limitations)
+    if git_dirty:
+        limitations.append(
+            "Tracked files had uncommitted changes when this ran: the git "
+            "revision alone does not identify the code."
+        )
+    if windowing is not None and windowing.windows_truncated:
+        limitations.append("Window generation was truncated by its cap; see windowing.")
+
+    manifest = ExperimentManifest(
         experiment_id=experiment_id,
         description=description,
         dataset=selector,
@@ -323,7 +442,34 @@ def build_manifest(
         test_positive=report.test_positive,
         model_results=model_results,
         environment=_environment(),
+        target_specification=target.model_dump(mode="json"),
+        target_fingerprint=target_fp,
+        label_policy=policy.model_dump(mode="json"),
+        git_revision=git_rev,
+        git_worktree_dirty=git_dirty,
+        package_versions=_package_versions(),
+        model_parameters=_model_parameters(pipeline),
+        threshold_selection=(
+            "Fixed at 0.5 for trained models; never tuned on any split. The "
+            "rate-threshold baseline fits its cut-offs on training data only."
+        ),
+        late_arrival_exclusions=(
+            windowing.late_arrival_exclusions if windowing is not None else None
+        ),
+        limitations=limitations,
     )
+    # Hash of everything that defines the experiment's configuration -
+    # what was selected, how it was windowed and split, which features and
+    # target - but not its results, so two runs of one configuration agree.
+    manifest.configuration_hash = configuration_hash({
+        "dataset": manifest.dataset.model_dump(mode="json"),
+        "windowing": manifest.windowing.model_dump(mode="json"),
+        "split": manifest.split.model_dump(mode="json"),
+        "feature_names": manifest.feature_names,
+        "target_fingerprint": target_fp,
+        "schema_version": manifest.schema_version,
+    })
+    return manifest
 
 
 class ReplayResult(BaseModel):

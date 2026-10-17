@@ -608,6 +608,12 @@ class ThreatForecastingPipeline:
         Extract chronological instances and train competitive models
         using an honest temporal train/test split.
         """
+        # Before any window is built (ADR-070): a model's predictions are
+        # never ground truth, and incompatible label provenances are never
+        # merged. Raises LabelProvenanceError, a ValueError.
+        from app.research.label_policy import enforce_label_policy
+
+        self.last_label_policy = enforce_label_policy(events)
         X, y, ts = self.extractor.build_dataset_instances(events)
 
         if len(X) < 4:

@@ -15,7 +15,7 @@ from typing import Any, Optional
 import numpy as np
 from pydantic import BaseModel, Field
 
-from app.schemas.events import NormalizedEvent
+from app.schemas.events import DataCategory, NormalizedEvent
 
 
 def _empty_dataset() -> tuple[np.ndarray, np.ndarray, list[datetime]]:
@@ -124,6 +124,18 @@ class WindowingReport(BaseModel):
     windows_generated: int = 0
     positive_windows: int = 0
     negative_windows: int = 0
+
+    # ── Prediction-time availability (ADR-069, blueprint section 6) ──
+    # "A late event may update a historical record, but it must not be
+    # retroactively treated as information available to an earlier
+    # forecast." An event observed inside a window but RECEIVED after the
+    # window's prediction time is excluded from that window's features.
+    #   late_arrival_exclusions    - (window, event) pairs excluded; one
+    #                                late event can be excluded from several
+    #                                overlapping windows
+    #   windows_with_late_arrivals - windows that lost at least one event
+    late_arrival_exclusions: int = 0
+    windows_with_late_arrivals: int = 0
     notes: list[str] = Field(default_factory=list)
 
     @property
@@ -206,6 +218,40 @@ class WindowFeatureExtractor:
         # Populated by build_dataset_instances() so callers can report the
         # configuration that was genuinely used.
         self.last_windowing_report: Optional[WindowingReport] = None
+
+    @staticmethod
+    def arrived_by(event: NormalizedEvent, prediction_time: datetime) -> bool:
+        """
+        Whether `event` could have been known at `prediction_time`.
+
+        Only LIVE telemetry with a server receipt time can be tested: there
+        `received_at` is the moment PraHari first held the event. For a
+        historical import `received_at` is when the FILE was imported -
+        years after the events - so applying it would wrongly empty every
+        window. Offline replay therefore keeps its declared assumption:
+        an imported event is treated as available at its own event time.
+        An event with no receipt time is likewise treated as available,
+        because there is no evidence of lateness to act on.
+        """
+        if event.data_category != DataCategory.LIVE_TELEMETRY:
+            return True
+        if event.received_at is None:
+            return True
+        return event.received_at <= prediction_time
+
+    def _available(
+        self,
+        window_events: list[NormalizedEvent],
+        prediction_time: datetime,
+        report: "WindowingReport",
+    ) -> list[NormalizedEvent]:
+        """The events of a window that had arrived by its prediction time."""
+        kept = [e for e in window_events if self.arrived_by(e, prediction_time)]
+        dropped = len(window_events) - len(kept)
+        if dropped:
+            report.late_arrival_exclusions += dropped
+            report.windows_with_late_arrivals += 1
+        return kept
 
     def extract_features_from_window(
         self,
@@ -431,7 +477,10 @@ class WindowFeatureExtractor:
                 # Materialised only now: a rejected window never pays for it.
                 X_list.append(
                     self.extract_features_from_window(
-                        sorted_events[obs_lo:obs_hi], w_size
+                        self._available(
+                            sorted_events[obs_lo:obs_hi], current_window_end, report
+                        ),
+                        w_size,
                     )
                 )
                 y_list.append(1)
@@ -457,7 +506,10 @@ class WindowFeatureExtractor:
 
                 X_list.append(
                     self.extract_features_from_window(
-                        sorted_events[obs_lo:obs_hi], w_size
+                        self._available(
+                            sorted_events[obs_lo:obs_hi], current_window_end, report
+                        ),
+                        w_size,
                     )
                 )
                 y_list.append(0)
@@ -522,7 +574,9 @@ class WindowFeatureExtractor:
                         report.windows_excluded_unlabelled_horizon += 1
                         report.fallback_chunks_excluded += 1
                         continue
-                feat = self.extract_features_from_window(chunk, w_size)
+                feat = self.extract_features_from_window(
+                    self._available(chunk, chunk[-1].observed_at, report), w_size
+                )
                 X_list.append(feat)
                 y_list.append(1 if has_attack else 0)
                 ts_list.append(chunk[-1].observed_at)

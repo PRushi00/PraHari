@@ -171,12 +171,37 @@ def audit_dataset_feasibility(
     ground_truth_count = sum(1 for e in events if e.label_provenance == LabelProvenance.DATASET_GROUND_TRUTH)
     provenance_score = 1.0 if (ground_truth_count > 0 or synthetic_count == 0) else 0.7
 
+    # This check used to be `passed=True` unconditionally: it could not
+    # fail, so a dataset labelled by a model's own predictions, or mixing
+    # a corpus's labels with a detector's, was reported as having
+    # provenance integrity (ADR-070). It now applies the same policy that
+    # training enforces.
+    from app.research.label_policy import (
+        LabelProvenanceError,
+        assess_label_provenance,
+        enforce_label_policy,
+    )
+
+    policy = assess_label_provenance(events)
+    try:
+        enforce_label_policy(events)
+        provenance_passed, refusal = True, ""
+    except LabelProvenanceError as exc:
+        provenance_passed, refusal = False, str(exc)
+    if not provenance_passed:
+        provenance_score = 0.0
+
     checks.append(FeasibilityCheckResult(
         check_name="Data Provenance Integrity",
-        passed=True,
+        passed=provenance_passed,
         score=provenance_score,
-        details=f"Ground truth labelled: {ground_truth_count}, Synthetic flagged: {synthetic_count}.",
-        risk_level="low",
+        details=(
+            f"Ground truth labelled: {ground_truth_count}, Synthetic flagged: {synthetic_count}. "
+            f"Declared label provenance: {policy.declared_breakdown or 'none'}; "
+            f"evidence class: {policy.evidence_class}. "
+            + (refusal or policy.evidence_meaning)
+        ),
+        risk_level="low" if provenance_passed else "high",
     ))
 
     # 4. Feature Completeness & Quality Flags
