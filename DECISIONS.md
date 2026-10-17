@@ -2921,3 +2921,67 @@ A retention policy must not become a way to hide the original GET defect:
 the growth is fixed at its cause in ADR-062, and this endpoint exists for
 the separate, legitimate case of an operator who has run many explicit
 analyses.
+
+---
+
+## ADR-065: A Fix in the Source Is Not a Fix in the Process
+
+### Context
+Asked to confirm the project was complete, I probed the running
+deployment rather than re-reading the previous report. The listener on
+`127.0.0.1:8000` had started at 22:59 on 16 Oct; the ADR-062 fix was
+committed at 23:34 and ADR-063 at 00:06. `uvicorn` runs without
+`--reload`.
+
+So the process was serving code from before both fixes, and a dashboard
+page load was still appending a `descriptive_analyses` row to the
+operational database. Every test passed, the tree was clean, the commit
+was published — and the defect was still live. The previous report had
+called the deployment "currently working", which was true of `/health`
+and misleading about everything else.
+
+### Decision: verify the process, not the repository
+A deployment claim must be evidenced against the running instance. Two
+rules follow.
+
+**Probe for loaded code, not for a 200.** `/health` returned 200 on the
+defective process; status codes said nothing. The usable signal was the
+absence of the `x-request-id` header, which `RequestIdMiddleware` adds
+unconditionally — so its absence proves the middleware is not loaded, and
+therefore that the ADR-062 fix in the same working tree is not either.
+One header distinguishes "the source is fixed" from "the thing answering
+is fixed". That check is now in the README quickstart.
+
+**Do not probe with a request that might write.** `GET
+/analysis/latest` was the obvious way to test the fix and the one thing I
+could not safely call: against a pre-fix process it would have written to
+a protected database to find out whether it writes to a protected
+database. The header check answered the same question at no cost. When
+the only direct test of a defect would trigger the defect, find an
+indirect signal.
+
+### Why the restart needed authorization
+Restarting on current code runs the additive migration that adds
+`audit_events.request_id`, which `prahari.db` did not have — a schema
+change to a protected database, which the standing instruction withholds
+without specific authorization. Stopping a process the operator started
+is likewise not a unilateral act. Both were reported with evidence and
+left to the operator, who authorized backup-then-restart.
+
+The backup is the part that mattered. An earlier accidental migration in
+this project was unrecoverable precisely because no backup existed, and
+an additive `ALTER TABLE` cannot be reversed without rebuilding the
+table. A copy taken after a clean shutdown — verified free of `-wal`
+residue and hash-matched — makes the same operation reversible.
+
+### Consequence
+ADR-062 is now evidenced on real data: five consecutive GETs against the
+operational database left `descriptive_analyses` at 30 rows. Until the
+restart, the fix was demonstrated only against temporary databases. The
+authorized hash change is recorded in IMPLEMENTATION_STATUS.md.
+
+The general lesson is the one this project keeps relearning in new
+disguises: a value that exists in one place, is lost at a boundary, and
+is read back with confidence. Here the boundary was the gap between the
+file on disk and the code in memory, and "all tests pass" was the
+confident zero.

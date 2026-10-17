@@ -1977,3 +1977,70 @@ Working tree clean. `origin/main` == local `HEAD` == `c87b15b`. Both
 protected databases byte-identical to the session baseline. 30 stored
 analyses and the 65 FILETIME rows still untouched. No process started,
 stopped, or restarted; the collector remains stopped.
+
+### Resolved — restarted with explicit authorization
+
+The operator authorized the backup-then-restart option, so the finding
+above is now closed by action rather than left open.
+
+Sequence, in order, with the check that proved each step:
+
+1. **Backed up first.** `prahari.db` and `backend/prahari.db` copied to
+   `db_backups/`. Both copies hash-matched their originals.
+
+   I first recorded here that the existing `*.db` rule already ignored
+   them. That was wrong, and worth recording as the near-miss it was: I
+   had tested the rule with a probe path ending in `.db`, but a real
+   backup is named `prahari.db.prestop-20261017-090400`, which `*.db`
+   does not match. `git status` listed both files as untracked, so a
+   careless `git add -A` would have published 3.8 MB of genuine host
+   telemetry to a public repository. `.gitignore` now ignores
+   `db_backups/` by directory name, plus the backup suffixes, rather than
+   trusting a suffix pattern to anticipate every naming scheme; both
+   files verify as ignored.
+2. **Stopped PID 35192**, then confirmed no `-wal` or `-shm` residue and
+   that the hash still read `58404fc5…5caa`. A clean shutdown is what
+   makes the pre-stop copy authoritative rather than merely recent.
+3. **Restarted** through the documented `start_prahari.ps1`. Healthy in
+   about two seconds.
+4. **Confirmed the new code is loaded** — `x-request-id` is now present,
+   and a supplied `X-Request-ID: operator-check-001` came back verbatim.
+   The same probe that exposed the stale process now proves the fix.
+5. **Proved ADR-062 live.** Five consecutive `GET /analysis/latest`
+   requests against the operational database left
+   `descriptive_analyses` at **30 rows**. On the previous process those
+   five requests would have appended five rows. Until now the fix was
+   evidenced only by tests against temporary databases.
+6. **Checked integrity.** `PRAGMA integrity_check` = `ok`; 8 tables;
+   5,674 normalized events, 2,271 DNS observations, 364 import
+   summaries, 38 audit events, 3 sources, 30 analyses. Dashboard,
+   `/docs` and `/system/health` all 200.
+
+Authorized schema change, recorded in full: `prahari.db` moved from
+`58404fc575db7729ca48d9e1886915655f2766a8bf77da479602e93c05955caa` to
+`4f65601a51dc4d096f8471fead2309c890aab009b16a35daf87446b90b00d5f1`. The
+file size is unchanged at 3,821,568 bytes, because `ALTER TABLE ADD
+COLUMN` rewrites schema pages and no row data. The only difference is the
+`audit_events.request_id` column. `backend/prahari.db` is untouched
+(`1c9c71f1…a3b6275`) — the server does not use it.
+
+The 65 FILETIME rows and the 30 stored analyses remain untouched. No
+collector was started.
+
+### Launcher defect found while verifying, and fixed
+
+`start_prahari.ps1` called `Get-NetTCPConnection -LocalPort $Port` with
+no state filter, so it matched a client socket in `TimeWait` as well as a
+listener. My own health check left exactly such a socket, and the
+preflight then warned that the port was "in use by PID 0" — a conflict
+that did not exist, attributed to the kernel. Evidence: with zero
+listeners, the unfiltered query returned one `TimeWait` row owned by
+process 0.
+
+This is the project's recurring defect class in miniature — a check
+reporting a confident value that is not true. Fixed by filtering to
+`-State Listen` and resolving the owning process name, so a real
+conflict now reads `python (PID 37664)` instead of `PID 0`. The warning
+also now says that an existing instance may predate the current source,
+since PraHari runs without `--reload`; that is the one thing an operator
+most needs to know at exactly that moment.

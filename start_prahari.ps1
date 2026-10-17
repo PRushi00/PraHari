@@ -32,9 +32,19 @@ if (-not (Test-Path $FrontendDist)) {
 }
 
 # 3. Port conflict detection
-$Conflict = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+# Only a LISTENER conflicts. Without -State Listen this also matches a
+# client socket in TimeWait, which lingers for minutes after any request
+# to the port and is owned by the kernel - so a routine health check made
+# the launcher warn about a conflict that did not exist, and attribute it
+# to "PID 0".
+$Conflict = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($Conflict) {
-    Write-Host "[WARNING] Port $Port is currently in use by PID $($Conflict[0].OwningProcess)." -ForegroundColor Yellow
+    $ConflictPid = $Conflict[0].OwningProcess
+    $Owner = (Get-Process -Id $ConflictPid -ErrorAction SilentlyContinue).ProcessName
+    if ($Owner) { $Owner = "$Owner (PID $ConflictPid)" } else { $Owner = "PID $ConflictPid" }
+    Write-Host "[WARNING] Port $Port is already being listened on by $Owner." -ForegroundColor Yellow
+    Write-Host "[WARNING] That instance may predate the current source: PraHari runs" -ForegroundColor Yellow
+    Write-Host "[WARNING] without --reload, so stop it before relying on a recent fix." -ForegroundColor Yellow
     Write-Host "[WARNING] Specify a different port using -Port <number> if desired." -ForegroundColor Yellow
 }
 

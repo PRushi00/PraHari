@@ -58,6 +58,15 @@ prahari_test.db
 prahari_test*.db
 prahari_live_verify.db
 *.db-journal
+# Backups taken before an authorized migration. These are COPIES of the
+# operational database and carry exactly the same telemetry, but a name
+# like `prahari.db.prestop-20261017` does not end in `.db`, so the rule
+# above does not match it. Ignore the whole directory by name instead of
+# trusting a suffix pattern to catch every backup naming scheme.
+db_backups/
+*.db.prestop-*
+*.db.backup*
+*.db.bak
 *.db-wal
 *.db-shm
 
