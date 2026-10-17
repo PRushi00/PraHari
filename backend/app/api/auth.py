@@ -189,7 +189,73 @@ def scope_source(request: Request, requested: Optional[str]) -> Optional[str]:
     return scoped or requested
 
 
+def local_producer_owning(source_id: str) -> Optional[str]:
+    """
+    Name the in-process producer that owns `source_id`, or None (ADR-090).
+
+    Two layers, so the answer never depends on what has run so far:
+
+    * Reserved ids, owned whether or not their producer exists yet: the host
+      collector's default source and the host UDP-endpoint observer. The
+      collector is created lazily - on the dashboard's first status poll -
+      so a registry check alone would accept stream data into the live host
+      source after a restart and refuse it once someone opened the page.
+    * Any other id under which a host collector has registered its adapter,
+      such as a collector started with a custom source id.
+
+    Imported lazily: storage, services and the API must not import each
+    other at module load.
+    """
+    from app.adapters.base import get_adapter_registry
+    from app.adapters.windows_telemetry import WindowsConnectionAdapter
+    from app.api.v1.hostobs import UDP_SOURCE_ID
+    from app.services.collector import DEFAULT_SOURCE_ID
+
+    reserved = {
+        DEFAULT_SOURCE_ID: "the host connection-table collector",
+        UDP_SOURCE_ID: "the host UDP-endpoint observer",
+    }
+    if source_id in reserved:
+        return reserved[source_id]
+    if isinstance(get_adapter_registry().get(source_id), WindowsConnectionAdapter):
+        return "a host connection-table collector running in this process"
+    return None
+
+
 def resolve_ingest_source(request: Request, claimed: Optional[str]) -> str:
+    """
+    The source identity telemetry will actually be stored under, provided
+    it may be written from outside (ADR-090).
+
+    Identity is resolved first (see `_resolve_claimed_source`). The result
+    is then refused if an in-process producer owns it. External telemetry
+    filed under the host collector's own source would mix a remote or
+    synthetic sender's records into the local host's provenance; on the
+    stream path it also crashed with a 500, because the registry handed
+    back the collector's connection-table adapter, which cannot parse
+    NDJSON.
+    """
+    source_id = _resolve_claimed_source(request, claimed)
+    owner = local_producer_owning(source_id) if source_id else None
+    if owner:
+        # 403, not 409: the sensor agent counts every 409 as an event-identity
+        # conflict, and this is a refusal of the destination, not a conflict
+        # between events. It is permanent, so the agent will not retry it.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "source_reserved_for_local_producer",
+                "message": (
+                    f"Source {source_id!r} is written only by {owner}. "
+                    "Submit external telemetry under a different source id."
+                ),
+                "source_id": source_id,
+            },
+        )
+    return source_id
+
+
+def _resolve_claimed_source(request: Request, claimed: Optional[str]) -> str:
     """
     The source identity telemetry will actually be stored under.
 

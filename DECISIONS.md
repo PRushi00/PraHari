@@ -4017,4 +4017,63 @@ empty fingerprint cache, a fresh status).
 - **Pre-existing, outside this change set:** stream ingest with
   `source_id="windows_local_host"` returns HTTP 500 once a collector exists,
   because the stream path's `get_or_register` receives the collector's
-  connection-table adapter. Confirmed, and raised as a separate task.
+  connection-table adapter. Confirmed, and raised as a separate task;
+  **fixed in ADR-090.**
+
+---
+
+## ADR-090: External Ingestion Cannot Write Into a Local Producer's Source
+
+### Context
+Found by the ADR-089 review. Once the live collector existed,
+`POST /stream/ingest/ndjson` with `source_id="windows_local_host"` returned
+**HTTP 500**: the stream path's `get_or_register` returned the collector's
+`WindowsConnectionAdapter`, which has no NDJSON importer.
+
+The 500 was the visible half. Synthetic replay and CSV import accepted the
+same id and **wrote into the host collector's live source**, mixing
+synthetic or imported records into the local host's provenance. The
+collector is created lazily, on the dashboard's first status poll. So
+whether a write was refused depended on whether anyone had opened the
+dashboard since the last restart.
+
+### Decision
+The ownership check sits in `resolve_ingest_source`, the documented
+ingestion trust boundary, which every external write path calls: NDJSON
+stream, synthetic replay, both CSV imports, research import and app-layer
+ingest. The legitimate owners write internally and never pass through it.
+After the existing identity checks, a source is refused when:
+
+- it is a **reserved** id - the host collector's `windows_local_host` or
+  the UDP observer's `windows_udp_endpoints` - whether or not the producer
+  exists yet, so the outcome no longer depends on what has run; or
+- a host collector has registered its adapter under it, which covers a
+  collector started with a custom id.
+
+The refusal is **403** `source_reserved_for_local_producer`, naming the
+owner. Not 409: the sensor agent counts every 409 as an event-identity
+conflict, and this is a refusal of the destination. A 403 is permanent, so
+the agent drops the batch and records the reason instead of retrying.
+
+Nothing legitimate is refused: no dashboard flow or script writes
+externally into these ids, and ids that merely look similar are not
+reserved.
+
+All six external write paths call the guard: NDJSON stream, synthetic
+replay, CSV raw, CSV file, app-layer ingest and research import. Two API
+modules write without it, legitimately. `POST /enrichment/dns/observations`
+writes only DNS observations under a fixed source the caller cannot choose.
+`hostobs` is the UDP observer itself, the owner of its source. The
+app-layer endpoint also has an older validator of its own that rejects the
+collector's default id with 422; the guard covers the ids that validator
+does not know - the UDP observer's and a collector under a custom id.
+
+Sensor-agent semantics, exercised through the real endpoint: one attempt,
+no retry, `conflicts` unchanged, counted under `batches_failed_permanent`,
+`last_error_kind = source_reserved_for_local_producer`. The batch is
+dropped, the policy the agent already applies to every 401 and 403.
+
+Thirteen tests cover the stream, replay, CSV raw and file, app-layer
+ingest, before-and-after collector creation, custom ids, central-mode
+admin and the agent. With the guard neutralised, the ten defect tests fail
+and the three non-regression tests pass.

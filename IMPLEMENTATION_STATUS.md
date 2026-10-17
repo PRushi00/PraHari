@@ -2353,3 +2353,13 @@ acceptance-matrix row; plus a counter-isolation test. A pre-existing 500 on
 stream ingest under the collector's source id was confirmed and raised as a
 separate task. Final run: backend 1336 passed, 8 skipped, 0 failed;
 `live_windows` 15; verifier 23/23 twice; frontend 91 passed; static clean.
+
+### Follow-up: reserved local-producer sources (ADR-090)
+
+The pre-existing 500 on stream ingest under the collector's source id is
+fixed at the ingestion trust boundary. Synthetic replay and CSV import can
+no longer write into the host collector's or UDP observer's sources either,
+whether or not the collector has been created. All six external write
+paths are guarded. 13 regression tests; with the guard neutralised the 10
+defect tests fail. The sensor agent treats the refusal as permanent, without
+counting it as an identity conflict.
