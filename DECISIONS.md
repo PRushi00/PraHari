@@ -2985,3 +2985,224 @@ disguises: a value that exists in one place, is lost at a boundary, and
 is read back with confidence. Here the boundary was the gap between the
 file on disk and the code in memory, and "all tests pass" was the
 confident zero.
+
+---
+
+## ADR-066: The Sensor Agent's TLS Controls Were Declared, Not Enforced
+
+### Context
+Every central-mode test ran in-process through `TestClient` — no socket,
+no TLS, no second interpreter. Running PraHari as its own `uvicorn`
+process over HTTPS (`tests/integration/test_central_https_e2e.py`, test PKI
+minted per run by OpenSSL) exposed four agent defects that in-process
+testing cannot show.
+
+1. **`verify_tls` was read by nothing.** Setting it `False` changed
+   nothing while appearing to disable verification, and there was no way
+   to trust a private CA, which any internal central deployment needs.
+2. **A certificate failure was retried as a network blip.** urllib wraps
+   it in `URLError`, an `OSError`, so it was classed `connection_error`,
+   retryable.
+3. **Redirects carried the bearer token to plaintext.** CPython's redirect
+   handler copies every header except content headers onto the new
+   request. An HTTPS endpoint answering `302 -> http://...` would make the
+   agent resend `Authorization` in cleartext to a host chosen by whoever
+   controls the response. Demonstrated empirically, not asserted:
+   `test_the_redirect_hazard_is_real_for_a_default_urllib_client`.
+4. **One oversized batch wedged the agent forever.** The server refuses
+   on `Content-Length` and closes without reading the body, so the client
+   sees a dropped connection or a truncated 413, never a clean 413. That
+   looks transient, so the same bytes were resent indefinitely and every
+   event behind them waited. Demonstrated against the real server.
+
+### Decision
+- `ca_file` names the issuer's PEM bundle. `verify_tls=False` is
+  **refused** at configuration time: a private deployment is trusted by
+  naming its CA, never by switching verification off.
+- Redirects are never followed; a 3xx is `redirect_refused`.
+- A **channel** failure (`tls_verification_failed`, `redirect_refused`) is
+  a new outcome, `halt`: not retried, and the batch is **kept**, not
+  dropped. The events are valid; the channel is not. `flush_all` stops at
+  the first halt rather than spinning. Only a genuine trust failure halts:
+  an `SSLEOFError` is the peer closing, and stays retryable.
+- `max_request_bytes` (default 4 MiB, under the server's 50 MB): an
+  over-limit batch is split, its tail returned to the front of the buffer
+  in order; a single event that cannot fit alone is dropped and counted
+  (`events_oversized`) instead of blocking the queue.
+
+### Not claimed
+A localhost test certificate proves the client and server handle TLS
+correctly. It says nothing about a production deployment's certificate
+issuance, rotation or termination.
+
+---
+
+## ADR-067: The Audit Trail Named the Wrong Actor in Central Mode
+
+### Context
+No `log_audit` call site (there are 31) passed `user_identity`, so it
+defaulted to `"local_operator"`. In central mode every entry, including an
+authenticated sensor's ingest, a credential change and a prune, was
+attributed to a person at the console who did none of it.
+
+### Decision
+The ADR-063 mechanism: the auth middleware publishes
+`credential:<id> source:<source> role:<role>` in a context variable for
+the request's duration, reset in `finally`, and `log_audit` defaults to
+it. Precedence: explicit argument, then the authenticated principal, then
+the local operator, which is accurate only because there is then no
+authenticated caller. Only identifiers are recorded, never the token.
+
+Verified out of process over HTTPS, and under concurrency: twenty
+simultaneous requests alternating between two credentials each audit
+under their own request id and their own credential.
+
+---
+
+## ADR-068: A Wholly Rejected Batch Was Invisible to Health
+
+### Context
+On the stream path, a batch in which **every** record was rejected skipped
+the block that records measurements. The response said
+`stored_records: null` ("not reported") for a count that was measured,
+zero, and `controller.record_batch` never ran, so `/system/health` showed
+`events_rejected: 0`. A sensor whose every record fails validation is the
+failure an operator most needs to see, and it was the one health could not
+show.
+
+A related defect surfaced while testing it: a line that is valid JSON but
+not an object (`[]`, `42`, `null`) reached the validator, which called
+`.get()` on it. One such line made the whole batch a 500 and cost every
+good record beside it.
+
+### Decision
+Measurements are recorded on every path. A non-object line is rejected as
+one record, reason `record_not_an_object`.
+
+---
+
+## ADR-069: A Late Event Was Treated as Known to Earlier Forecasts
+
+### Context
+Blueprint section 6: "A late event may update a historical record, but it
+must not be retroactively treated as information available to an earlier
+forecast." The feature extractor chose window events by `observed_at`
+alone and never read `received_at`. A live event observed at t-5s and
+received at t+300s was counted in the forecast made at t. That is leakage,
+and it flatters any model evaluated on stream-ingested data.
+
+### Decision
+A window's features use only events that had **arrived** by its prediction
+time. Applied where `received_at` means arrival: stamped live telemetry.
+For a historical import `received_at` is when the file was imported, years
+later, so applying it would empty every window; offline replay keeps a
+declared assumption that imported events were available at their event
+time. Exclusions are counted in the windowing report. The dataset
+fingerprint now includes receipt time for stamped live events only, so
+every other fingerprint is byte-identical.
+
+The tests were checked against the defect: with the rule reverted, three
+of nine fail.
+
+---
+
+## ADR-070: Labels Have Provenance, and the Target Is a Specification
+
+### Context
+Three gaps with one cause: the research record did not say what its
+evidence was.
+
+1. Training read label **text** and never its provenance. A model could be
+   trained and scored on another model's predictions, or on a corpus's
+   labels merged with a detector's signatures.
+2. The feasibility audit's "Data Provenance Integrity" check was
+   `passed=True` unconditionally. It could not fail.
+3. The manifest held the target as one sentence and omitted the git
+   revision, a configuration hash, package versions, model parameters, the
+   threshold procedure and any statement of limitations.
+
+### Decision
+- **Label policy** (`research/label_policy.py`), enforced at the single
+  training entry point: `model_prediction` labels are never ground truth;
+  declared provenances are never mixed in one experiment; labels without a
+  declared provenance are counted, never promoted. A lone
+  `detector_output` set is allowed and recorded as forecasting *detector
+  alerts*, not incidents. The feasibility check applies the same policy
+  and can now fail.
+- This sits beside `allow_mixed_provenance` on `/forecast/train`, which
+  governs `data_category`. They are different axes: an operator may still
+  combine unlabelled live traffic with one labelled corpus, but no flag
+  merges two kinds of label.
+- **Structured target** (`research/target.py`,
+  `prahari.attack_label_in_horizon` v1.1.0): event semantics and what they
+  are *not* equivalent to, grouping, time origin, window, lead, horizon,
+  stride, overlap and purge, positive and negative rules, incomplete-window,
+  capture-gap, ongoing-attack and late-event rules, warning matching and
+  suppression. Each describes what the code does, and the whole is
+  fingerprinted.
+- **Manifest 1.1.0**, additive: target and fingerprint, label policy, git
+  revision and dirty flag, configuration hash, package versions, model
+  parameters, threshold procedure, late-arrival exclusions, limitations.
+  1.0.0 manifests still load; the new fields are absent, not invented.
+
+### What the specification admits
+Matching is per **window**, so `detected_events` counts windows, not
+distinct attacks. Event-level lead time is **not** measured. No warning
+suppression is modelled. The threshold is a fixed 0.5, never tuned on any
+split and never selected on validation data. These are stated in the
+manifest's limitations rather than left for a reader to discover.
+
+---
+
+## ADR-071: There Was No Storage Abstraction; Now There Is a Contract
+
+### Context
+Earlier reports said PostgreSQL was blocked only by the lack of a service
+and that "repository abstractions already exist". The second claim was
+false: there was no abstraction, only the concrete SQLite `Database`.
+
+### Decision
+`storage/contract.py` defines `TelemetryStore`, derived from every storage
+call the application makes; a test fails if a call site appears outside
+it. `test_storage_contract.py` is the executable half: idempotent identity,
+atomic rollback on conflict, source isolation, receipt-time round trip,
+eight concurrent writers with no duplicates, analysis retention, audit
+attribution, settings, and persistence across reopen.
+
+Three modules outside storage issue SQLite SQL directly
+(`api/v1/audit.py`, `api/v1/system_health.py`, `services/retention.py`).
+They are named in `KNOWN_ABSTRACTION_LEAKS`, and a ratchet test fails if a
+fourth appears. The SQLite constructs a port must translate are listed,
+and a test checks that each really occurs.
+
+### Status, stated plainly
+PostgreSQL is **MISSING**, not merely blocked: no backend, no driver, no
+server. It is done when a backend satisfies the contract and passes the
+suite against a real server. Not a mock: atomicity and concurrent-writer
+behaviour are exactly what a mock cannot exhibit.
+
+---
+
+## ADR-072: No Live NetFlow Collector Was Built
+
+### Context
+The NetFlow adapter parses exported flow text; it does not open a UDP
+port. A collector could be written and fed hand-built packets over
+loopback.
+
+### Decision: not built
+A collector exercised only by packets this project constructs would prove
+the decoder agrees with its author, not that it interprets a real
+exporter's records correctly, and a UDP listener is attack surface. The
+blueprint's advanced-feature rule applies: capabilities are added when
+evidence supports them. No authorized exporter or observation point exists
+here, so the section 18 criterion cannot be met by code. What would be
+needed is listed in the acceptance matrix.
+
+Related: the NetFlow adapter deliberately discards labels, so a CTU-13
+`binetflow` file routed through it would import unlabelled: safe, but
+useless for supervised work. CTU-13 labels flows Background, Normal and
+Botnet. Under PraHari's attack-label rule any label other than
+benign/normal/unlabeled counts as an attack, so a CTU-13 importer must map
+labels explicitly, and Background must not become a negative. No such
+importer exists, and none was written for label strings not yet seen.

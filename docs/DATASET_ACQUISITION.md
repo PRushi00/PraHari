@@ -279,3 +279,77 @@ chronological order and truncation is stated.
 | End-to-end evaluation on a real corpus | **Not done** |
 | Timezone of the source timestamps | **Unknown** — treated as unknown, not assumed |
 | Episode identifiers | **Not implemented.** Splitting is time-blocked and chronological; episode-aware holdout would need episode boundaries the current schema does not carry |
+
+---
+
+## Publisher facts, read on 17 Oct 2026
+
+Read from the publishers' public pages only. **Nothing was downloaded, no
+account was created and no terms were accepted.** Where a page was silent,
+this says so instead of filling the gap. Re-read the pages at acquisition
+time: terms can change.
+
+### CSE-CIC-IDS2018 (https://www.unb.ca/cic/datasets/ids-2018.html)
+
+| Item | What the page states |
+|---|---|
+| Licence | **No named licence.** The page says the dataset may be redistributed, republished and mirrored in any form, provided use cites the dataset and links its AWS page |
+| Citation | Sharafaldin, Lashkari and Ghorbani, ICISSP 2018 |
+| Access | AWS S3 bucket `cse-cic-ids2018`, synced with the AWS CLI using `--no-sign-request`. No registration mentioned |
+| Size | **Not stated** |
+| Contents | Per-day PCAPs and Windows/Ubuntu event logs per machine; CICFlowMeter-V3 CSV flow features ("more than 80"; one section says 83) |
+| Labels | Assigned from the attack schedule plus source/destination IPs, ports and protocol |
+| Time zone | **Not stated.** Treat as unknown until checked against the PCAPs |
+
+Implications for PraHari:
+- Installing the AWS CLI is a software installation, and the sync is a
+  large download. Both need explicit approval.
+- Labels derive from an attack *schedule*. Blueprint section 7 forbids
+  equating a scenario schedule with compromise, so these labels are
+  `dataset_ground_truth` under the dataset's own rules and nothing
+  stronger. The structured target's `not_equivalent_to` list says so.
+- `research_csv` requires `Src IP` and `Dst IP` columns. Verify on
+  acquisition that every per-day CSV actually contains them; a file
+  without them will be rejected row by row, not silently mis-mapped.
+
+### CTU-13 (https://www.stratosphereips.org/datasets-ctu13)
+
+| Item | What the page states |
+|---|---|
+| Licence | **Not stated** on the page |
+| Citation | Garcia, Grill, Stiborek and Zunino, "An empirical comparison of botnet detection methods", Computers and Security 45 (2014) 100-123 |
+| Access | One compressed tar archive, or each of the 13 scenarios separately; a mega.nz mirror exists, the main site is described as authoritative |
+| Size | Full archive 1.9 GB |
+| Contents | Botnet-only PCAPs (the full capture is withheld for privacy), labelled bidirectional Argus flow files, and the malware executable for each scenario |
+| Labels | Background, Botnet (including C&C) and Normal, assigned by manual analysis |
+| Time zone | **Not stated** |
+
+Implications for PraHari:
+- **The dataset distributes each scenario's malware executable.** Acquiring
+  the files that include them means
+  handling malware on the host, which needs explicit approval and
+  isolation, quite apart from the licence question.
+- No licence is stated. Absence is not permission: ask the publisher or
+  confirm terms before use.
+- **Label mapping is mandatory and not implemented.** PraHari's attack
+  rule treats any label other than benign/normal/unlabeled as an attack,
+  so raw CTU-13 labels would make Background traffic positive. Background
+  must not become a negative either: it is not evidence of benignity. The
+  NetFlow adapter discards labels on purpose, so routing CTU-13 through it
+  yields unlabelled events - safe, but unusable for supervised work. A
+  CTU-13 importer needs the real label strings in hand; none was written
+  against strings not yet seen (ADR-072).
+
+### What must be approved or supplied before real-data validation
+
+1. Choice of corpus, and confirmation of its terms by the operator.
+2. Approval of the download (size, bandwidth, disk) and of any tool it
+   needs, such as the AWS CLI.
+3. For CTU-13, approval to hold malware samples, and where.
+4. A dedicated research store (`PRAHARI_RESEARCH_DATABASE_URL`); imports
+   are refused without one, and the operational databases are never used.
+5. For CTU-13, a label mapping reviewed against the actual files.
+
+Then the existing pipeline runs unchanged: import under an explicit
+policy, audit, manifest with dataset hashes, chronological purged split,
+the baseline/logistic/forest/LSTM comparison, replay.

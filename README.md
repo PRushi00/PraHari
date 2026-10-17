@@ -832,6 +832,8 @@ agent = SensorAgent(AgentConfig(
     token=os.environ["PRAHARI_SENSOR_TOKEN"],   # never hard-code this
     buffer_capacity=10_000,
     batch_size=100,
+    ca_file="/etc/prahari/central-ca.pem",      # internal CA; omit for a public one
+    max_request_bytes=4 * 1024 * 1024,          # at or below the server's limit
 ))
 agent.offer(event_dict)
 agent.flush_once()
@@ -856,6 +858,35 @@ the process is killed. Other deliberate behaviours:
   time**: a bearer credential over plaintext is compromised on first use.
 - The agent registers no service, opens no port and changes no firewall
   rule. Starting it is the operator's explicit act.
+
+TLS and channel behaviour (ADR-066, verified against a real out-of-process
+HTTPS server with a throwaway test PKI):
+
+- **Certificate verification cannot be turned off.** `verify_tls=False`
+  is refused at configuration time. Trust an internal CA by naming its PEM
+  bundle in `ca_file`. A wrong hostname, an untrusted issuer and a missing
+  CA are all refused.
+- **Redirects are never followed.** Python's default HTTP client copies
+  `Authorization` onto a redirect, so an HTTPS endpoint answering
+  `302 -> http://...` would leak the token in plaintext. The agent reports
+  `redirect_refused` instead.
+- A certificate failure or redirect **halts** delivery and **keeps** the
+  events: the channel is at fault, not the data. It is not retried, and
+  `channel_refusals` counts it.
+- A batch over `max_request_bytes` is **split** before sending. A server
+  refusing an oversized body closes the connection before reading it, so
+  the client sees a dropped connection rather than a 413 - which used to
+  look transient and was resent forever. A single event too large to send
+  alone is dropped and counted in `events_oversized`.
+
+### Audit attribution in central mode
+
+Every audit entry records the authenticated caller as
+`credential:<id> source:<source> role:<role>` and the request's
+`X-Request-ID` (ADR-063, ADR-067). Before ADR-067 every central-mode entry
+said `local_operator`. Outside a request (CLI, collector) the request id is
+NULL and the actor is the local operator, which is then accurate. Tokens
+are never recorded.
 
 ## 24. Administration
 
@@ -943,3 +974,13 @@ Read this before drawing conclusions from anything above.
 
 A passing test suite shows the software behaves as specified. It is not
 evidence that PraHari can forecast attacks.
+
+## 28. Acceptance Evidence
+
+The current status of every blueprint definition-of-done criterion, with
+evidence and a command to reproduce it, is in
+[`docs/ACCEPTANCE_MATRIX.md`](docs/ACCEPTANCE_MATRIX.md). It distinguishes
+what is verified, what is partial, what is missing and what is blocked by
+an external resource. PraHari is **not** fully verified: real-data
+forecasting, current-revision Linux, live NetFlow, PostgreSQL and a remote
+TLS deployment are not.

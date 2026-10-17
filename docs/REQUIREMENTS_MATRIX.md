@@ -1,5 +1,12 @@
 # PraHari — Requirement-to-Evidence Matrix
 
+> **Superseded for status.** The current, per-criterion status with the
+> VERIFIED / PARTIAL / MISSING / BLOCKED vocabulary is in
+> [`ACCEPTANCE_MATRIX.md`](ACCEPTANCE_MATRIX.md). This file is kept as the
+> historical record of how each criterion was reached; some of its
+> statuses (notably "MET for Linux", which rests on an earlier revision)
+> are no longer current.
+
 Maps each acceptance criterion in **§18 Definition of Done** of the
 *Complete Cross-Platform Architecture Blueprint* to its actual code, tests
 and evidence.
@@ -53,7 +60,7 @@ cd frontend && npx tsc --noEmit && npx vitest run && npm run build
 | Tests | `test_central_security.py` (24) |
 | Evidence | Live loopback run: health public `200`; no credential `401`; invalid credential `401`; valid credential `200`; cross-source request `403`; `X-PraHari-Source` attached. Startup without credentials **refuses**: *"Refusing to start in CENTRAL deployment mode"* |
 | Design | Tokens are PBKDF2-HMAC-SHA256 hashed with per-credential salts and compared in constant time; plaintext is shown once at mint and never stored. Roles separate `ingest` / `read_only` / `admin`. An unscoped query returns **only the caller's source**, never everything. Cross-source access is **refused**, not silently rewritten. Unknown and disabled credentials return identical text so source ids cannot be enumerated. |
-| Remaining | Not exercised over a real network (loopback only, by the safety boundary). No rate limiting. Default deployment is still `local`. |
+| Remaining | Not exercised over a real network (loopback only, by the safety boundary). No rate limiting. *(Superseded 17 Oct 2026: per-credential rate limiting is in `api/limits.py` and bounded admission control in `services/admission.py`; current status in `docs/ACCEPTANCE_MATRIX.md`.)* Default deployment is still `local`. Since verified over real HTTPS out of process (ADR-066). |
 
 ### 3. ≥1 host telemetry integration and ≥1 network-level sensor/flow integration tested on declared environments
 

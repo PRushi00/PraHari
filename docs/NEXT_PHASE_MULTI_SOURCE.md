@@ -174,7 +174,7 @@ spot as the Windows table.
 ## 7. Central ingestion and correlation boundaries
 
 In scope for Stage B: enrollment, per-source health, credential lifecycle,
-backpressure. **No rate limiting, queueing or backpressure exists today**
+backpressure. **No rate limiting, queueing or backpressure exists today** *(Superseded 17 Oct 2026: per-credential rate limiting is in `api/limits.py` and bounded admission control in `services/admission.py`; current status in `docs/ACCEPTANCE_MATRIX.md`.)*
 and SQLite's single writer is the throughput ceiling — measure before
 assuming it is adequate.
 

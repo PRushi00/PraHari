@@ -2044,3 +2044,76 @@ conflict now reads `python (PID 37664)` instead of `PID 0`. The warning
 also now says that an existing instance may predate the current source,
 since PraHari runs without `--reload`; that is the one thing an operator
 most needs to know at exactly that moment.
+
+---
+
+## Session 28 — Final Validation: Out-of-Process HTTPS, Research Integrity, Storage Contract
+
+Baseline verified first, read-only: `HEAD` = `origin/main` = `3ab6d2d`,
+tree clean, `prahari.db` `4f65601a…d5f1` (3,821,568 B, the post-migration
+value) and `backend/prahari.db` `1c9c71f1…a3b6275` (184,320 B). Its `-wal`
+is empty and its `-shm` predates the session, so the main file is its full
+content.
+
+### A correction to earlier reports
+
+Earlier sessions said PostgreSQL was blocked only by the lack of a service
+and that "repository abstractions already exist". There was no PostgreSQL
+code and no abstraction. PostgreSQL is **MISSING**, now with a contract and
+conformance suite (ADR-071). The Linux row of `PLATFORM_SUPPORT.md` also
+called Linux "Verified — runtime" on the strength of a run against an
+earlier revision; it now says so.
+
+### Defects found and fixed
+
+| ADR | Defect | How it was found |
+|---|---|---|
+| 066 | `verify_tls` read by nothing; no private-CA support | Reading the transport |
+| 066 | Certificate failures retried as `connection_error` | Out-of-process HTTPS test |
+| 066 | Redirects carried the bearer token to plaintext | Demonstrated with a real 302 to an HTTP listener |
+| 066 | One oversized batch wedged the agent forever | Real server closes before reading the body |
+| 067 | Every central-mode audit entry attributed to `local_operator` | Writing the HTTPS audit test |
+| 068 | A wholly rejected batch reported `stored: null` and never reached health | A test expecting `0` received `None` |
+| 068 | A non-object JSON line crashed the batch (500) | A test fixture used `[]` as a bad line |
+| 069 | Late live events counted in earlier forecasts' features | Blueprint section 6 against `feature_extractor.py` |
+| 070 | Training ignored label provenance; the provenance check always passed | Tracing what `target_definition` and the gate rely on |
+| 070 | Manifest lacked git revision, config hash, packages, parameters, limitations | Comparing fields with the brief |
+
+Each fix has regression tests at the layer where the defect lived, and the
+availability tests were checked against the defect: reverting the rule
+fails three of nine.
+
+### Added, not fixed
+
+- `tests/integration/test_central_https_e2e.py` (28): PraHari as its own
+  `uvicorn` process serving HTTPS, test PKI per run, central mode, a
+  temporary database. Health with request id; no plaintext; verified
+  delivery and deduplication; actor and request id audited; untrusted CA,
+  wrong hostname and rogue issuer refused with events kept; redirect hazard
+  demonstrated and refused; 401, 403 cross-source and read-only, revocation
+  without restart, 413 with server-log evidence, per-credential rate
+  limiting, no token in the server log; batch splitting; an outage survived
+  and delivered on reconnect. Every server is stopped and its port checked
+  closed.
+- `research/target.py`, `research/label_policy.py`, manifest 1.1.0.
+- `storage/contract.py` and `test_storage_contract.py` (13).
+- `docs/ACCEPTANCE_MATRIX.md`; publisher facts for CSE-CIC-IDS2018 and
+  CTU-13 read from their pages, nothing downloaded or accepted; the Arch
+  verification procedure.
+
+### Decided against
+
+No live NetFlow collector (ADR-072): exercised only by hand-built packets
+it would prove nothing about a real exporter, and it is attack surface. No
+untested PostgreSQL backend: it would look finished without being so. No
+CTU-13 importer: its label strings have not been seen. Ubuntu-WSL was not
+booted: the authorization named Arch, and starting a VM was not part of it.
+
+### Results
+
+Backend **1245 passed, 4 skipped, 0 failed** (from 1151); the 4 skips are
+Linux-only and are not counted as passes. Frontend 67 passed, `tsc` 0,
+build 0. Every command in the acceptance matrix was executed.
+
+Both protected databases unchanged; the operational instance untouched on
+`127.0.0.1:8000`; collector stopped; no test server left running.

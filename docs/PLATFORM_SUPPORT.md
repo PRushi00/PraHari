@@ -12,7 +12,7 @@ Nothing here is a projection presented as a result.
 | Platform | Status | Basis |
 |---|---|---|
 | **Windows 11** | **Verified — runtime** | 394 backend tests, 36 frontend tests, live collection, all nine pages driven in a browser, loopback central-mode run |
-| **Linux (Ubuntu 26.04, Python 3.14.4, WSL2)** | **Verified — runtime** | 392 backend tests passed, 2 skipped; application started, served and shut down cleanly |
+| **Linux (Ubuntu 26.04, Python 3.14.4, WSL2)** | **Verified for an earlier revision only** | 392 backend tests passed, 2 skipped, and the application started, served and shut down cleanly - on the codebase as it was then. The current suite (1,200+ tests) has **not** been run on Linux. Re-verify with section 6 below before claiming current Linux support |
 | macOS | **Not assessed** | No macOS machine available |
 | Docker | **Not verified** | Docker is not installed on this host and installing it is outside the agreed boundary |
 
@@ -262,3 +262,89 @@ The event type is kept separate from the label: a labelled flow is still a
 | Measures bytes/packets per flow | **No** — not available from any local source. Interface-level counters only |
 | Captures packets | **No, and will not** |
 | Has been run against a real network sensor | **No** |
+
+---
+
+## 6. Re-verifying on Linux (Arch)
+
+**Status: not executed.** The Arch installation is not reachable from the
+Windows environment where this was written: WSL lists only an Ubuntu
+distribution (stopped), so Arch is presumably a separate boot. Ubuntu-WSL
+was not started either - booting a VM was not part of the authorization.
+Nothing below has been run on Arch; it is the procedure to run.
+
+It installs nothing system-wide and changes no networking. It needs only
+`git`, `python` (3.12 or later) and `openssl`, which an Arch base system
+normally has. **If `python` is missing, stop**: installing it with pacman
+is a system change to authorize separately.
+
+```bash
+cd ~/src/PraHari
+git fetch origin
+git status --short
+git merge --ff-only origin/main
+git rev-parse HEAD
+```
+
+Compare `git rev-parse HEAD` with the published `origin/main` commit.
+
+```bash
+cd backend
+python -m venv .venv-linux
+. .venv-linux/bin/activate
+python -m pip install -r requirements.txt
+```
+
+The venv lives inside the checkout and is removed with `rm -rf .venv-linux`.
+
+```bash
+python -m pytest tests/unit/test_linux_telemetry.py -v -rs
+```
+
+On Linux the four tests that skip on Windows must **run**. Two read a
+live `/proc`; two create symlinks under a fake `/proc/<pid>/fd`. Expect
+zero skips here. Any skip means that check did not execute.
+
+```bash
+python -m pytest -q -rs
+```
+
+On Linux, expect the Windows-collector tests to skip (they require
+Windows) and nothing else. Record passed, failed and skipped counts
+exactly; a skip is not a pass.
+
+```bash
+python -m pytest tests/integration/test_central_https_e2e.py -v
+```
+
+This starts PraHari as a separate process serving HTTPS on 127.0.0.1 with
+a throwaway test PKI and a temporary database, then stops it and checks the
+port closed.
+
+Startup and shutdown against a disposable database, loopback only:
+
+```bash
+mkdir -p /tmp/prahari-linux-verify
+PRAHARI_DATABASE_URL=sqlite:////tmp/prahari-linux-verify/verify.db python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 &
+sleep 3
+curl -s -D - http://127.0.0.1:8765/api/v1/health
+curl -s http://127.0.0.1:8765/api/v1/collector/status
+kill %1
+sleep 1
+ss -ltn | grep 8765 || echo "port 8765 closed"
+```
+
+Expect `/health` 200 with an `x-request-id` header, and the collector
+status to name the Linux platform without starting anything. No collector
+is enabled by any step here.
+
+Clean up:
+
+```bash
+rm -rf /tmp/prahari-linux-verify
+deactivate
+```
+
+Linux integration can be claimed only once these have run and their
+output has been recorded - not because the Linux modules import, and not
+because their tests were skipped elsewhere.

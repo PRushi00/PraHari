@@ -1,0 +1,110 @@
+"""
+PraHari — The Storage Contract (ADR-071)
+
+The blueprint proposes SQLite locally and PostgreSQL for a central
+multi-user store "where justified". Earlier status reports said PostgreSQL
+was blocked only by the absence of a service and that "repository
+abstractions already exist". The second half was wrong: there was no
+abstraction at all, only the concrete SQLite `Database` class.
+
+This module is that abstraction, stated as what the application actually
+calls - derived from every `db.<method>(` call site in `app/`, not from a
+wish list. `tests/integration/test_storage_contract.py` is the executable
+half: behaviour every backend must exhibit, run today against SQLite. A
+PostgreSQL backend is done when it satisfies this Protocol AND passes that
+suite against a real server - not before, and not against a mock.
+
+What this does NOT do
+---------------------
+It does not make PostgreSQL work. No PostgreSQL backend exists, no driver
+is installed, and no server was available to test against.
+
+Known abstraction leaks
+-----------------------
+Three modules outside `storage/` open a raw connection and issue
+SQLite-dialect SQL themselves. A second backend cannot be substituted
+until each moves behind a method of this contract. They are listed so the
+leak is visible, and a test fails if a FOURTH appears.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Optional, Protocol, runtime_checkable
+
+from app.schemas.events import NormalizedEvent, TelemetrySource
+
+KNOWN_ABSTRACTION_LEAKS = frozenset({
+    "app/api/v1/audit.py",          # audit log listing and filters
+    "app/api/v1/system_health.py",  # per-source health aggregates
+    "app/services/retention.py",    # retention preview and deletion
+})
+
+# SQLite-specific constructs a port must translate. Recorded from
+# database.py so the size of the job is known rather than estimated.
+SQLITE_DIALECT_CONSTRUCTS = {
+    "INSERT OR IGNORE": "ON CONFLICT DO NOTHING",
+    "INSERT OR REPLACE": "ON CONFLICT (...) DO UPDATE",
+    "PRAGMA": "no equivalent; journal and foreign-key settings are server-side",
+    "AUTOINCREMENT": "GENERATED ... AS IDENTITY",
+    "? placeholders": "%s (psycopg) or $n (asyncpg)",
+    "sqlite3.IntegrityError": "the driver's UniqueViolation / IntegrityError",
+}
+
+
+@runtime_checkable
+class TelemetryStore(Protocol):
+    """Everything the application asks of storage."""
+
+    # lifecycle
+    def initialize(self) -> None: ...
+    def close(self) -> None: ...
+
+    # sources
+    def upsert_source(self, source: TelemetrySource) -> None: ...
+    def get_source(self, source_id: str) -> Optional[TelemetrySource]: ...
+    def list_sources(self) -> list[TelemetrySource]: ...
+    def set_source_enabled(self, source_id: str, enabled: bool) -> bool: ...
+    def refresh_source_activity(
+        self, source_id: str, last_event_at: Optional[datetime] = None,
+        status: Optional[str] = None,
+    ) -> Any: ...
+
+    # events - insert is idempotent on event identity, and a batch is
+    # atomic: an identity conflict rolls the whole batch back.
+    def insert_events(self, events: list[NormalizedEvent]) -> int: ...
+    def get_event(self, event_id: str) -> Optional[NormalizedEvent]: ...
+    def list_events(self, source_id: Optional[str] = None, *args: Any, **kwargs: Any) -> list[NormalizedEvent]: ...
+    def count_events(self, source_id: Optional[str] = None, *args: Any, **kwargs: Any) -> int: ...
+    def latest_received_at_by_source(self) -> dict[str, datetime]: ...
+
+    # imports
+    def save_import_summary(self, summary: Any) -> None: ...
+    def list_import_summaries(self, source_id: Optional[str] = None) -> list[Any]: ...
+
+    # DNS observations
+    def record_dns_observations(self, observations: list[dict]) -> int: ...
+    def get_dns_observations_for_ip(self, ip_address: str, limit: int = 50) -> list[dict]: ...
+    def get_dns_observations_for_ips(self, ips: list[str]) -> dict[str, list[dict]]: ...
+    def count_dns_observations(self) -> int: ...
+    def count_dns_distinct_ips(self) -> int: ...
+
+    # analyses - historical records; nothing prunes them implicitly
+    def save_analysis(self, analysis: Any) -> None: ...
+    def get_latest_analysis(self, source_id: Optional[str] = None) -> Optional[Any]: ...
+    def list_analyses(self) -> list[Any]: ...
+    def count_analyses(self, source_id: Optional[str] = None) -> int: ...
+    def analyses_exceeding_limit(self, keep: int, source_id: Optional[str] = None) -> list[str]: ...
+    def prune_analyses(self, keep: int, source_id: Optional[str] = None) -> int: ...
+
+    # audit - request id and actor default from the request context
+    def log_audit(
+        self, action: str, resource_type: str = "", resource_id: str = "",
+        details: str = "", user_identity: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> None: ...
+
+    # settings
+    def get_setting(self, key: str) -> Optional[str]: ...
+    def set_setting(self, key: str, value: str, updated_by: str = "operator") -> None: ...
+    def clear_setting(self, key: str) -> bool: ...
