@@ -10,6 +10,8 @@ import {
   FileCheck,
   TrendingUp,
   Lock,
+  HeartPulse,
+  Settings,
 } from "lucide-react";
 import { HealthResponse } from "../types";
 
@@ -27,7 +29,8 @@ export type NavTab =
   | "audit";
 
 interface HeaderProps {
-  activeTab: NavTab;
+  // null on an unknown path: no page is current (ADR-084).
+  activeTab: NavTab | null;
   onSelectTab: (tab: NavTab) => void;
   health: HealthResponse | null;
   loadingHealth: boolean;
@@ -107,6 +110,22 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <TrendingUp size={15} />
           Threat Forecasting
+        </button>
+        {/* System Health and Administration existed, typed and routed in
+            the app, but had no entry here, so no user could open them. */}
+        <button
+          className={`nav-btn ${activeTab === "system" ? "active" : ""}`}
+          onClick={() => onSelectTab("system")}
+        >
+          <HeartPulse size={15} />
+          System Health
+        </button>
+        <button
+          className={`nav-btn ${activeTab === "admin" ? "active" : ""}`}
+          onClick={() => onSelectTab("admin")}
+        >
+          <Settings size={15} />
+          Administration
         </button>
         <button
           className={`nav-btn ${activeTab === "audit" ? "active" : ""}`}

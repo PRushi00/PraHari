@@ -295,15 +295,16 @@ time: terms can change.
 |---|---|
 | Licence | **No named licence.** The page says the dataset may be redistributed, republished and mirrored in any form, provided use cites the dataset and links its AWS page |
 | Citation | Sharafaldin, Lashkari and Ghorbani, ICISSP 2018 |
-| Access | AWS S3 bucket `cse-cic-ids2018`, synced with the AWS CLI using `--no-sign-request`. No registration mentioned |
+| Access | AWS S3 bucket `cse-cic-ids2018`; the page describes syncing with the AWS CLI (`--no-sign-request`). No registration mentioned. Plain HTTPS also works - see below |
 | Size | **Not stated** |
 | Contents | Per-day PCAPs and Windows/Ubuntu event logs per machine; CICFlowMeter-V3 CSV flow features ("more than 80"; one section says 83) |
 | Labels | Assigned from the attack schedule plus source/destination IPs, ports and protocol |
 | Time zone | **Not stated.** Treat as unknown until checked against the PCAPs |
 
 Implications for PraHari:
-- Installing the AWS CLI is a software installation, and the sync is a
-  large download. Both need explicit approval.
+- The AWS CLI is not required: the bucket is readable over plain HTTPS
+  (verified, see below). The download itself is large and needs explicit
+  approval.
 - Labels derive from an attack *schedule*. Blueprint section 7 forbids
   equating a scenario schedule with compromise, so these labels are
   `dataset_ground_truth` under the dataset's own rules and nothing
@@ -344,7 +345,7 @@ Implications for PraHari:
 
 1. Choice of corpus, and confirmation of its terms by the operator.
 2. Approval of the download (size, bandwidth, disk) and of any tool it
-   needs, such as the AWS CLI.
+   needs.
 3. For CTU-13, approval to hold malware samples, and where.
 4. A dedicated research store (`PRAHARI_RESEARCH_DATABASE_URL`); imports
    are refused without one, and the operational databases are never used.
@@ -353,3 +354,68 @@ Implications for PraHari:
 Then the existing pipeline runs unchanged: import under an explicit
 policy, audit, manifest with dataset hashes, chronological purged split,
 the baseline/logistic/forest/LSTM comparison, replay.
+
+---
+
+## Compatibility verified without downloading (17 Oct 2026, ADR-088)
+
+The processed CSVs of CSE-CIC-IDS2018 were checked against PraHari's
+importer **without downloading the dataset**. The public bucket's file
+listing was read, then only the first 3,000 bytes of each file - its
+header row and one data row - were fetched by HTTP range request, held in
+memory and discarded. 30 KB in total was read; nothing was written to disk.
+
+**Access needs no AWS CLI.** The bucket is public over plain HTTPS
+(`https://cse-cic-ids2018.s3.ca-central-1.amazonaws.com/`), and range
+requests return `206 Partial Content`. This corrects the earlier note that
+the CLI must be installed.
+
+| File (`Processed Traffic Data for ML Algorithms/`) | Size | Columns | `Src IP` / `Dst IP` | Importable today |
+|---|---|---|---|---|
+| Wednesday-14-02-2018 | 358 MB | 80 | **absent** | no |
+| Thursday-15-02-2018 | 376 MB | 80 | **absent** | no |
+| Friday-16-02-2018 | 334 MB | 80 | **absent** | no |
+| **Thuesday-20-02-2018** (sic) | **4,055 MB** | **84** | **present** | **yes - all 12 mapped columns present** |
+| Wednesday-21-02-2018 | 329 MB | 80 | **absent** | no |
+| Thursday-22-02-2018 | 383 MB | 80 | **absent** | no |
+| Friday-23-02-2018 | 383 MB | 80 | **absent** | no |
+| Wednesday-28-02-2018 | 209 MB | 80 | **absent** | no |
+| Thursday-01-03-2018 | 108 MB | 80 | **absent** | no |
+| Friday-02-03-2018 | 352 MB | 80 | **absent** | no |
+
+Total 6.89 GB. Observed in every file: day-first timestamps
+(`14/02/2018 08:31:01`, so `timestamp_format=day_first`), first-row label
+`Benign`, and flow durations consistent with CICFlowMeter's microseconds.
+The time zone is still unstated by the publisher.
+
+The importer requires source and destination addresses, and two of the
+twelve features count distinct addresses, so **nine of ten days would have
+every row rejected.** Only Tuesday 20-02-2018 is usable as-is. The
+publisher schedules two attacks that day: **DDoS-LOIC-HTTP 10:12-11:17**
+and **DDoS-LOIC-UDP 13:13-13:32**, no time zone stated.
+
+**What that supports.** One day, two episodes, one scenario. With a
+default 70 % chronological split of a day that starts at 08:34, both
+episodes would very likely fall in training and the test period would hold
+no positives, so its metrics could not be interpreted. A split near 50 %
+would train on the HTTP flood and test on the UDP flood: a real but narrow
+result about one host and two attack variants. Cross-scenario
+generalisation is not possible with one day.
+
+**CIC-IDS2017** (five days, 14 scheduled attack types, labelled flows that
+the publisher describes as including addresses and timestamps, citation-only
+terms) is a better fit on paper. Its download is gated by a form requiring
+name, email, organisation, job title and country. That is the operator's to
+submit, so its column layout is **unverified**.
+
+### Options, in order of cost
+
+1. **Tuesday 20-02-2018 only (4.05 GB, no code change).** Real labels, end
+   to end, with the narrow result described above. Needs approval of the
+   download.
+2. **Register for CIC-IDS2017**, then verify its headers the same way
+   before downloading anything large.
+3. **Accept flows without addresses** to unlock the other nine 2018 days.
+   This is a research-design change, not a fix: the two address-count
+   features would be unmeasured, so the feature schema - and comparability
+   with any address-bearing run - changes. It needs an explicit decision.

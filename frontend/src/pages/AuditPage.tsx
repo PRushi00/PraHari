@@ -10,10 +10,23 @@ import {
 import { api } from "../services/api";
 import { AuditLog, SecurityConfig } from "../types";
 
-import { fmtTime } from "../utils/format";
+import { fmtTimeUtc } from "../utils/format";
+
+// What the Network Isolation card may claim, from the report alone. Green
+// only when the backend has evidence for it (ADR-089): a null claim, or an
+// older backend that does not report the listener, is unverified.
+export function describeBinding(config: SecurityConfig | null): { label: string; color: string } {
+  if (!config) return { label: "BINDING UNKNOWN", color: "#f59e0b" };
+  if (config.loopback_enforced === false) return { label: "EXPOSED BEYOND LOOPBACK", color: "#ef4444" };
+  if (config.loopback_enforced !== true || config.listener_matches_configuration !== true) {
+    return { label: "BINDING UNVERIFIED", color: "#f59e0b" };
+  }
+  return { label: "LOOPBACK CONFIGURED", color: "#10b981" };
+}
 export const AuditPage: React.FC = () => {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [config, setConfig] = useState<SecurityConfig | null>(null);
+  const binding = describeBinding(config);
   const [selectedResourceType, setSelectedResourceType] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,14 +89,34 @@ export const AuditPage: React.FC = () => {
             <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textTransform: "uppercase" }}>
               Network Isolation
             </span>
-            <Lock size={18} style={{ color: "#10b981" }} />
+            <Lock size={18} style={{ color: binding.color }} />
           </div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#10b981" }}>
-            LOOPBACK ENFORCED
+          {/* Rendered from the report, never asserted (ADR-078). This card
+              used to print LOOPBACK ENFORCED unconditionally, and
+              "127.0.0.1:8000" when the report was missing. */}
+          <div
+            data-testid="network-isolation-status"
+            style={{ fontSize: "1.2rem", fontWeight: 700, color: binding.color }}
+          >
+            {binding.label}
           </div>
           <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
-            Binding: <code>{config ? `${config.host_binding}:${config.port}` : "127.0.0.1:8000"}</code> (Strict local access)
+            {config ? (
+              <>
+                Configured: <code>{`${config.host_binding}:${config.port}`}</code>
+                {config.serving_port != null && (
+                  <> · Serving: <code>{`${config.serving_host ?? "?"}:${config.serving_port}`}</code></>
+                )}
+              </>
+            ) : (
+              "Binding unknown: the configuration report could not be loaded."
+            )}
           </div>
+          {config?.binding_evidence && (
+            <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "0.35rem" }}>
+              {config.binding_evidence}
+            </div>
+          )}
         </div>
 
         {/* Sniffing Disabled */}
@@ -183,7 +216,7 @@ export const AuditPage: React.FC = () => {
                 {logs.map((log) => (
                   <tr key={log.id}>
                     <td style={{ fontSize: "0.8rem", fontFamily: "var(--font-mono)", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-                      {fmtTime(log.timestamp, "—")}
+                      {fmtTimeUtc(log.timestamp, "—")}
                     </td>
                     <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>
                       <code>{log.action}</code>

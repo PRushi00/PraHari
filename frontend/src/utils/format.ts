@@ -58,6 +58,22 @@ export function fmtTime(value: unknown, fallback: string = UNAVAILABLE): string 
   return Number.isNaN(d.getTime()) ? fallback : d.toLocaleString();
 }
 
+/**
+ * An instant rendered in UTC, labelled as such: "2026-10-17 08:20:09 UTC".
+ *
+ * For any column whose header says UTC (ADR-079). `fmtTime` renders in the
+ * browser's local zone, so the Events and Audit tables - both headed
+ * "(UTC)" - showed local time under a UTC label: in India every timestamp
+ * was 5 h 30 m off its own header. Independent of the viewer's zone, so a
+ * timeline reads the same for every analyst.
+ */
+export function fmtTimeUtc(value: unknown, fallback: string = UNAVAILABLE): string {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return fallback;
+  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+}
+
 /** Relative age such as "12s ago", or `N/A`. */
 export function fmtRelative(value: unknown, fallback: string = UNAVAILABLE): string {
   if (typeof value !== "string" || !value.trim()) return fallback;

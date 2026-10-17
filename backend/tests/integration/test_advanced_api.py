@@ -125,7 +125,10 @@ def test_audit_logs_and_config_endpoint(client_with_db):
     assert isinstance(logs, list)
 
     # Check system security config
-    res = client.get("/api/v1/audit/config")
+    # Arrive on the configured listener (127.0.0.1:8000). The test client's
+    # default "testserver:80" matches no configuration, and since ADR-089 the
+    # report no longer claims loopback without that evidence.
+    res = client.get("http://127.0.0.1:8000/api/v1/audit/config")
     assert res.status_code == 200
     cfg = res.json()
     assert cfg["loopback_enforced"] is True

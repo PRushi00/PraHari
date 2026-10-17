@@ -3,6 +3,8 @@ Test unified deployment, static file serving, SPA fallback,
 deep linking, and asset protection.
 """
 import asyncio
+import sys
+import os
 from pathlib import Path
 
 import pytest
@@ -216,6 +218,36 @@ def test_a_symlink_out_of_dist_is_not_followed(built_spa):
     assert _SECRET not in body
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
+@pytest.mark.parametrize("prefix", ["", "assets/"])
+def test_a_junction_out_of_dist_is_not_followed(built_spa, prefix):
+    """
+    The symlink test above skips on Windows without Developer Mode or
+    elevation (WinError 1314), which left the escape guard untested on the
+    one platform where it was skipped. A directory JUNCTION needs no
+    privilege, is the escape an unprivileged Windows user can actually
+    create, and exercises both static paths: the SPA fallback and the
+    /assets mount.
+    """
+    import _winapi
+
+    spa_app, dist, secret = built_spa
+    link = dist / prefix / "leakdir"
+    _winapi.CreateJunction(str(secret.parent), str(link))
+    try:
+        assert (link / secret.name).read_text(encoding="utf-8") == _SECRET, (
+            "the junction must really reach the secret, or this test proves nothing"
+        )
+
+        for name in (secret.name, "prahari.db"):
+            status, body = _asgi_get(spa_app, f"/{prefix}leakdir/{name}")
+            assert status in (400, 404), (prefix, name, status)
+            assert _SECRET not in body
+    finally:
+        os.rmdir(link)  # removes the junction only, never its target
+    assert secret.exists()
+
+
 def test_without_a_build_there_is_no_fallback_and_nothing_leaks(tmp_path):
     bare_app = create_app(frontend_dist=tmp_path / "no-dist")
     c = TestClient(bare_app)
@@ -228,3 +260,28 @@ def test_without_a_build_there_is_no_fallback_and_nothing_leaks(tmp_path):
     status, body = _asgi_get(bare_app, "/../../etc/passwd")
     assert status == 404
     assert "root:x:0:0" not in body
+
+
+def _client_routes() -> list[str]:
+    """Every path the dashboard's router knows, read from its source (ADR-084)."""
+    import re
+
+    routing = Path(__file__).resolve().parents[3] / "frontend" / "src" / "routing.ts"
+    text = routing.read_text(encoding="utf-8")
+    block = text.split("export const ROUTES", 1)[1].split("};", 1)[0]
+    aliases = text.split("const ALIASES", 1)[1].split("};", 1)[0]
+    return re.findall(r'"(/[^"]*)"', block) + re.findall(r'"(/[^"]*)":', aliases)
+
+
+def test_every_client_route_is_served_the_shell(built_spa):
+    """A deep link reaches the router only if the server answers it with the
+    shell; a route the client knows but the server 404s is a dead link."""
+    spa_app, _, _ = built_spa
+    c = TestClient(spa_app)
+    routes = _client_routes()
+    assert "/" in routes and "/system-health" in routes and "/feasibility" in routes
+
+    for route in routes:
+        r = c.get(route)
+        assert r.status_code == 200, route
+        assert _SPA_MARKER in r.text, f"{route} did not receive the application shell"

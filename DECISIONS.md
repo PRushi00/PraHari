@@ -3568,3 +3568,453 @@ crashed later with an unrelated error; it now exits 1.
 
 ### Result
 Backend `pytest -q -rs`: **1292 passed, 3 skipped**, 0 failed.
+
+---
+
+## ADR-078: The Dashboard Claimed Loopback It Could Not See
+
+### Context
+Found in a real browser during Windows validation of `4360ca3`. An
+isolated server listening on `127.0.0.1:18765` displayed **"LOOPBACK
+ENFORCED — Binding: 127.0.0.1:8000"**. Two defects:
+
+1. The Audit page printed `LOOPBACK ENFORCED` with a green lock as a
+   **literal string**. It never read `loopback_enforced`, so a backend
+   reporting `false` would still have displayed "enforced". Without a
+   report it invented `127.0.0.1:8000`.
+2. `/audit/config` reported the **configured** host and port. uvicorn's
+   `--host` and `--port` do not update configuration, so another port was
+   misreported, and `start_prahari.ps1 -HostBinding 0.0.0.0` - which passed
+   the address to uvicorn but not to the application - would have shown a
+   LAN-exposed server as loopback-only.
+
+### Decision
+The application cannot observe the address uvicorn bound. Every request,
+though, records the local address it arrived on, and that proves two
+things and no more: the real serving port, and **exposure**, when a request
+arrives on a non-loopback address. Arrival on loopback proves nothing
+about the bind, since a wildcard bind accepts it too.
+
+- `/audit/config` adds `serving_host`, `serving_port`,
+  `listener_matches_configuration` and `binding_evidence`
+  (`EXPOSED` / `UNVERIFIED` / `CONFIGURED`). `loopback_enforced` becomes
+  false on proven exposure. A host that is not an IP address (a test
+  client's `testserver`) is no evidence either way.
+- The card is rendered from the report: `EXPOSED BEYOND LOOPBACK`,
+  `BINDING UNVERIFIED`, `LOOPBACK CONFIGURED` or `BINDING UNKNOWN`. It
+  never says "enforced": nothing in the application enforces the bind.
+- `start_prahari.ps1` now sets `PRAHARI_HOST`/`PRAHARI_PORT` to the values
+  it passes uvicorn, so the official launch path reports the truth.
+  `start_prahari.bat` hard-codes `127.0.0.1:8000` on both sides, so it
+  already agreed.
+
+Verified in a real browser: the card read `BINDING UNVERIFIED —
+Configured: 127.0.0.1:8000 · Serving: 127.0.0.1:18766` with the reason.
+
+---
+
+## ADR-079: Two Tables Headed "(UTC)" Showed Local Time
+
+### Context
+Also found in the browser. Events Explorer's **Observed At (UTC)** column
+showed `1:50:09 PM` for an event the API returned as `08:20:09Z`: the page
+formatted with `toLocaleString()`, so in India every row was 5 h 30 m off
+its own header. The Audit log's **Timestamp (UTC)** column had the same
+defect. In a forensic timeline, a header that misstates the zone of every
+row is a data-integrity fault, not a cosmetic one.
+
+### Decision
+`fmtTimeUtc` renders `2026-10-17 08:20:09 UTC`, independent of the
+viewer's zone, and the two UTC-headed columns use it. Pages that make no
+zone claim keep browser-local time. A guard test fails if a page headed
+"(UTC)" formats with the local-time function again. Verified in the
+browser against the API's own timestamps.
+
+---
+
+## ADR-080: `-CheckOnly` Was Not a Check; the Verifier Never Stopped Windows Gracefully
+
+### Context
+Two launcher defects, both Windows-specific in effect.
+
+1. `start_prahari.ps1 -CheckOnly` reached its exit only after it had
+   created a virtual environment and run `pip install` if the venv was
+   missing, run `npm ci` (which deletes and reinstalls `node_modules`) and
+   a production build if the bundle was missing - and then reported
+   `[SUCCESS]`, **even with the port already taken**. The last part was
+   reproduced on Windows before the fix. The installing paths were not run
+   against the old script, because they download packages.
+2. `verify_live_launcher.py` stopped the server on Windows with
+   `taskkill /F`, so the application's shutdown hook never ran there,
+   while the script described "clean shutdown". On Linux, `terminate()` is
+   SIGTERM, which uvicorn handles, so only Windows was unexercised.
+
+### Decision
+- `-CheckOnly` collects every unmet prerequisite (venv, bundle, port),
+  prints each, creates nothing, and exits 1 if any is unmet. Three
+  Windows-only tests run the real script in a temporary copy, so a missing
+  prerequisite is genuinely missing, and compare the directory before and
+  after: a check that creates files fails.
+- The verifier starts the server in its own process group and stops it
+  with `CTRL_BREAK` (SIGTERM elsewhere), falling back to force only after
+  15 s. A forced stop is now a failed check, and the log must show
+  `Application shutdown complete`. On Windows: 21 checks pass, under
+  normal and `-O` interpreters, stopped gracefully.
+
+A graceful stop with a dashboard tab still open was also tested against
+the project's launch path (`python -m uvicorn`): it completed normally.
+
+---
+
+## ADR-081: Windows Boundaries That Had No Windows Test
+
+### Context
+Three protections were correct in code but unproven on Windows.
+
+1. **Static-file escape.** The symlink-escape test skips on Windows
+   without Developer Mode (WinError 1314), so the guard was never
+   exercised on Windows. A directory **junction** needs no privilege and
+   is the escape an unprivileged Windows user can create.
+2. **The PowerShell subprocess boundary.** `query_windows_connections`
+   handled a missing PowerShell, a timeout, a nonzero exit, unparseable
+   output, empty output, PowerShell's single-object unwrapping and junk
+   list items, and none of these branches was tested.
+3. **Script injection, latent.** `states` was interpolated into the
+   PowerShell script inside quotes. Only the built-in default is ever
+   passed, so nothing was exploitable, but the first caller to pass a
+   configurable value would have injected PowerShell.
+
+### Decision
+- A junction escape test for both static paths (SPA fallback and the
+  `/assets` mount). It first checks that its junction really reaches the
+  secret, so it cannot pass vacuously. Both paths refuse: 400 and 404.
+- Sixteen subprocess-boundary tests. A missing executable is real; the
+  other outcomes use a stand-in for `subprocess.run`, stated as such. One
+  asserts the child is started from an argument list, never a shell, with
+  a timeout.
+- `VALID_TCP_STATES`, the 13 names Windows itself reports for the
+  NetTCPConnection State enum, read on this host. Anything else is refused
+  before a process is spawned. With the allow-list neutralised, three of
+  the four injection tests fail.
+- Six `live_windows` tests drive the host-observation and DNS endpoints
+  against the real OS facilities, into temporary storage, proving the
+  Linux platform gate did not switch Windows off.
+
+---
+
+## ADR-082: Windows Validation of the Linux Revision (`4360ca3`)
+
+### What ran on Windows
+Windows 11 Home Single Language 10.0.26300, Python 3.12.0 in the project
+venv, Node 24.19.0, npm 12.0.2. Every check ran against temporary storage;
+neither operational database was opened.
+
+- Backend suite (`pytest -q -rs`): **1287 passed, 8 skipped, 0 failed**
+  at the baseline. Final counts are in IMPLEMENTATION_STATUS (Session 31).
+- `live_windows`: the real connection table was read, and a full
+  collection path ran into a temporary database.
+- Host observations and DNS through the API: 38 real UDP sockets read,
+  2 adapters with counters, and the DNS path executed the Windows code,
+  not the platform gate.
+- Launcher verifier, frontend type-check, tests and an isolated build, and
+  a real browser across every page, on two isolated servers.
+
+### What was not verified, and why
+- **Collector lifecycle against the operational database:** needs
+  explicit authorization. The single-poll endpoint was deliberately not
+  used as a substitute.
+- **Live DNS parsing:** the Windows DNS client cache was empty on this
+  host. The refresh ran the Windows path and correctly recorded nothing.
+  The diagnosis does not establish why: reading the cache may need
+  elevation, or browsers may use their own encrypted DNS. Populating the
+  cache would mean sending DNS queries, so it was not done.
+- **The verifier's POSIX shutdown branch** (SIGTERM) changed in shared
+  code and cannot execute on Windows: re-run `verify_live_launcher.py` on
+  Linux.
+
+### Not a defect, recorded so it is not rediscovered
+- `GET /api/v1/sources/windows_local_host` returns 404 on a fresh install,
+  until collection first registers the source. The Live Telemetry page
+  handles it deliberately (`.catch(() => null)`); the browser logs the 404
+  anyway.
+- `ConnectionResetError [WinError 10054]` in asyncio's proactor transport
+  when a browser drops a keep-alive connection: Windows event-loop noise,
+  logged at ERROR, harmless.
+- The SPA has no URL router: `/forecast` serves the shell (correct
+  server-side) but opens the Overview page, and clicking a page does not
+  change the URL. A bookmark or a refresh always lands on Overview. This
+  is a shared UX limitation, not a Windows defect. **Resolved by ADR-084.**
+
+---
+
+## ADR-083: A New Collector Inherited the Previous Collector's Memory
+
+### Context
+Found by running the real collector twice in one process. A brand-new
+collector, on a brand-new temporary database, reported
+`records_observed=100, duplicates_suppressed=75, events_persisted=0` on its
+first poll. The adapter registry's `register()` returns the
+**already-registered** adapter for an id. So every collector for the same
+`source_id` silently reused the previous instance's `WindowsConnectionAdapter`,
+including:
+
+- **Its deduplication cache.** Connections the new collector's database had
+  never stored were suppressed as repeats and never persisted. This was
+  silent data loss whenever the collector was recreated (`reset_collector`,
+  a second application instance in one process, or a test), and a
+  test-order dependency in the existing live test.
+- **Its configuration.** The new collector's `include_loopback` was ignored
+  in favour of the old adapter's.
+
+The adapter class is shared with the Linux reader, so the defect was not
+Windows-specific; Windows found it.
+
+### Decision
+`AdapterRegistry.replace()` registers an adapter in place of any existing
+one, and the collector uses it. `register()` keeps its
+return-the-existing behaviour, which is right for the stateless stream
+adapters. Three platform-neutral regression tests failed before the fix and
+pass after it. Rerun on Linux.
+
+---
+
+## ADR-084: The Dashboard Has URLs, and Two Pages Had No Way In
+
+### Context
+The page lived only in React state. `/forecast` served the shell
+(server-side correct) but opened Overview; a refresh always landed on
+Overview; the browser's back button left the application; an unknown path
+silently showed Overview. **System Health and Administration** were built,
+typed and labelled, but had no navigation entry, so no user could open
+them.
+
+### Decision
+History-API routing in `frontend/src/routing.ts`, with no new dependency
+for eleven flat pages:
+
+- One canonical path per page (`/`, `/live`, `/import`, `/stream`,
+  `/events`, `/analytics`, `/feasibility`, `/forecast`, `/system-health`,
+  `/admin`, `/audit`), keeping the four the launcher verifier probes.
+- Aliases and trailing slashes resolve to the canonical path through
+  `replaceState`, without adding a history entry.
+- Navigation uses `pushState`; `popstate` drives back and forward; each
+  route sets the document title.
+- An unknown path shows **Page not found**, names the path, marks no page
+  active and offers every page.
+- Navigation buttons for System Health and Administration.
+
+The server must serve the shell for every client route, or a deep link
+fails before React runs. A backend test reads the routes from
+`routing.ts` and checks each one, so the two route tables cannot drift
+apart.
+
+Verified in a real browser: deep link, refresh, a click to the
+previously unreachable System Health page, back, forward, an alias and an
+unknown path.
+
+**Deployment note:** `frontend/dist` is git-ignored and was deliberately
+not rebuilt here. Run `npm run build` in `frontend/` to serve this and
+ADR-078/079 to users.
+
+---
+
+## ADR-085: Review of the Session's Own Changes
+
+A second pass over the uncommitted work found four defects in it.
+
+1. **The launcher leaked configuration into its caller.**
+   `$env:PRAHARI_HOST`/`PORT` (ADR-078) were set in the calling PowerShell
+   when the script was run as `.\start_prahari.ps1`, and remained after it
+   returned, silently reconfiguring anything started later in that window.
+   Proved: the caller saw `PRAHARI_PORT=45678` afterwards. They are now
+   restored in a `finally`. The regression test runs a dummy `python.exe`,
+   so no server can start; against the pre-fix script its probe shows the
+   leak.
+2. **The verifier mislabelled a self-exit as forced.** If the server
+   exited between `poll()` and `send_signal()`, the error fell through to
+   "forced". It now reports `already_exited`.
+3. **The binding evidence claimed what it had not measured.** "CONFIGURED
+   ... arrived on loopback" was also printed when the serving port was
+   unknown or the arrival host was not an IP. Each case is now stated as
+   what it is (`UNKNOWN`, or "no evidence").
+4. **A loose test.** The UDP idempotency assertion could pass while
+   duplicating. It now checks exact row accounting and that no endpoint is
+   stored twice.
+
+A `SyntaxWarning` introduced by the new test (an invalid `\s` escape in a
+docstring) was also fixed.
+
+---
+
+## ADR-086: DNS Parsing and the Collector Lifecycle, Proven on Windows Without the Operational Database
+
+### DNS parsing
+The Windows DNS cache on this host is genuinely empty (unfiltered
+`@(Get-DnsClientCache).Count` = 0), and filling it would mean DNS queries
+or a hosts-file edit. Instead, five `live_windows` tests run the adapter's
+**unmodified** PowerShell in real PowerShell, with only
+`Get-DnsClientCache` replaced by a function returning client-only instances
+of the real `MSFT_DNSClientCache` CIM class (`New-CimInstance
+-ClientOnly`: in memory, never written to the system). One test reads that
+class's schema from the operating system and checks every property the
+script uses exists. A wrong name would make a full cache look exactly as
+empty as this one.
+
+Proven: filtering of CNAME and empty records inside PowerShell,
+single-record handling, empty cache, IPv6 normalisation, shared-address
+accumulation, end to end into a temporary database. **Not** proven:
+`Get-DnsClientCache` itself returning populated objects; that needs a host
+with a non-empty cache.
+
+### Collector lifecycle
+Two `live_windows` tests run the application's collector class with the
+real `Get-NetTCPConnection` query and real DNS refresh, against a temporary
+database. They cover: start, at least two background polls, stop, no poll
+after stop, exact row accounting, start and stop audit entries, the source
+marked disconnected, and Windows capability notes. A second collector
+process on the same database does not conflict on connections still open
+(the Linux ADR-077 fix, now proven on Windows). The operational database
+and the application's own collector instance were not involved.
+
+### Open: a shutdown hang seen twice, not reproduced
+Two isolated servers stopped by `CTRL_BREAK` while a real browser held
+connections logged `Shutting down` and then hung, needing a forced stop.
+The log of one shows `ConnectionResetError [WinError 10054]` raised from
+`self._sock.shutdown(SHUT_RDWR)` inside asyncio's proactor
+`_call_connection_lost` - in CPython 3.12.0 that line sits in a `finally`
+**before** `server._detach()`, so a reset there leaks the server's active
+connection count. uvicorn's shutdown then awaits `server.wait_closed()`,
+which on 3.12 waits for that count, without a timeout by default.
+
+It could not be reproduced synthetically: idle keep-alive, pre-connected,
+half-sent and reset connections - including resets that outlive the 5 s
+keep-alive timeout - all stopped gracefully in about 0.2 s. A real browser
+session with a tab open also stopped gracefully. No fix is applied without
+a reproduction. Candidate mitigations, if it recurs: uvicorn's
+`--timeout-graceful-shutdown` (bounds that wait and still runs the shutdown
+hook), or a later 3.12 patch release of Python.
+
+---
+
+## ADR-087: Python Changed Under the Windows Results; the Shutdown Hang Is Not Fixed
+
+### The interpreter changed
+Python **3.12.10** was installed on this host on 17 Oct 2026 at 18:39,
+after Sessions 31 and 32. The installer record dates it; neither those
+sessions nor this one installed it. It upgraded in place the base
+interpreter the project venv uses (`pyvenv.cfg` still says it was created
+with 3.12.0). Every Windows result in ADR-078 to ADR-086 was therefore
+measured on **3.12.0**, and everything was re-run on 3.12.10 rather than
+inherited: dependencies import, `pip check` is clean, and the backend
+suite, 15 live tests, the launcher verifier and the frontend all pass
+(IMPLEMENTATION_STATUS, Session 33).
+
+### The shutdown hang: investigated, not fixed
+Two isolated servers hung on `CTRL_BREAK` during real-browser sessions on
+3.12.0 (ADR-086). Further investigation on 3.12.10:
+
+- **The real launcher**, with a real browser kept open and navigation
+  aborting requests mid-flight (including the Live Telemetry page's slow
+  PowerShell request), stopped **gracefully**: shutdown hook run, port
+  closed, no process left.
+- **A forced race in plain asyncio**: a client reset while the event loop
+  was deliberately blocked, then the server closing that transport before
+  the reset was processed. `server.wait_closed()` returned every time, and
+  no 10054 was raised. The suspected mechanism - `sock.shutdown()` raising
+  in `_call_connection_lost` before `server._detach()` - could not be
+  triggered. The code is unchanged in 3.12.10, so this neither confirms nor
+  rules it out.
+
+Totals: 2 hangs in 15 observed stops, both on 3.12.0, none on 3.12.10, and
+no deterministic reproduction on either. **No fix is applied**: any change
+now would be speculative, and its effect could not be tested. Should it
+recur, the candidate mitigation is uvicorn's `--timeout-graceful-shutdown`,
+which bounds that wait and still runs the shutdown hook.
+
+---
+
+## ADR-088: The Dataset's Compatibility Was Measured, Not Assumed
+
+### What was checked
+CSE-CIC-IDS2018's ten processed CSVs, by reading the public bucket listing
+and then the first 3,000 bytes (header plus one row) of each file over
+HTTPS range requests. 30 KB in total was read, held in memory and
+discarded; nothing was written to disk and no dataset was downloaded.
+
+### Findings
+- **Nine of the ten files have no `Src IP`/`Dst IP` columns** (80
+  columns). The importer requires both, so every row would be rejected.
+- **Tuesday 20-02-2018 (4.05 GB, 84 columns) carries all twelve mapped
+  columns**, and its first row parses.
+- Timestamps are day-first; the time zone is still unstated.
+- Access needs no AWS CLI: plain HTTPS works. That corrects
+  DATASET_ACQUISITION.md and FORECASTING_DATA_REQUIREMENTS.md, which also
+  said the dataset was "importable as it stands". That was true of one file
+  in ten.
+- **CIC-IDS2017** is gated by a registration form requiring personal
+  details. That is the operator's to submit, so its layout is unverified.
+
+### Consequence
+The only labelled data verified compatible today supports a narrow
+experiment: one day, two attack episodes (DDoS-LOIC-HTTP, then
+DDoS-LOIC-UDP). Under the default 70 % chronological split the test
+period would very likely hold no positives. The options - download that
+one file, register for CIC-IDS2017, or accept address-less flows as a
+deliberate research-design change - are set out in DATASET_ACQUISITION.md.
+Each needs a decision this work does not make.
+
+---
+
+## ADR-089: Independent Review Before the Windows Commit
+
+### Context
+Before committing `windows-closure`, an independent read-only review of the
+actual diff found no blockers, three should-fix items and twelve nits. Each
+was checked against the code before acting on it.
+
+### Fixed
+1. **The binding report still claimed loopback without evidence.**
+   `loopback_enforced` stayed `true`, and `service_exposure` stayed
+   `loopback_only`, when the serving port did not match the configuration
+   or could not be read. Scenario: `uvicorn --host 0.0.0.0 --port 9000`
+   without the launcher, browsed over loopback, reported loopback-only while
+   reachable from the LAN. `loopback_enforced` is now a three-state value:
+   `true` only when configured for loopback, serving on the configured port
+   and with no exposure seen; `false` on proven exposure or a non-loopback
+   host; **`null` when unverifiable**. `service_exposure` gains
+   `loopback_configured_unverified`. The dashboard shows green only for
+   `true` with a matching listener, and the lock icon follows. A test had
+   locked the wrong value in; it now asserts `null`. Two older tests that
+   asserted `true` through the test client's fake `testserver:80` now send
+   their request to the configured `127.0.0.1:8000`, so the assertion holds
+   on evidence; they were not weakened.
+2. **IPv4-mapped arrivals.** On a dual-stack bind a local IPv4 client
+   arrives as `::ffff:127.0.0.1`, which Python 3.12 does not call loopback.
+   The report now judges the embedded IPv4 address. Test added.
+3. **The README contradicted itself** ("not re-run on Windows" beside a
+   Windows run; stale counts; "dist predates" beside "dist rebuilt"). The
+   section was rewritten as one current status.
+4. **The acceptance matrix overstated Linux status.** Row 12 said
+   "Windows and Linux, current revision"; the Linux evidence is for
+   `4360ca3`. It is now qualified.
+5. Nits: ADR-082's router limitation is marked resolved by ADR-084; an
+   import order in `AuditPage.tsx`; a wrong test comment about enum case.
+
+The review also asked for an explicit test that a new collector inherits no
+counters; it was added (zeroed `records_processed`/`records_rejected`, an
+empty fingerprint cache, a fresh status).
+
+### Not changed, with reasons
+- **Verifier edge cases.** A graceful exit landing just after the 15 s
+  timeout is labelled `already_exited`, and `CTRL_BREAK` needs a shared
+  console. Both surface as failed checks, never as false passes.
+- **Same-host reverse proxy.** The proxy connects over loopback, so the
+  report cannot see the exposure. The evidence text already says the bind
+  is not observable.
+- **Routing accessibility.** Focus is not moved and the route change is not
+  announced; the query string and hash are dropped on navigation. Recorded
+  as follow-up work.
+- **Pre-existing, outside this change set:** stream ingest with
+  `source_id="windows_local_host"` returns HTTP 500 once a collector exists,
+  because the stream path's `get_or_register` receives the collector's
+  connection-table adapter. Confirmed, and raised as a separate task.

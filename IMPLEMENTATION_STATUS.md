@@ -2208,3 +2208,148 @@ The Windows procedure is `PLATFORM_SUPPORT.md` §7.
 ### Results
 Backend **1292 passed, 3 skipped, 0 failed**. Frontend and launcher
 results in ADR-076 and `PLATFORM_SUPPORT.md` §6, re-run this session.
+
+---
+
+## Session 31 — Windows Validation of the Linux Revision
+
+Started from `4360ca3` on `master`, equal to `origin/main`, with a clean
+tree and nothing untracked. `master` has no upstream configured: it is
+pushed as `master:main`. PraHari was not running. Nothing was committed or
+pushed.
+
+### Baseline and final
+
+| | Baseline | Final |
+|---|---|---|
+| Backend `pytest -q -rs` | 1287 passed, 8 skipped, 3 warnings | **1322 passed, 8 skipped, 3 warnings, 0 failed** (110.7 s) |
+| `pytest -m live_windows` | 2 passed | **8 passed** |
+| Launcher verifier | 19 checks (forced stop) | **21 checks**, graceful, also under `-O` |
+| Frontend | `tsc` 0, 67 passed, build OK | **`tsc` 0, 77 passed**, build OK |
+| Static parse | - | 141 Python files and `start_prahari.ps1`, 0 errors |
+
+Every count came from a run in this session. None is carried over from
+Linux.
+
+### Defects found and fixed (ADR-078..081)
+
+| ADR | Defect | Found by |
+|---|---|---|
+| 078 | Audit card printed LOOPBACK ENFORCED unconditionally; `/audit/config` reported configured, not served, binding | Real browser: `:18765` displayed as `127.0.0.1:8000` |
+| 079 | Events and Audit tables headed "(UTC)" showed local time, 5 h 30 m off | Real browser against the API's own timestamps |
+| 080 | `-CheckOnly` installed and built, and passed with the port taken | Reading the script; port case reproduced on Windows |
+| 080 | Verifier force-killed on Windows; shutdown hook never exercised | `code=1` in its own report; `CTRL_BREAK` proven to work |
+| 081 | Latent PowerShell injection through `states` | Subprocess-boundary review |
+
+Gaps closed with tests, no defect behind them: junction escape on both
+static paths, and every subprocess branch of the connection-table query.
+
+### Preservation
+
+Both databases and their sidecars, `db_backups/`, `experiments/` and
+`frontend/dist` are byte-identical before and after. Builds went to a
+temporary directory. Every server this session started bound `127.0.0.1`
+on its own port, used a temporary database, and was stopped with its port
+checked closed; no Python process remained at the end.
+
+### Not done
+
+- Collector lifecycle against the operational database: blocked pending
+  authorization.
+- Live DNS parsing: the cache was empty on this host.
+- The verifier's SIGTERM branch is shared code that cannot run here; re-run
+  it on Linux.
+
+---
+
+## Session 32 — Windows Closure: Review, DNS and Lifecycle Proof, Deep Links
+
+Continued from the uncommitted Session 31 work. Nothing was reset, stashed,
+discarded, committed or pushed.
+
+| Check | Session 31 | Now |
+|---|---|---|
+| Backend `pytest -q -rs` | 1322 passed, 8 skipped | **1334 passed, 8 skipped, 0 failed**, 3 warnings |
+| `live_windows` | 8 passed | **15 passed** |
+| Launcher verifier | 21/21 | 21/21 (`python` and `-O`), graceful |
+| Frontend | `tsc` 0, 77 passed | **`tsc` 0, 90 passed**, build OK |
+
+### Fixed
+
+| ADR | Defect |
+|---|---|
+| 083 | A new collector reused the previous collector's adapter: its dedup cache (suppressing connections never stored) and its `include_loopback` |
+| 084 | No URLs: deep links opened Overview, refresh lost the page, back left the app, unknown paths showed Overview; System Health and Administration unreachable |
+| 085 | In Session 31's own changes: launcher leaked `PRAHARI_HOST`/`PORT` into the caller's session; verifier mislabelled a self-exit as forced; binding evidence claimed unmeasured facts; a loose UDP test; a `SyntaxWarning` |
+
+### Proven, without the operational database (ADR-086)
+- DNS: the unmodified script in real PowerShell over client-only instances
+  of the real `MSFT_DNSClientCache` class; property names checked against
+  the OS schema.
+- Collector lifecycle: the real class and real query, started, polled,
+  stopped and restarted into a temporary database.
+
+### Documented
+- `docs/FORECASTING_DATA_REQUIREMENTS.md`: target, CSV schema, declared
+  policy, minimum quantities, features, split, and the fit of
+  CSE-CIC-IDS2018 and CTU-13. Three claims in its first draft were checked
+  against the code and corrected (model list, bidirectional-count
+  behaviour, ambiguous-date handling).
+
+### Open
+- `Get-DnsClientCache` returning populated objects: empty cache here.
+- A shutdown hang seen twice with a real browser; not reproduced.
+- Linux re-run of ADR-080 and ADR-083.
+- `frontend/dist` to be rebuilt by the operator (`npm run build`).
+
+---
+
+## Session 33 — Windows Closure on `windows-closure`, Python 3.12.10
+
+On branch `windows-closure` at `4360ca3`. All Session 31-32 changes were
+preserved; nothing was reset, stashed, discarded, staged, committed,
+pushed or merged.
+
+### Environment change found
+Python 3.12.10 was installed today at 18:39, after Sessions 31-32, and
+upgraded the venv's base interpreter (ADR-087). Every check was re-run:
+
+| Check | Result |
+|---|---|
+| Backend | 1334 passed, 8 skipped, 0 failed, 3 warnings |
+| `live_windows` | 15 passed |
+| Launcher verifier | 23/23 (`python`, `-O`), graceful |
+| Real launcher on a temporary database | serves rebuilt dist, all routes, binding `CONFIGURED`, graceful stop with a browser open |
+| Frontend | `tsc` 0, 90 passed |
+| Static | 144 files, 0 problems with warnings as errors; launcher 0 parse errors |
+
+### Done
+- Reviewed every source change and test; the verifier now also probes
+  `/system-health` and `/admin`.
+- `frontend/dist` rebuilt. It was already identical: it had been rebuilt
+  after Session 32. The real launcher was verified to serve it.
+- Shutdown hang investigated (ADR-087): no hang in any stop on 3.12.10; no
+  deterministic reproduction of the suspected asyncio mechanism; **no fix
+  applied**, as any fix would be speculative.
+- Dataset compatibility measured (ADR-088): 1 of 10 CSE-CIC-IDS2018
+  processed files is importable; CIC-IDS2017 is behind a registration form.
+  Two documentation claims corrected (no AWS CLI needed; "importable as it
+  stands").
+
+### Remaining
+- Live DNS cache entries: the cache on this host is empty.
+- Shutdown hang: unreproduced; watch for recurrence.
+- Dataset: a download decision, a CIC-IDS2017 registration, or a
+  research-design decision about address-less flows.
+- Running the application's own collector against `prahari.db`: operator
+  authorization.
+
+### Session 33, continued: independent review and commit preparation (ADR-089)
+
+An independent read-only review of the diff found no blockers. Fixed: the
+binding report's unverified loopback claim (now `true`/`false`/`null`),
+IPv4-mapped arrivals, a contradictory README section, an overstated
+acceptance-matrix row; plus a counter-isolation test. A pre-existing 500 on
+stream ingest under the collector's source id was confirmed and raised as a
+separate task. Final run: backend 1336 passed, 8 skipped, 0 failed;
+`live_windows` 15; verifier 23/23 twice; frontend 91 passed; static clean.

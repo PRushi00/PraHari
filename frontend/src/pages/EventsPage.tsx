@@ -3,7 +3,7 @@ import { Filter, Eye, X, ChevronLeft, ChevronRight, ShieldCheck, AlertOctagon } 
 import { api } from "../services/api";
 import { NormalizedEvent } from "../types";
 
-import { fmtTime } from "../utils/format";
+import { fmtTimeUtc } from "../utils/format";
 export const EventsPage: React.FC = () => {
   const [events, setEvents] = useState<NormalizedEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -96,7 +96,7 @@ export const EventsPage: React.FC = () => {
                   const isBenign = ev.label?.toLowerCase() === "benign";
                   return (
                     <tr key={ev.event_id} onClick={() => setSelectedEvent(ev)} style={{ cursor: "pointer" }}>
-                      <td>{fmtTime(ev.observed_at, "—")}</td>
+                      <td>{fmtTimeUtc(ev.observed_at, "—")}</td>
                       <td>
                         {ev.src_ip || "-"}:{ev.src_port ?? "-"}
                       </td>

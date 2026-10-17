@@ -199,7 +199,14 @@ class WindowsTelemetryCollectorService:
 
         # Registered so /stream/adapters reports this adapter's genuine
         # counters alongside the file/stream adapters.
-        self.adapter = get_adapter_registry().register(
+        #
+        # REPLACED, never reused (ADR-083). The adapter holds this
+        # collector's deduplication cache and its include_loopback policy.
+        # `register` returned the previous collector's adapter for the same
+        # source id, so a new collector - on another database, or after a
+        # reset - suppressed connections its database had never stored, as
+        # "repeats", and ignored its own configuration.
+        self.adapter = get_adapter_registry().replace(
             WindowsConnectionAdapter(
                 adapter_id=source_id,
                 include_loopback=include_loopback,
