@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
+import ssl
 import threading
 import time
 import urllib.error
@@ -55,6 +57,9 @@ DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_BASE_BACKOFF = 1.0
 DEFAULT_MAX_BACKOFF = 60.0
+# Well under the server's default (max_request_size_mb = 50). Set it to
+# the central server's configured limit, or lower.
+DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
 # Server responses that mean "try again later". Anything else is the
 # server telling us the request itself is wrong, and resending it
@@ -93,7 +98,22 @@ class AgentConfig:
     base_backoff_seconds: float = DEFAULT_BASE_BACKOFF
     max_backoff_seconds: float = DEFAULT_MAX_BACKOFF
     overflow_policy: str = OverflowPolicy.DROP_OLDEST
+    # Kept for configuration compatibility, but it is NOT a switch: False
+    # is refused below. Before ADR-066 this field existed and nothing read
+    # it, so setting it changed nothing while appearing to disable
+    # verification.
     verify_tls: bool = True
+    # A PEM bundle of the CA(s) that issued the central server's
+    # certificate, for an internal CA. None uses the system trust store.
+    # This is how a private deployment is trusted - by naming its issuer,
+    # never by switching verification off.
+    ca_file: Optional[str] = None
+    # Largest request body the agent will send (ADR-066). A server refusing
+    # an oversized body closes the connection before reading it, so the
+    # client never sees the 413 - only a dropped connection, which is
+    # retryable. Without this bound one oversized batch was resent forever
+    # and wedged everything behind it.
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
 
     def __post_init__(self) -> None:
         if not self.endpoint or not self.endpoint.startswith(("http://", "https://")):
@@ -109,12 +129,22 @@ class AgentConfig:
                 "non-loopback host. Use https://, or a loopback endpoint for "
                 "local testing."
             )
+        if not self.verify_tls:
+            raise ConfigError(
+                "Certificate verification cannot be disabled: the agent sends a "
+                "bearer credential, and an unverified TLS peer can capture it. "
+                "For an internal CA, set ca_file to its PEM bundle instead."
+            )
+        if self.ca_file is not None and not os.path.isfile(self.ca_file):
+            raise ConfigError(f"ca_file does not exist or is not a file: {self.ca_file}")
         if not self.source_id.strip():
             raise ConfigError("source_id is required")
         if not self.token.strip():
             raise ConfigError("token is required; the agent will not run unauthenticated")
         if self.batch_size < 1:
             raise ConfigError("batch_size must be at least 1")
+        if self.max_request_bytes < 1024:
+            raise ConfigError("max_request_bytes must be at least 1024")
         if self.buffer_capacity < self.batch_size:
             raise ConfigError(
                 "buffer_capacity must be at least batch_size, otherwise a full "
@@ -158,6 +188,10 @@ class ForwardResult:
     retry_after: Optional[float] = None
     error_kind: Optional[str] = None
     detail: str = ""
+    # The CHANNEL is unusable, not the request: a certificate that fails
+    # verification, or a redirect. Resending cannot help, but the events
+    # are valid, so the batch is kept rather than dropped (ADR-066).
+    halt: bool = False
 
 
 class Transport(Protocol):
@@ -169,15 +203,43 @@ class Transport(Protocol):
         ...
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """
+    Never follow a redirect.
+
+    CPython's redirect handling copies every request header except the
+    content headers onto the new request - including `Authorization`. An
+    HTTPS endpoint answering `302 Location: http://...` would therefore
+    make the agent resend its bearer token in plaintext, to a host chosen
+    by whoever controls the response. An ingest endpoint has no reason to
+    redirect, so the 3xx is surfaced as an error instead.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class UrllibTransport:
     """Standard-library HTTP. No new dependency on a sensor host."""
+
+    def __init__(self, ca_file: Optional[str] = None):
+        # Hostname checking and CERT_REQUIRED are the defaults of
+        # create_default_context; they are asserted here, not assumed.
+        context = ssl.create_default_context(cafile=ca_file)
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        self.ssl_context = context
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=context),
+            _RefuseRedirects(),
+        )
 
     def post(
         self, url: str, body: bytes, headers: dict[str, str], timeout: float
     ) -> tuple[int, dict[str, str], bytes]:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self._opener.open(request, timeout=timeout) as response:
                 return (
                     response.status,
                     {k.lower(): v for k, v in response.headers.items()},
@@ -209,6 +271,9 @@ class AgentStats:
     retries: int = 0
     rate_limited: int = 0
     conflicts: int = 0
+    channel_refusals: int = 0
+    events_oversized: int = 0
+    batches_split: int = 0
     last_success_at: Optional[datetime] = None
     last_failure_at: Optional[datetime] = None
     last_error_kind: Optional[str] = None
@@ -231,6 +296,9 @@ class AgentStats:
             "retries": self.retries,
             "rate_limited": self.rate_limited,
             "conflicts": self.conflicts,
+            "channel_refusals": self.channel_refusals,
+            "events_oversized": self.events_oversized,
+            "batches_split": self.batches_split,
             "last_success_at": (
                 self.last_success_at.isoformat() if self.last_success_at else None
             ),
@@ -290,7 +358,7 @@ class SensorAgent:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self.config = config
-        self._transport = transport or UrllibTransport()
+        self._transport = transport or UrllibTransport(ca_file=config.ca_file)
         self._sleep = sleep_fn
         self._clock = clock
         self._buffer: deque[dict[str, Any]] = deque()
@@ -385,6 +453,13 @@ class SensorAgent:
         return f"agent-{digest[:32]}"
 
     def _interpret(self, status: int, headers: dict[str, str], body: bytes) -> ForwardResult:
+        if 300 <= status < 400:
+            return ForwardResult(
+                status=status, ok=False, retryable=False, halt=True,
+                error_kind="redirect_refused",
+                detail="the ingest endpoint redirected; redirects are never "
+                       "followed because they would carry the credential",
+            )
         retry_after: Optional[float] = None
         raw = headers.get("retry-after")
         if raw:
@@ -434,7 +509,7 @@ class SensorAgent:
             detail=message[:300],
         )
 
-    def _post(self, batch: list[dict[str, Any]]) -> ForwardResult:
+    def _encode(self, batch: list[dict[str, Any]]) -> tuple[str, bytes]:
         ndjson = "\n".join(json.dumps(r) for r in batch) + "\n"
         key = self._idempotency_key(batch)
         body = json.dumps({
@@ -443,6 +518,40 @@ class SensorAgent:
             "data_category": "live_telemetry",
             "idempotency_key": key,
         }).encode("utf-8")
+        return key, body
+
+    def _fit_batch(self, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Shrink a batch until its request fits `max_request_bytes`.
+
+        The tail is returned to the FRONT of the buffer, so order is kept
+        and it is sent next. A single event that cannot fit on its own is
+        dropped and counted: it could never be delivered, and keeping it
+        would block every event behind it.
+        """
+        limit = self.config.max_request_bytes
+        while batch:
+            _, body = self._encode(batch)
+            if len(body) <= limit:
+                return batch
+            if len(batch) == 1:
+                with self._lock:
+                    self.stats.events_oversized += 1
+                logger.error(
+                    "Dropping one event whose request alone is %d bytes, over "
+                    "max_request_bytes=%d; it could never be accepted.",
+                    len(body), limit,
+                )
+                return []
+            half = len(batch) // 2
+            self._return_batch(batch[half:])
+            batch = batch[:half]
+            with self._lock:
+                self.stats.batches_split += 1
+        return batch
+
+    def _post(self, batch: list[dict[str, Any]]) -> ForwardResult:
+        key, body = self._encode(batch)
 
         headers = {
             "Content-Type": "application/json",
@@ -460,6 +569,23 @@ class SensorAgent:
                 error_kind="timeout", detail=str(exc)[:300],
             )
         except OSError as exc:
+            # Checked BEFORE the generic branch: urllib wraps a certificate
+            # failure in URLError, which is an OSError, so it used to be
+            # reported as "connection_error" and retried. A certificate
+            # that fails verification is a misconfiguration or an
+            # interception, never a transient fault.
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                return ForwardResult(
+                    status=0, ok=False, retryable=False, halt=True,
+                    error_kind="tls_verification_failed",
+                    detail=str(getattr(reason, "verify_message", "") or reason)[:300],
+                )
+            # Other SSLError subclasses (SSLEOFError above all) are the peer
+            # closing the connection, not a trust failure: a server that
+            # refuses an oversized body closes the socket mid-upload, and
+            # the client sees an EOF. Those fall through as connection
+            # errors; only a failed verification halts.
             # Connection refused, DNS failure, reset — all transient from
             # the agent's point of view.
             return ForwardResult(
@@ -496,6 +622,13 @@ class SensorAgent:
         batch = self._take_batch()
         if not batch:
             return None
+        batch = self._fit_batch(batch)
+        if not batch:
+            return ForwardResult(
+                status=0, ok=False, retryable=False,
+                error_kind="event_too_large",
+                detail="an event exceeded max_request_bytes on its own and was dropped",
+            )
 
         last: Optional[ForwardResult] = None
         for attempt in range(1, self.config.max_attempts + 1):
@@ -527,6 +660,19 @@ class SensorAgent:
                     self.stats.rate_limited += 1
                 if result.status == 409:
                     self.stats.conflicts += 1
+
+            if result.halt:
+                # The channel is unusable. Keep the events and stop sending
+                # until an operator fixes the endpoint or its trust.
+                with self._lock:
+                    self.stats.channel_refusals += 1
+                self._return_batch(batch)
+                logger.error(
+                    "Keeping %d event(s) and halting delivery: %s (%s). "
+                    "Fix the endpoint or ca_file; verification will not be relaxed.",
+                    len(batch), result.error_kind, result.detail,
+                )
+                return result
 
             if not result.retryable:
                 # 400/401/403/409/413: resending the same bytes cannot
@@ -566,6 +712,8 @@ class SensorAgent:
                 break
             if result.ok:
                 delivered += 1
+            elif result.halt:
+                break  # the same batch would fail the same way; never spin
             elif not result.retryable:
                 continue
             else:
