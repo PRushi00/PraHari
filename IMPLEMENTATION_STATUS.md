@@ -1927,3 +1927,53 @@ tests.
 Both database hashes matched the historical reference values at baseline
 and are unchanged at the end. The collector was already stopped and was
 left stopped; no process was started.
+
+---
+
+## Session 27 — The Fix Is in the Source, Not in the Running Process
+
+A verification check, not new engineering. Asked to confirm completion, I
+probed the live deployment instead of re-asserting the previous report,
+and found one thing the report had understated.
+
+### Finding: the running instance predates its own fix
+
+The listener on `127.0.0.1:8000` (PID 35192) was started at
+**22:59 IST on 16 Oct 2026**, with no `--reload`. The two fixes that
+matter were committed **after** it started — `773a2eb` (GET must not
+write) at 23:34, `c87b15b` (correlation ids) at 00:06.
+
+So the process in memory is **pre-fix code**. Evidence rather than
+inference: the health response carries no `x-request-id` header, which
+`RequestIdMiddleware` would add unconditionally. Its absence proves the
+middleware is not loaded, and therefore that the ADR-062 fix in the same
+working tree is not loaded either.
+
+The consequence is concrete: against **this** process, a dashboard page
+load still appends a `descriptive_analyses` row to the protected
+database. The defect is fixed in the published source and pinned by 19
+tests; it is not fixed in what is currently serving.
+
+For that reason I did not call `GET /analysis/latest` during this check.
+Only `/health` was called — twice — and `prahari.db` is byte-identical
+afterwards (`58404fc5…5caa`), which also demonstrates that the health
+route is genuinely read-only.
+
+### Why a restart is the operator's call, not mine
+
+Restarting on the current source runs the additive migration, and
+`prahari.db`'s `audit_events` table has no `request_id` column yet
+(verified on a scratchpad copy, never on the file itself). A restart
+therefore performs an `ALTER TABLE` on a protected database — the exact
+operation the standing instruction withholds without specific
+authorization. Stopping the operator's own long-running process is
+likewise not mine to do unprompted.
+
+Both facts were reported and left for the operator to decide.
+
+### State at the end of the check
+
+Working tree clean. `origin/main` == local `HEAD` == `c87b15b`. Both
+protected databases byte-identical to the session baseline. 30 stored
+analyses and the 65 FILETIME rows still untouched. No process started,
+stopped, or restarted; the collector remains stopped.

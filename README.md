@@ -101,6 +101,28 @@ Implementation/
 
 ## 4. Quickstart & Deployment
 
+> **If a PraHari instance is already running, check which code it is
+> running before you trust it.** `uvicorn` is launched without
+> `--reload`, so a process started before a fix was applied keeps serving
+> the old code indefinitely — the source on disk says nothing about what
+> is in memory. A running instance that predates the ADR-062 fix still
+> writes a `descriptive_analyses` row on a dashboard page load.
+>
+> One read-only check tells you which it is:
+>
+> ```bash
+> curl -s -D - -o /dev/null http://127.0.0.1:8000/api/v1/health
+> ```
+>
+> An `x-request-id` response header means the current code is loaded. Its
+> absence means the instance predates ADR-063, and therefore ADR-062 too.
+>
+> Note before restarting: the current code adds an `audit_events`
+> `request_id` column, so the first start against an older database
+> performs an additive `ALTER TABLE` on it. That is a schema change to an
+> operational database — make it deliberately, and back the file up first.
+
+
 ### Option A: PowerShell Turnkey Launcher (Recommended)
 1. Run preflight conflict verification:
    ```powershell
