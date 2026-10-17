@@ -2117,3 +2117,94 @@ build 0. Every command in the acceptance matrix was executed.
 
 Both protected databases unchanged; the operational instance untouched on
 `127.0.0.1:8000`; collector stopped; no test server left running.
+
+---
+
+## Session 29 — Linux (Arch) Validation and Closure Audit
+
+Run on Arch Linux (kernel 7.2.9, Python 3.14.8, `backend/.venv-linux`,
+Node 26, npm 12) from `a128bfd` with the changes below uncommitted.
+
+### What the first Linux run of the current revision found (ADR-075)
+`3 failed, 1243 passed, 3 skipped`. Two stale tests: Linux collection
+refused, which ADR-053 had enabled; an agent test assuming the 413 is
+never seen. One test the HTTP client defeated: httpx removes `..` before
+sending, and the expected SPA shell needs a built frontend. Two collector
+defects: a PowerShell DNS refresh attempted on every Linux poll, and
+Linux status describing itself as `Get-NetTCPConnection`.
+
+### Agent retry bound (ADR-073)
+A clean 413 dropped every event in the batch; the dropped-connection
+shape still wedged; `IncompleteRead` escaped with the batch out of the
+buffer; a truncated 413 lost its status. Now a 413 splits the batch and
+sets a byte ceiling; an all-drops round splits the batch (unconfirmed) and
+recovers; a single event that keeps dropping while the next event is
+delivered goes to an in-memory dead-letter store. Splitting is
+duplicate-safe because identity is the sender's `event_id`, pinned end to
+end.
+
+### Test artefacts (ADR-074)
+The experiment API tests rewrote `experiments/api-exp-*.json` in the
+checkout through a fixture attribute nothing read.
+`PRAHARI_EXPERIMENTS_DIR` now selects the directory (default unchanged);
+the suite uses a temporary one. Both existing manifests are byte-identical
+before and after every run since.
+
+### Closure audit (ADR-076)
+Six defects, each reproduced by a failing test first: events lost to a full
+buffer undercounted; dead-letter requeue could lose events; a refused
+probe livelocked the queue; one 413 capped batches at one event for good;
+the DNS enrichment endpoints spawned PowerShell on Linux; the launcher
+verification script ran against the operational database with `assert`
+checks. Frontend installed from the lockfile and verified; the backend
+served its real build.
+
+### Results
+Backend **1284 passed, 3 skipped, 0 failed** (two `live_windows`, one
+non-Linux branch test). Linux telemetry module 30 passed, 1 skipped.
+Frontend `tsc` 0, 67 passed, build succeeded. `verify_live_launcher.py`,
+`simulate_browser_producer.py` (throwaway server),
+`verify_forecasting_pipeline.py` and `manage_credentials.py` pass.
+
+Not done here: Windows re-run, a sustained Linux collector run, a
+real-browser session. No operational database existed on this host; none
+was created. The collector was never started; every server was loopback
+and stopped with its port checked.
+
+---
+
+## Session 30 — Linux Closure, Second Audit, and the Windows Handoff
+
+Arch Linux (kernel 7.2.9, Python 3.14.8, Node 26.11.1, npm 12.2.1), still
+`a128bfd` with every change uncommitted.
+
+### Found and fixed (ADR-077)
+- After any restart, every Linux connection still open became an identity
+  conflict that failed the poll and lost the poll's new connections; the
+  collector now does not re-insert ids storage already holds.
+- Fingerprints were marked seen before storage succeeded, so a failed
+  write lost that poll's events for good (both platforms).
+- Agent: a non-JSON value (a `datetime`) took its whole batch with it;
+  records rejected inside a 2xx were invisible; a wrong endpoint (404/405)
+  dropped every batch instead of halting.
+- `simulate_synthetic_stream.py` can target a throwaway server
+  (`--base-url`) and exits 1 when unreachable.
+- The SPA symlink test skips, with a reason, on a host that refuses to
+  create symlinks (Windows without Developer Mode) instead of failing.
+
+### Kept as limitations
+Linux identity without creation time merges a reused 5-tuple+PID; 401/403
+still drop batches (ADR-058); the buffer and dead-letter store are in
+memory.
+
+### Windows
+Not reachable from this host: the Windows partition is BitLocker-encrypted
+and unmounted, and the machine dual-boots. Nothing was mounted or
+unlocked. The changes were handed over as a patch against `a128bfd`, with a
+manifest and SHA-256 hashes, in a directory outside the repository; the
+patch was applied to a fresh clone of `a128bfd` and the suite run there.
+The Windows procedure is `PLATFORM_SUPPORT.md` §7.
+
+### Results
+Backend **1292 passed, 3 skipped, 0 failed**. Frontend and launcher
+results in ADR-076 and `PLATFORM_SUPPORT.md` §6, re-run this session.

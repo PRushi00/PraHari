@@ -34,7 +34,7 @@ router = APIRouter(prefix="/experiments", tags=["Reproducible Experiments"])
 
 
 def _experiments_dir(config: AppConfig) -> Path:
-    path = config.project_root / "experiments"
+    path = config.get_experiments_dir()
     path.mkdir(parents=True, exist_ok=True)
     return path
 

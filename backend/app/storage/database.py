@@ -740,6 +740,21 @@ class Database:
                     ) from exc
             return count
 
+    def existing_event_ids(self, event_ids: list[str]) -> set[str]:
+        """Which of these event ids are already stored. Parameterized, chunked."""
+        found: set[str] = set()
+        ids = list(dict.fromkeys(event_ids))
+        with self.get_connection() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT event_id FROM normalized_events WHERE event_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                found.update(row[0] for row in rows)
+        return found
+
     def get_event(self, event_id: str) -> Optional[NormalizedEvent]:
         """Retrieve a single event by ID."""
         with self.get_connection() as conn:

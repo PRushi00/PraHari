@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,8 +54,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db.close()
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+def create_app(frontend_dist: Optional[Path] = None) -> FastAPI:
+    """
+    Create and configure the FastAPI application.
+
+    ``frontend_dist`` overrides where the compiled SPA is looked for; the
+    default is the checkout's ``frontend/dist``. It exists so the SPA
+    fallback and its traversal guards can be tested against a known build
+    whether or not this checkout has run ``npm run build``.
+    """
     config = get_config()
 
     app = FastAPI(
@@ -185,7 +192,11 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router, prefix="/api")
 
     # Serve compiled production frontend SPA if present
-    dist_dir = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    dist_dir = (
+        frontend_dist
+        if frontend_dist is not None
+        else Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    )
     if dist_dir.exists() and (dist_dir / "index.html").exists():
         from fastapi.staticfiles import StaticFiles
         from fastapi.responses import FileResponse

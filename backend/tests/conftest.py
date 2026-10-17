@@ -24,6 +24,13 @@ os.environ.setdefault(
     "PRAHARI_DATABASE_URL",
     f"sqlite:///{Path(_TEST_DB_DIR) / 'prahari_test_session.db'}",
 )
+# Experiment manifests likewise: the default is <repo>/experiments, which
+# holds real manifests. Tests that capture one used to write it there
+# (ADR-074).
+os.environ.setdefault(
+    "PRAHARI_EXPERIMENTS_DIR",
+    str(Path(_TEST_DB_DIR) / "experiments"),
+)
 
 
 def pytest_sessionfinish(session, exitstatus):

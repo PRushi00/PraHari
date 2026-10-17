@@ -766,22 +766,57 @@ def test_a_single_event_too_large_to_ever_send_is_dropped_not_wedged(central):
     assert _count_source(central, "sensor-a") == before + 3
 
 
-def test_an_unbounded_agent_would_wedge_on_that_batch(central):
+def test_an_agent_bound_above_the_server_limit_never_loses_or_resends_that_batch(central):
     """
-    The failure mode itself, demonstrated against the real server: with a
-    request bound above the server's limit, the batch never delivers and
-    is kept for an endless resend. Recorded so the bound's purpose is
-    evidenced, not asserted.
+    The ADR-066 failure mode, against the real server: the agent's request
+    bound is above the server's 1 MB limit, so a 1.5 MB batch goes out.
+
+    Formerly `test_an_unbounded_agent_would_wedge_on_that_batch`, which
+    asserted the client always sees a dropped connection. Which shape it
+    sees is timing (see the oversized-payload test above): on Windows it was
+    the dropped connection, on Linux loopback the 413 usually arrives whole.
+    Each shape now has a defined, safe outcome:
+
+    * dropped connection - indistinguishable from an outage, so retryable
+      and the events are kept. A round made entirely of such drops splits
+      the batch, unconfirmed (ADR-073), so the same bytes are not resent
+      forever; a correct `max_request_bytes` still avoids the waste.
+    * clean 413 - the server asked for smaller batches. The events are
+      kept (never dropped as if invalid), the same bytes are never resent,
+      and draining delivers every one in smaller batches.
     """
+    before = _count_source(central, "sensor-a")
     agent = _agent(central, max_request_bytes=8 * 1024 * 1024)
     agent.offer_many([_big_event(i, "wedge", 30_000) for i in range(50)])
 
     result = agent.flush_once()
 
     assert not result.ok
-    assert result.retryable, "the drop looks transient to the client - that is the trap"
-    assert result.error_kind == "connection_error"
-    assert agent.buffered == 50, "the same oversized batch is waiting to be resent"
+    assert agent.buffered == 50, "valid events must not be lost to a size refusal"
+    assert agent.stats.batches_failed_permanent == 0, "the events were not at fault"
+    assert agent.stats.events_oversized == 0
+    if result.status == 413:
+        assert not result.retryable, "a size refusal must not be resent unchanged"
+        assert result.error_kind == "payload_too_large"
+        assert agent.stats.batches_split == 1
+
+        agent.flush_all(max_batches=50)
+
+        assert agent.buffered == 0, agent.health()
+        assert agent.stats.events_oversized == 0
+        assert _count_source(central, "sensor-a") == before + 50
+    else:
+        assert result.retryable, "a dropped connection looks transient"
+        assert result.error_kind == "connection_dropped"
+        assert agent.stats.batches_split_unconfirmed == 1
+
+        for _ in range(10):
+            agent.flush_all(max_batches=50)
+            if agent.buffered == 0:
+                break
+
+        assert agent.buffered == 0, agent.health()
+        assert _count_source(central, "sensor-a") == before + 50
 
 
 def test_malformed_records_are_rejected_and_counted_not_stored(central):

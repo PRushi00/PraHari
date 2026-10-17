@@ -139,6 +139,21 @@ CAPABILITY_NOTES = [
     "Records carry no attack labels; no ground truth exists for locally observed traffic.",
 ]
 
+# The Linux source reads /proc/net/tcp[6]; describing it with the Windows
+# notes would claim Get-NetTCPConnection, OS creation times and a Windows
+# UDP rationale that do not apply on this host (ADR-053).
+LINUX_CAPABILITY_NOTES = [
+    "Source is the Linux kernel TCP connection table (/proc/net/tcp and /proc/net/tcp6): connection metadata only.",
+    "Owning process NAME (comm) is resolved only for processes this user may inspect; the command line is never collected.",
+    "Destination hostnames are NOT reported by this source. DNS cache enrichment is Windows-only and is not performed on this host.",
+    "HTTP method, path, status and timing are NOT observable here; they appear only if an authorized application-layer source reports them.",
+    "Byte counts, packet counts and completed-flow duration are NOT available from this source and are stored as null.",
+    "Collection is snapshot polling: connections opening and closing entirely between polls are never observed.",
+    "/proc exposes no socket creation time: observed_at is always the poll time, flagged timestamp_uncertainty.",
+    "UDP is not collected by this source.",
+    "Records carry no attack labels; no ground truth exists for locally observed traffic.",
+]
+
 
 class WindowsTelemetryCollectorService:
     """Background poller for live Windows connection telemetry."""
@@ -160,6 +175,9 @@ class WindowsTelemetryCollectorService:
         # the real OS query.
         self._query_fn = query_fn or default_host_query_fn()
         self._uses_injected_source = query_fn is not None
+        # Which genuine host source the default query reads, so status and
+        # source registration describe what is actually collected.
+        self._reads_linux_proc = query_fn is None and platform_is_linux()
 
         # Snapshot the local DNS cache alongside each poll so hostname
         # evidence is captured close in time to the connections it explains.
@@ -170,8 +188,12 @@ class WindowsTelemetryCollectorService:
         # poll, which made the test suite spawn hundreds of subprocesses.
         # Enrichment therefore defaults OFF for an injected query, and ON
         # for genuine collection. An explicit value always wins.
+        #
+        # The DNS cache is read through PowerShell from the Windows DNS
+        # client, so genuine collection on any other host (Linux reads
+        # /proc) must not default to spawning it either.
         if refresh_dns is None:
-            refresh_dns = query_fn is None
+            refresh_dns = query_fn is None and sys.platform == "win32"
         self.refresh_dns = refresh_dns
         self.dns_refresh_failures = 0
 
@@ -389,11 +411,28 @@ class WindowsTelemetryCollectorService:
         latest_observed: Optional[datetime] = None
         if events:
             try:
-                persisted = await asyncio.to_thread(self._persist, events, summary)
+                # The in-memory cache forgets on every restart, but storage
+                # does not. A connection still open across a restart is a
+                # repeat observation - the first one stays canonical - and
+                # must not be re-inserted: without an OS creation time
+                # (Linux /proc) its observed_at is the poll time, so the
+                # re-insert differs and was an identity conflict that failed
+                # the whole poll (ADR-077). It still counts as accepted
+                # (parsed and valid) but not persisted, as before.
+                known = await asyncio.to_thread(
+                    self.db.existing_event_ids, [e.event_id for e in events]
+                )
+                events = [e for e in events if e.event_id not in known]
+                if events:
+                    persisted = await asyncio.to_thread(self._persist, events, summary)
             except Exception as exc:  # noqa: BLE001
+                # Nothing from this batch was stored, so none of it may be
+                # suppressed as a repeat on the next poll.
+                self.adapter.forget_last_batch()
                 return self._record_failed_poll(
                     polled_at, f"persistence_failed: {type(exc).__name__}: {exc}"
                 )
+        if events:
             latest_observed = max(e.observed_at for e in events)
             if (
                 self._latest_event_observed_at is None
@@ -517,16 +556,27 @@ class WindowsTelemetryCollectorService:
         """Register the live source, preserving existing counters."""
         existing = self.db.get_source(self.source_id)
         if existing is None:
+            host = platform.node() or "this machine"
+            if self._reads_linux_proc:
+                name = f"Linux Local Host ({host})"
+                description = (
+                    "Live TCP connection metadata read from the local Linux "
+                    "connection table (/proc/net/tcp, /proc/net/tcp6). Connection "
+                    "metadata only — no packet or byte accounting."
+                )
+            else:
+                name = f"Windows Local Host ({host})"
+                description = (
+                    "Live TCP connection metadata polled from the local Windows "
+                    "connection table (Get-NetTCPConnection). Connection metadata "
+                    "only — no packet or byte accounting."
+                )
             self.db.upsert_source(
                 TelemetrySource(
                     source_id=self.source_id,
-                    name=f"Windows Local Host ({platform.node() or 'this machine'})",
+                    name=name,
                     source_type=WINDOWS_SOURCE_TYPE,
-                    description=(
-                        "Live TCP connection metadata polled from the local Windows "
-                        "connection table (Get-NetTCPConnection). Connection metadata "
-                        "only — no packet or byte accounting."
-                    ),
+                    description=description,
                     status="active",
                 )
             )
@@ -572,7 +622,9 @@ class WindowsTelemetryCollectorService:
             rejection_reasons=dict(self._rejection_reasons),
             last_error=self._last_error,
             collection_gaps=list(self._gaps),
-            capability_notes=list(CAPABILITY_NOTES),
+            capability_notes=list(
+                LINUX_CAPABILITY_NOTES if self._reads_linux_proc else CAPABILITY_NOTES
+            ),
         )
 
 

@@ -242,6 +242,7 @@ class WindowsConnectionAdapter(BaseTelemetryAdapter):
         # failures and make a healthy collector look broken.
         self.filtered_by_policy = 0
         self._seen_fingerprints: set[str] = set()
+        self._last_batch_fingerprints: list[str] = []
 
     def is_excluded_by_policy(self, record: dict[str, Any]) -> Optional[str]:
         """
@@ -452,6 +453,7 @@ class WindowsConnectionAdapter(BaseTelemetryAdapter):
         duplicates = 0
         filtered = 0
         poll_iso = (poll_time or datetime.now(timezone.utc)).isoformat()
+        self._last_batch_fingerprints = []
 
         for idx, record in enumerate(records, start=1):
             if not isinstance(record, dict):
@@ -476,6 +478,7 @@ class WindowsConnectionAdapter(BaseTelemetryAdapter):
             result = self.validate_and_normalize(record, idx, data_category)
             if result.is_valid and result.event:
                 self._seen_fingerprints.add(fp)
+                self._last_batch_fingerprints.append(fp)
                 events.append(result.event)
                 if result.warnings:
                     warnings_count += 1
@@ -503,6 +506,17 @@ class WindowsConnectionAdapter(BaseTelemetryAdapter):
             summary.rejection_reasons["_filtered_by_policy"] = filtered
         summary.completed_at = datetime.now(timezone.utc)
         return events, summary
+
+    def forget_last_batch(self) -> None:
+        """
+        Un-mark the connections first seen in the latest batch.
+
+        For a caller whose write of that batch failed: those connections
+        were never stored, so the next poll must observe them as new rather
+        than suppress them as repeats (ADR-077).
+        """
+        self._seen_fingerprints.difference_update(self._last_batch_fingerprints)
+        self._last_batch_fingerprints = []
 
     def prune_fingerprint_cache(self, max_entries: int = 50_000) -> None:
         """

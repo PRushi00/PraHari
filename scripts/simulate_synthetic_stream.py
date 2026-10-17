@@ -60,6 +60,7 @@ def post_json(endpoint: str, payload: dict) -> dict:
             f"[ERROR] Connection failed: {e.reason}. Is PraHari running at {BASE_URL}?",
             file=sys.stderr,
         )
+        raise
         sys.exit(1)
 
 
@@ -194,6 +195,11 @@ def main() -> int:
         description="Ingest SYNTHETIC (fabricated) telemetry into PraHari. "
                     "This does not observe real network activity."
     )
+    parser.add_argument(
+        "--base-url",
+        default="http://127.0.0.1:8000",
+        help="PraHari server to send to (default: http://127.0.0.1:8000)",
+    )
     parser.add_argument("--source", default=DEFAULT_SOURCE_ID, help="Synthetic source id")
     parser.add_argument("--interval", type=float, default=1.5, help="Seconds between records")
     parser.add_argument("--count", type=int, default=8, help="Number of records to send")
@@ -203,6 +209,8 @@ def main() -> int:
         help="Also query the forecaster and print its validation status",
     )
     args = parser.parse_args()
+    global BASE_URL
+    BASE_URL = args.base_url.rstrip("/") + "/api/v1"
 
     if not args.source.startswith(("synthetic", "test", "sim")):
         print(
@@ -213,7 +221,10 @@ def main() -> int:
         )
         return 2
 
-    return run_simulation(args.source, args.interval, args.count, args.with_forecast)
+    try:
+        return run_simulation(args.source, args.interval, args.count, args.with_forecast)
+    except urllib.error.URLError:
+        return 1  # the reason was printed where it happened
 
 
 if __name__ == "__main__":

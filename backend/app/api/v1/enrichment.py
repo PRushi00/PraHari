@@ -10,6 +10,8 @@ events and can be ignored entirely.
 
 from __future__ import annotations
 
+import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,7 +19,11 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_db
 from app.schemas.events import DomainAttribution
-from app.services.enrichment import diagnose_dns_visibility, get_enrichment_service
+from app.services.enrichment import (
+    diagnose_dns_visibility,
+    get_enrichment_service,
+    windows_only_dns_message,
+)
 from app.storage.database import Database
 
 router = APIRouter(prefix="/enrichment", tags=["Domain Enrichment"])
@@ -69,7 +75,19 @@ def diagnose_dns(db: Database = Depends(get_db)) -> dict:
     because an empty cache alone does not distinguish "this host resolves
     names in a way PraHari cannot observe" from "PraHari is failing to read
     something that is there".
+
+    Windows only: elsewhere it answers in the same shape, stating so,
+    without spawning PowerShell.
     """
+    if sys.platform != "win32":
+        message = windows_only_dns_message()
+        return {
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "cache_entries": 0,
+            "likely_causes": [],
+            "conclusion": message,
+            "error": message,
+        }
     return diagnose_dns_visibility()
 
 
@@ -79,7 +97,8 @@ def refresh_dns_observations(db: Database = Depends(get_db)) -> DnsRefreshResult
     Snapshot the local Windows DNS client cache into the observation store.
 
     Sends no DNS queries and contacts no external service — it reads answers
-    this machine already received.
+    this machine already received. Off Windows it reports `succeeded:
+    false` with the reason, and spawns nothing.
     """
     return DnsRefreshResult(**get_enrichment_service(db).refresh_from_dns_cache())
 

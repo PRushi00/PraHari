@@ -35,6 +35,7 @@ say what is lost rather than imply durability it does not have.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -65,6 +66,27 @@ DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
 # server telling us the request itself is wrong, and resending it
 # unchanged would be a loop.
 RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# The ingest route never answers these about the DATA - only about the URL
+# or method - so they mean the endpoint is misconfigured: a channel fault
+# that halts and keeps the events, like a redirect (ADR-077).
+ENDPOINT_REFUSED_STATUSES = frozenset({404, 405})
+
+# A connection that was established and then lost mid-request (ADR-073).
+# Ambiguous by nature: an outage, a server refusing an oversized body
+# before reading it, or a response lost after the server stored the batch.
+DROPPED = "connection_dropped"
+_DROP_ERRORS = (
+    ConnectionResetError,     # includes http.client.RemoteDisconnected
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ssl.SSLEOFError,
+    ssl.SSLZeroReturnError,
+)
+
+# Successful deliveries at a batch cap lowered by UNCONFIRMED evidence
+# before it is doubled back toward batch_size (ADR-073).
+CAP_RECOVERY_SUCCESSES = 4
 
 
 class OverflowPolicy:
@@ -110,9 +132,11 @@ class AgentConfig:
     ca_file: Optional[str] = None
     # Largest request body the agent will send (ADR-066). A server refusing
     # an oversized body closes the connection before reading it, so the
-    # client never sees the 413 - only a dropped connection, which is
+    # client may never see the 413 - only a dropped connection, which is
     # retryable. Without this bound one oversized batch was resent forever
-    # and wedged everything behind it.
+    # and wedged everything behind it. Whether the 413 arrives intact is a
+    # matter of timing and platform (it usually does on Linux loopback);
+    # when it does, the agent splits rather than drops (see flush_once).
     max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
 
     def __post_init__(self) -> None:
@@ -185,6 +209,8 @@ class ForwardResult:
     retryable: bool
     stored: Optional[int] = None
     duplicates: Optional[int] = None
+    # Records the server parsed and refused inside a 2xx (ADR-077).
+    rejected: Optional[int] = None
     retry_after: Optional[float] = None
     error_kind: Optional[str] = None
     detail: str = ""
@@ -247,11 +273,19 @@ class UrllibTransport:
                 )
         except urllib.error.HTTPError as exc:
             # An HTTP error is still a server answer, and its status is
-            # what decides retryability.
+            # what decides retryability. The status line arrived intact
+            # even when the body did not - a server refusing an oversized
+            # upload often closes before its 413 body is read - so a
+            # failed body read must not turn a definite 413 into an
+            # ambiguous drop (ADR-073).
+            try:
+                body = exc.read() if hasattr(exc, "read") else b""
+            except (OSError, http.client.HTTPException):
+                body = b""
             return (
                 exc.code,
                 {k.lower(): v for k, v in (exc.headers or {}).items()},
-                exc.read() if hasattr(exc, "read") else b"",
+                body,
             )
 
 
@@ -268,12 +302,19 @@ class AgentStats:
     batches_exhausted_retries: int = 0
     events_stored_reported: int = 0
     events_duplicate_reported: int = 0
+    events_rejected_reported: int = 0
     retries: int = 0
     rate_limited: int = 0
     conflicts: int = 0
     channel_refusals: int = 0
     events_oversized: int = 0
     batches_split: int = 0
+    # ADR-073: ambiguous mid-request drops, and what they led to.
+    connection_drops: int = 0
+    batches_split_unconfirmed: int = 0
+    channel_probes: int = 0
+    events_dead_lettered: int = 0
+    events_dead_letter_overflow: int = 0
     last_success_at: Optional[datetime] = None
     last_failure_at: Optional[datetime] = None
     last_error_kind: Optional[str] = None
@@ -293,12 +334,18 @@ class AgentStats:
             "batches_exhausted_retries": self.batches_exhausted_retries,
             "events_stored_reported": self.events_stored_reported,
             "events_duplicate_reported": self.events_duplicate_reported,
+            "events_rejected_reported": self.events_rejected_reported,
             "retries": self.retries,
             "rate_limited": self.rate_limited,
             "conflicts": self.conflicts,
             "channel_refusals": self.channel_refusals,
             "events_oversized": self.events_oversized,
             "batches_split": self.batches_split,
+            "connection_drops": self.connection_drops,
+            "batches_split_unconfirmed": self.batches_split_unconfirmed,
+            "channel_probes": self.channel_probes,
+            "events_dead_lettered": self.events_dead_lettered,
+            "events_dead_letter_overflow": self.events_dead_letter_overflow,
             "last_success_at": (
                 self.last_success_at.isoformat() if self.last_success_at else None
             ),
@@ -338,6 +385,13 @@ def validate_event(record: dict[str, Any]) -> list[str]:
         value = record.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             problems.append(f"missing_{key}")
+    try:
+        # Checked here, not at send time: a value json cannot encode (a
+        # datetime is the usual one) used to raise inside flush_once with
+        # the whole batch already out of the buffer (ADR-077).
+        json.dumps(record)
+    except (TypeError, ValueError):
+        problems.append("not_json_serialisable")
     return problems
 
 
@@ -366,6 +420,22 @@ class SensorAgent:
         self._stop = threading.Event()
         self._running = False
         self.stats = AgentStats()
+        # What the server has CONFIRMED about its limit (ADR-073): a clean
+        # 413 proves a body of that size is too large, so multi-event
+        # bodies are kept below it from then on. A byte ceiling, not an
+        # event count - a 413 on two large events says nothing about a
+        # batch of small ones. Only a 413 lowers it; it never rises.
+        self._learned_max_bytes: Optional[int] = None
+        # Batch size by event count, lowered only by UNCONFIRMED evidence
+        # (rounds of mid-request drops) and recovering toward batch_size
+        # after successful deliveries, so a flaky network does not shrink
+        # batches for good.
+        self._batch_cap = config.batch_size
+        self._cap_successes = 0
+        # Events set aside on evidence that they alone cannot be delivered
+        # (ADR-073). Kept in memory, bounded, reported - never silently
+        # discarded - and requeueable by an operator.
+        self._dead_letter: deque[dict[str, Any]] = deque()
 
     # ──────────────── intake ────────────────
 
@@ -416,9 +486,9 @@ class SensorAgent:
 
     # ──────────────── delivery ────────────────
 
-    def _take_batch(self) -> list[dict[str, Any]]:
+    def _take_batch(self, limit: Optional[int] = None) -> list[dict[str, Any]]:
         with self._lock:
-            n = min(self.config.batch_size, len(self._buffer))
+            n = min(limit or self._batch_cap, len(self._buffer))
             return [self._buffer.popleft() for _ in range(n)]
 
     def _return_batch(self, batch: list[dict[str, Any]]) -> None:
@@ -429,12 +499,23 @@ class SensorAgent:
         starve behind newer events indefinitely.
         """
         with self._lock:
+            kept = 0
             for record in reversed(batch):
                 if len(self._buffer) >= self.config.buffer_capacity:
-                    self.stats.events_dropped_overflow += 1
-                    logger.warning("Buffer full while returning an undelivered batch.")
                     break
                 self._buffer.appendleft(record)
+                kept += 1
+            # The collector may have filled the buffer while this batch was
+            # in flight. What cannot go back is the oldest telemetry -
+            # dropped, as DROP_OLDEST would - and EVERY such event is
+            # counted, not one per batch.
+            lost = len(batch) - kept
+            self.stats.events_dropped_overflow += lost
+        if lost:
+            logger.warning(
+                "Buffer full while returning an undelivered batch; dropped the "
+                "%d oldest event(s).", lost,
+            )
 
     def _idempotency_key(self, batch: list[dict[str, Any]]) -> str:
         """
@@ -460,6 +541,13 @@ class SensorAgent:
                 detail="the ingest endpoint redirected; redirects are never "
                        "followed because they would carry the credential",
             )
+        if status in ENDPOINT_REFUSED_STATUSES:
+            return ForwardResult(
+                status=status, ok=False, retryable=False, halt=True,
+                error_kind="endpoint_refused",
+                detail=f"HTTP {status} from the ingest endpoint: the URL or method "
+                       "is wrong. The events are kept; correct the endpoint.",
+            )
         retry_after: Optional[float] = None
         raw = headers.get("retry-after")
         if raw:
@@ -482,13 +570,18 @@ class SensorAgent:
         if 200 <= status < 300:
             stored = payload.get("stored_records")
             duplicates = payload.get("duplicate_records")
+            rejected = payload.get("rejected_records")
             if not isinstance(stored, int):
                 stored = None
             if not isinstance(duplicates, int):
                 duplicates = None
+            if not isinstance(rejected, int):
+                rejected = None
+            reasons = payload.get("rejection_reasons")
             return ForwardResult(
                 status=status, ok=True, retryable=False,
-                stored=stored, duplicates=duplicates,
+                stored=stored, duplicates=duplicates, rejected=rejected,
+                detail=json.dumps(reasons)[:300] if rejected and reasons else "",
             )
 
         detail = payload.get("detail")
@@ -530,11 +623,18 @@ class SensorAgent:
         would block every event behind it.
         """
         limit = self.config.max_request_bytes
+        # Below a body the server refused with 413, if one has been seen.
+        # Applied to multi-event batches only: whether one event is too
+        # large is the server's call (a 413 for it alone drops it), never
+        # inferred from a ceiling learned on other events.
+        soft = min(limit, self._learned_max_bytes or limit)
         while batch:
             _, body = self._encode(batch)
-            if len(body) <= limit:
+            if len(body) <= soft:
                 return batch
             if len(batch) == 1:
+                if len(body) <= limit:
+                    return batch
                 with self._lock:
                     self.stats.events_oversized += 1
                 logger.error(
@@ -584,15 +684,103 @@ class SensorAgent:
             # Other SSLError subclasses (SSLEOFError above all) are the peer
             # closing the connection, not a trust failure: a server that
             # refuses an oversized body closes the socket mid-upload, and
-            # the client sees an EOF. Those fall through as connection
-            # errors; only a failed verification halts.
-            # Connection refused, DNS failure, reset — all transient from
-            # the agent's point of view.
+            # the client sees an EOF. Only a failed verification halts.
+            #
+            # A connection lost mid-request is kept apart from one never
+            # made (refused, DNS, unreachable): both are retryable, but only
+            # repeated drops are evidence the request itself may be the
+            # problem (ADR-073).
+            if isinstance(reason, _DROP_ERRORS) or isinstance(exc, _DROP_ERRORS):
+                return ForwardResult(
+                    status=0, ok=False, retryable=True,
+                    error_kind=DROPPED, detail=str(exc)[:300],
+                )
             return ForwardResult(
                 status=0, ok=False, retryable=True,
                 error_kind="connection_error", detail=str(exc)[:300],
             )
+        except http.client.HTTPException as exc:
+            # IncompleteRead, BadStatusLine: the connection was made and the
+            # exchange broke off. Not an OSError, so it used to escape
+            # flush_once with the batch already out of the buffer.
+            return ForwardResult(
+                status=0, ok=False, retryable=True,
+                error_kind=DROPPED, detail=f"{type(exc).__name__}: {exc}"[:300],
+            )
         return self._interpret(status, resp_headers, resp_body)
+
+    def _send(self, batch: list[dict[str, Any]], *held: list[dict[str, Any]]) -> ForwardResult:
+        """
+        `_post`, counted - and never losing events to an unexpected error.
+
+        A transport may raise something `_post` does not classify. The
+        batch is already out of the buffer at that point, so it (and any
+        other events held aside, front-most first) goes back before the
+        exception propagates.
+        """
+        with self._lock:
+            self.stats.batches_sent += 1
+        try:
+            return self._post(batch)
+        except Exception:
+            for group in reversed((*held, batch)):
+                self._return_batch(group)
+            raise
+
+    def _note_failure(self, result: ForwardResult) -> bool:
+        """Failure bookkeeping for any send. True for a mid-request drop."""
+        with self._lock:
+            self.stats.last_failure_at = self._clock()
+            self.stats.last_error_kind = result.error_kind
+            if result.status == 429:
+                self.stats.rate_limited += 1
+            if result.status == 409:
+                self.stats.conflicts += 1
+            if result.error_kind == DROPPED:
+                self.stats.connection_drops += 1
+                return True
+        return False
+
+    def _drop_refused(self, batch: list[dict[str, Any]], result: ForwardResult) -> None:
+        """
+        400/401/403/409, or 413 for one event alone: resending the same
+        bytes cannot help. The batch is dropped rather than retried forever,
+        and the drop is counted and logged with its reason.
+        """
+        with self._lock:
+            self.stats.batches_failed_permanent += 1
+            if result.status == 413:
+                # One event the server will never accept: the same outcome
+                # as one over max_request_bytes locally.
+                self.stats.events_oversized += len(batch)
+        logger.error(
+            "Dropping %d event(s): server refused permanently (%s: %s). "
+            "Retrying would loop.",
+            len(batch), result.error_kind, result.detail,
+        )
+
+    def _record_ack(self, result: ForwardResult) -> None:
+        if result.rejected:
+            # Acknowledged, but these events are gone: the server refused
+            # them individually and will not take them on a resend either.
+            logger.warning(
+                "Server accepted the batch but rejected %d record(s): %s",
+                result.rejected, result.detail or "no reasons given",
+            )
+        with self._lock:
+            self.stats.batches_acknowledged += 1
+            self.stats.last_success_at = self._clock()
+            if result.stored:
+                self.stats.events_stored_reported += result.stored
+            if result.duplicates:
+                self.stats.events_duplicate_reported += result.duplicates
+            if result.rejected:
+                self.stats.events_rejected_reported += result.rejected
+            if self._batch_cap < self.config.batch_size:
+                self._cap_successes += 1
+                if self._cap_successes >= CAP_RECOVERY_SUCCESSES:
+                    self._batch_cap = min(self.config.batch_size, self._batch_cap * 2)
+                    self._cap_successes = 0
 
     def _backoff(self, attempt: int, retry_after: Optional[float]) -> float:
         """
@@ -622,7 +810,13 @@ class SensorAgent:
         batch = self._take_batch()
         if not batch:
             return None
-        batch = self._fit_batch(batch)
+        try:
+            batch = self._fit_batch(batch)
+        except Exception:
+            # Encoding failed (a record changed after offer()). Whatever
+            # _fit_batch had not already returned goes back in front.
+            self._return_batch(batch)
+            raise
         if not batch:
             return ForwardResult(
                 status=0, ok=False, retryable=False,
@@ -631,6 +825,7 @@ class SensorAgent:
             )
 
         last: Optional[ForwardResult] = None
+        drops = 0
         for attempt in range(1, self.config.max_attempts + 1):
             if self._stop.is_set() and attempt > 1:
                 # Interrupted mid-retry: keep the events rather than
@@ -638,28 +833,15 @@ class SensorAgent:
                 self._return_batch(batch)
                 return last
 
-            with self._lock:
-                self.stats.batches_sent += 1
-            result = self._post(batch)
+            result = self._send(batch)
             last = result
 
             if result.ok:
-                with self._lock:
-                    self.stats.batches_acknowledged += 1
-                    self.stats.last_success_at = self._clock()
-                    if result.stored:
-                        self.stats.events_stored_reported += result.stored
-                    if result.duplicates:
-                        self.stats.events_duplicate_reported += result.duplicates
+                self._record_ack(result)
                 return result
 
-            with self._lock:
-                self.stats.last_failure_at = self._clock()
-                self.stats.last_error_kind = result.error_kind
-                if result.status == 429:
-                    self.stats.rate_limited += 1
-                if result.status == 409:
-                    self.stats.conflicts += 1
+            if self._note_failure(result):
+                drops += 1
 
             if result.halt:
                 # The channel is unusable. Keep the events and stop sending
@@ -674,17 +856,32 @@ class SensorAgent:
                 )
                 return result
 
-            if not result.retryable:
-                # 400/401/403/409/413: resending the same bytes cannot
-                # help. The batch is dropped rather than retried forever,
-                # and the drop is counted and logged with its reason.
+            if not result.retryable and result.status == 413 and len(batch) > 1:
+                # The server's body limit is below max_request_bytes and it
+                # said so cleanly. The events are not at fault - the server
+                # asks for smaller batches - so they are kept, in order,
+                # and every later multi-event body is kept below this one.
+                # The same bytes are never resent, and each such refusal
+                # strictly lowers the ceiling, so this ends: in delivery,
+                # or at a single event the server refuses alone (dropped
+                # below).
+                _, body = self._encode(batch)
                 with self._lock:
-                    self.stats.batches_failed_permanent += 1
-                logger.error(
-                    "Dropping %d event(s): server refused permanently (%s: %s). "
-                    "Retrying would loop.",
-                    len(batch), result.error_kind, result.detail,
+                    self._learned_max_bytes = min(
+                        self._learned_max_bytes or len(body), len(body) - 1
+                    )
+                    self.stats.batches_split += 1
+                self._return_batch(batch)
+                logger.warning(
+                    "Server refused a %d-event, %d-byte batch as too large (%s); "
+                    "keeping the events and sending smaller batches. Set "
+                    "max_request_bytes to the server's limit or lower.",
+                    len(batch), len(body), result.detail,
                 )
+                return result
+
+            if not result.retryable:
+                self._drop_refused(batch, result)
                 return result
 
             if attempt < self.config.max_attempts:
@@ -694,12 +891,138 @@ class SensorAgent:
 
         with self._lock:
             self.stats.batches_exhausted_retries += 1
+        if drops == self.config.max_attempts:
+            # Every attempt was a mid-request drop: the one pattern that
+            # may mean the request itself cannot get through. Resending the
+            # same bytes on the next flush is the ADR-066 wedge.
+            return self._after_repeated_drops(batch, last)
         logger.warning(
             "Returning %d event(s) to the buffer after %d failed attempts.",
             len(batch), self.config.max_attempts,
         )
         self._return_batch(batch)
         return last
+
+    def _after_repeated_drops(
+        self, batch: list[dict[str, Any]], last: Optional[ForwardResult]
+    ) -> Optional[ForwardResult]:
+        """
+        Bounded handling of a batch whose every attempt dropped mid-request.
+
+        A multi-event batch is split (cap halved) - UNCONFIRMED, because an
+        outage looks identical; splitting loses nothing either way and the
+        cap recovers after successes. Each such round at least halves the
+        batch, so this reaches a single event in bounded rounds.
+        """
+        if len(batch) > 1:
+            with self._lock:
+                self._batch_cap = max(1, len(batch) // 2)
+                self._cap_successes = 0
+                self.stats.batches_split_unconfirmed += 1
+            self._return_batch(batch)
+            logger.warning(
+                "Every attempt to send %d event(s) dropped mid-request; keeping "
+                "them and capping batches at %d (unconfirmed: an outage looks "
+                "the same). If the server's body limit is below max_request_bytes, "
+                "lower max_request_bytes.",
+                len(batch), self._batch_cap,
+            )
+            return last
+        return self._probe_past(batch[0], last)
+
+    def _probe_past(
+        self, suspect: dict[str, Any], last: Optional[ForwardResult]
+    ) -> ForwardResult:
+        """
+        Decide whether ONE event, not the channel, is what keeps dropping.
+
+        The next buffered event is sent alone. If the channel cannot carry
+        it either, this is an outage: both go back in their original order,
+        still retryable. If it is acknowledged, the suspect gets one more
+        immediate attempt; dropping again, back to back with a success, is
+        evidence enough to set it aside in the dead-letter store - kept,
+        counted and requeueable, never silently discarded - so the events
+        behind it can flow. Only the dead-letter case changes the order
+        of delivery, and only for the event set aside.
+        """
+        taken = self._take_batch(limit=1)
+        try:
+            probe = self._fit_batch(taken)
+        except Exception:
+            self._return_batch(taken)
+            self._return_batch([suspect])
+            raise
+        if not probe:
+            self._return_batch([suspect])
+            return last
+        with self._lock:
+            self.stats.channel_probes += 1
+        probe_result = self._send(probe, [suspect])
+        if probe_result.ok:
+            self._record_ack(probe_result)
+        else:
+            self._note_failure(probe_result)
+            if probe_result.halt or probe_result.retryable:
+                # No evidence about the suspect: an outage, an overloaded
+                # server, or a channel fault. Restore the order.
+                self._return_batch(probe)
+                self._return_batch([suspect])
+                return last
+            # A definite refusal of the probe event itself (400/401/403/409,
+            # or 413 for it alone). It applies to that event however it was
+            # sent, so the normal rule drops it - and an answer at all is
+            # proof the channel carries requests. Putting both back would
+            # repeat this exact round on every flush.
+            self._drop_refused(probe, probe_result)
+
+        again = self._send([suspect])
+        if again.ok:
+            self._record_ack(again)
+            return again
+        if not self._note_failure(again):
+            # A definite answer now; the next flush applies the normal rule.
+            self._return_batch([suspect])
+            return again
+
+        with self._lock:
+            if len(self._dead_letter) >= self.config.buffer_capacity:
+                self._dead_letter.popleft()
+                self.stats.events_dead_letter_overflow += 1
+            self._dead_letter.append(suspect)
+            self.stats.events_dead_lettered += 1
+        logger.error(
+            "Event %s dropped the connection on every attempt while the event "
+            "behind it was delivered; set aside in the dead-letter store (see "
+            "dead_letters / requeue_dead_letters).",
+            suspect.get("event_id"),
+        )
+        return ForwardResult(
+            status=0, ok=False, retryable=False,
+            error_kind="event_undeliverable",
+            detail="one event repeatedly dropped the connection while the "
+                   "channel delivered others; set aside, not discarded",
+        )
+
+    def dead_letters(self) -> list[dict[str, Any]]:
+        """Events set aside as undeliverable, oldest first (copies)."""
+        with self._lock:
+            return [dict(r) for r in self._dead_letter]
+
+    def requeue_dead_letters(self) -> int:
+        """
+        Put set-aside events back at the FRONT of the buffer, in order -
+        for an operator who has corrected max_request_bytes or the server.
+
+        Only as many as the buffer has room for, oldest first; the rest
+        stay in the dead-letter store rather than being dropped. Returns
+        the number actually requeued.
+        """
+        with self._lock:
+            room = max(0, self.config.buffer_capacity - len(self._buffer))
+            moved = [self._dead_letter.popleft() for _ in range(min(room, len(self._dead_letter)))]
+            for record in reversed(moved):
+                self._buffer.appendleft(record)
+        return len(moved)
 
     def flush_all(self, max_batches: int = 1000) -> int:
         """Drain the buffer. Bounded so a failing server cannot spin forever."""
@@ -751,8 +1074,13 @@ class SensorAgent:
 
     def health(self) -> dict[str, Any]:
         """Forwarding statistics. Never contains the token."""
-        return self.stats.snapshot(
+        snapshot = self.stats.snapshot(
             buffered=self.buffered,
             capacity=self.config.buffer_capacity,
             running=self._running,
         )
+        with self._lock:
+            snapshot["batch_size_cap"] = self._batch_cap
+            snapshot["learned_max_request_bytes"] = self._learned_max_bytes
+            snapshot["dead_letter_events"] = len(self._dead_letter)
+        return snapshot

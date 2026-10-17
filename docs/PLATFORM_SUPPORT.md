@@ -11,12 +11,16 @@ Nothing here is a projection presented as a result.
 
 | Platform | Status | Basis |
 |---|---|---|
-| **Windows 11** | **Verified — runtime** | 394 backend tests, 36 frontend tests, live collection, all nine pages driven in a browser, loopback central-mode run |
-| **Linux (Ubuntu 26.04, Python 3.14.4, WSL2)** | **Verified for an earlier revision only** | 392 backend tests passed, 2 skipped, and the application started, served and shut down cleanly - on the codebase as it was then. The current suite (1,200+ tests) has **not** been run on Linux. Re-verify with section 6 below before claiming current Linux support |
+| **Windows 11** | **Verified — runtime, earlier revisions** | 394 backend tests, 36 frontend tests, live collection, all nine pages driven in a browser, loopback central-mode run. Not re-run for the revision validated on Arch below |
+| **Linux (Arch, kernel 7.2.9, Python 3.14.8)** | **Verified — current revision: backend suite, frontend, loopback runtime** | 1,284 backend tests passed, 3 skipped (all platform skips, explained in section 6); frontend `tsc`, 67 vitest tests and production build pass (Node 26, npm 12); application started on loopback against a disposable database and shut down cleanly; the backend served the real frontend build. Section 6 records the runs. The collector was not started |
+| Linux (Ubuntu 26.04, Python 3.14.4, WSL2) | Verified for an earlier revision only | 392 backend tests passed, 2 skipped, on the codebase as it was then (below) |
 | macOS | **Not assessed** | No macOS machine available |
 | Docker | **Not verified** | Docker is not installed on this host and installing it is outside the agreed boundary |
 
-### Linux: what was actually run
+### Linux: what was actually run (earlier revision, Ubuntu)
+
+Historical record. The current revision's Arch run is in section 6; where
+the two disagree, section 6 describes the code as it is now.
 
 A pre-existing Ubuntu 26.04 WSL2 environment was used. Dependencies were
 installed into a **virtual environment under the user's home directory** —
@@ -60,6 +64,11 @@ only when no source is injected, which also gave the collector API its
 first Linux coverage. The real OS path is still refused off Windows, and
 there is a test for that.
 
+> *Superseded by ADR-053 and ADR-075:* Linux now has its own genuine
+> source (`/proc/net/tcp`), so the real OS path runs on Linux too. It is
+> refused - 501 - only on a platform that is neither Windows nor Linux,
+> and the PowerShell query is never called there.
+
 **2. The operational-database guards tested a substring, not the
 property.** Two tests asserted the database URL contained `tmp` or `temp`.
 On Linux a throwaway database under `$HOME` is isolated by any reasonable
@@ -72,13 +81,23 @@ resolved path is **not** the repository's `prahari.db`.
 |---|---|
 | API, ingestion, analytics, forecasting, research gate, retention, experiments, central security | **Yes** — all verified running on Linux |
 | Frontend / SPA serving | **Yes** |
-| TCP connection-table collection (`Get-NetTCPConnection`) | **No** — Windows only, reports `unsupported` elsewhere |
-| UDP endpoint table (`Get-NetUDPEndpoint`) | **No** — 501 elsewhere |
-| Interface counters (`Get-NetAdapterStatistics`) | **No** — 501 elsewhere |
-| DNS cache enrichment | **No** — Windows DNS client only |
+| TCP connection-table collection | **Windows and Linux.** Windows reads `Get-NetTCPConnection`; Linux reads `/proc/net/tcp` and `/proc/net/tcp6` (ADR-053). Any other platform reports `unsupported`, and `POST /collector/poll` and `/collector/start` return **501** |
+| UDP endpoint table (`Get-NetUDPEndpoint`) | **No** — Windows only; 501 elsewhere |
+| Interface counters (`Get-NetAdapterStatistics`) | **No** — Windows only; 501 elsewhere |
+| DNS cache enrichment | **No** — Windows DNS client only. Since ADR-075 the collector does not attempt it on Linux, and since ADR-076 neither do `POST /enrichment/dns/refresh` (200, `succeeded: false`, reason given) or `GET /enrichment/dns/diagnose` - nothing is spawned |
 
-A Linux deployment therefore runs everything except local host collection,
-and says so rather than failing.
+What Linux TCP collection does **not** provide, and reports in
+`/collector/status` `capability_notes`: no socket creation time (every
+event is stamped with the poll time and flagged `timestamp_uncertainty`);
+process name (`comm`, never the command line) only for processes the
+running user may inspect; no hostname evidence; no bytes, packets or
+duration. Linux records still carry the Windows-named identifiers
+`windows_local_host`, `windows_connection_table` and a `windows:tcp`
+reference prefix (ADR-075).
+
+A Linux deployment therefore runs everything, including local TCP
+collection, except the Windows-only UDP, interface and DNS sources, and it
+refuses those with a named reason rather than failing.
 
 ---
 
@@ -254,7 +273,7 @@ The event type is kept separate from the label: a labelled flow is still a
 | Claim | Status |
 |---|---|
 | Runs on Windows | **Verified at runtime** |
-| Runs on Linux | **Verified at runtime** (local host collection unavailable there, and reported as such) |
+| Runs on Linux | **Verified on Arch for the current revision** — backend suite, frontend type-check/tests/build, and loopback runtime. Local TCP collection reads `/proc`; the live table read is tested, but the collector was not started as part of validation |
 | Runs on macOS | **Unknown** |
 | Runs in Docker | **Unverified** — Docker not installed on this host |
 | Ingests Zeek JSON | **Verified against fixtures and over HTTP**, not against a live Zeek instance |
@@ -267,11 +286,57 @@ The event type is kept separate from the label: a labelled flow is still a
 
 ## 6. Re-verifying on Linux (Arch)
 
-**Status: not executed.** The Arch installation is not reachable from the
-Windows environment where this was written: WSL lists only an Ubuntu
-distribution (stopped), so Arch is presumably a separate boot. Ubuntu-WSL
-was not started either - booting a VM was not part of the authorization.
-Nothing below has been run on Arch; it is the procedure to run.
+**Status: executed on 17 Oct 2026** against revision `a128bfd` plus the
+uncommitted fixes recorded in ADR-073 to ADR-075. Host: Arch Linux, kernel
+7.2.9-arch1-1, x86_64, Python 3.14.8, pytest 9.1.1, existing
+`backend/.venv-linux`.
+
+| Step | Result |
+|---|---|
+| `pytest tests/unit/test_linux_telemetry.py -v -rs` | **30 passed, 1 skipped** |
+| `pytest -q -rs` (first run, before fixes) | 3 failed, 1243 passed, 3 skipped |
+| `pytest -q -rs` (after ADR-075) | 1278 passed, 3 skipped, 0 failed |
+| `pytest -q -rs` (after ADR-076) | 1284 passed, 3 skipped, 0 failed |
+| `pytest -q -rs` (current, after ADR-077) | **1292 passed, 3 skipped, 0 failed**, 3 deprecation warnings from FastAPI/Starlette |
+| `scripts/simulate_synthetic_stream.py --base-url <throwaway server>` | 4 synthetic records accepted; exits 1 on an unreachable server |
+| Frontend: `npm ci`, `tsc -p .`, `vitest run`, `vite build` | 239 locked packages installed; `tsc` 0 errors; **67 passed** in 8 files; build succeeded (one advisory: the main chunk is 1.36 MB, over Vite's 500 kB guideline). Built to a scratch directory, not `frontend/dist` |
+| Backend serving that build (in process) | shell for client routes, assets served as JS, 404 for missing files and unknown API paths, raw `..` paths refused (ADR-076) |
+| `scripts/verify_live_launcher.py` | 16 checks passed, 1 skip (no `frontend/dist`); also passes under `python -O` |
+| `scripts/simulate_browser_producer.py` against a throwaway loopback server | all contract checks passed |
+| `pytest tests/integration/test_central_https_e2e.py` | 28 passed; separate uvicorn process on 127.0.0.1, port verified closed |
+| Loopback startup, disposable DB | `/health` 200 with `x-request-id`; `/collector/status` `state=stopped`, `platform_supported=true`, 0 polls; port 8765 closed after stop |
+
+**The skips.** Three, all expected on Linux, none a pass:
+
+- two `live_windows` tests - they need a real Windows connection table;
+- `test_the_collector_selects_the_windows_query_off_linux` - it asserts
+  the *non-Linux* branch of `default_host_query_fn()`, so it cannot run on
+  Linux. Its Linux counterpart runs and passes.
+
+The procedure below originally said "expect zero skips here"; one skip in
+the Linux module is by design, and the procedure has been corrected.
+
+**What the run found** - three test failures and two collector defects,
+all explained in ADR-073 to ADR-075. In short: a stale Windows-only test, a
+traversal test that the HTTP client defeated by normalising `..` and that
+depended on a built frontend, and an agent test that assumed the 413 is
+never seen. Plus a Linux collector that tried to spawn PowerShell for DNS
+enrichment, and that described itself as `Get-NetTCPConnection`.
+
+**Not run on Linux:** `verify_live_windows_telemetry.py` (polls the real
+collector of a running server), the PowerShell and batch launchers, and a
+real-browser session.
+
+**SPA tests and the frontend build.** The deep-link and missing-asset
+tests in `test_deployment_and_spa.py` check the checkout's own
+`frontend/dist` only if it exists; this checkout had not run `npm run
+build`, so those two passed **without asserting anything**. The fallback
+itself - shell for client routes, 404 for missing files and unknown API
+paths - and its traversal guards are tested against a throwaway build
+created per test, and the no-build behaviour (no fallback route, 404) by
+its own test, so both run either way.
+
+The procedure as originally written follows.
 
 It installs nothing system-wide and changes no networking. It needs only
 `git`, `python` (3.12 or later) and `openssl`, which an Arch base system
@@ -303,14 +368,16 @@ python -m pytest tests/unit/test_linux_telemetry.py -v -rs
 
 On Linux the four tests that skip on Windows must **run**. Two read a
 live `/proc`; two create symlinks under a fake `/proc/<pid>/fd`. Expect
-zero skips here. Any skip means that check did not execute.
+exactly one skip here - `test_the_collector_selects_the_windows_query_off_linux`,
+which asserts the non-Linux branch. Any other skip means that check did
+not execute.
 
 ```bash
 python -m pytest -q -rs
 ```
 
-On Linux, expect the Windows-collector tests to skip (they require
-Windows) and nothing else. Record passed, failed and skipped counts
+On Linux, expect the two `live_windows` tests and the non-Linux
+selection test to skip, and nothing else. Record passed, failed and skipped counts
 exactly; a skip is not a pass.
 
 ```bash
@@ -338,6 +405,12 @@ Expect `/health` 200 with an `x-request-id` header, and the collector
 status to name the Linux platform without starting anything. No collector
 is enabled by any step here.
 
+When this was executed it was run from inside the empty
+`/tmp/prahari-linux-verify` directory with `--app-dir <repo>/backend`, so
+no `.env` in the checkout could be picked up, with every inherited
+`PRAHARI_*` variable unset, and with an exit trap that stops the server
+even if a request fails.
+
 Clean up:
 
 ```bash
@@ -348,3 +421,48 @@ deactivate
 Linux integration can be claimed only once these have run and their
 output has been recorded - not because the Linux modules import, and not
 because their tests were skipped elsewhere.
+
+---
+
+## 7. Re-verifying on Windows (current revision)
+
+**Status: not executed.** The Arch host cannot reach the Windows checkout:
+the Windows partition is BitLocker-encrypted and unmounted, and the
+machine dual-boots, so Windows cannot run alongside Linux.
+
+**Getting the changes.** They are committed on `main` in
+`origin` (`https://github.com/PRushi00/PraHari`). On Windows, first check
+the checkout - `git status --short --branch` must show no modified files
+and `git log -1` the commit you expect to build on - then:
+
+```powershell
+git fetch origin
+git merge --ff-only origin/main
+```
+
+`--ff-only` refuses rather than merging if the Windows branch has local
+commits; stop and inspect them if it does. A patch with a manifest was also
+prepared before the commit (`IMPLEMENTATION_STATUS.md`, Session 30) for a
+checkout that cannot pull.
+
+Then run the steps below in PowerShell from the repository root. Preserve
+first: copy `prahari.db` (and any `-wal`/`-shm`) somewhere safe, with
+PraHari stopped. Nothing below touches the operational database except
+steps 6 to 8, which use the running instance deliberately.
+
+| # | Command | Expect |
+|---|---|---|
+| 1 | `cd backend; .\.venv\Scripts\python.exe -m pytest -q -rs` | All pass; the skips are the Linux-only tests (`/proc` reads, POSIX symlinks, Linux selection, the non-Windows gates) - none of the `live_windows` tests skip |
+| 2 | `.\.venv\Scripts\python.exe -m pytest -m live_windows -v -rs` | 2 passed, against the real connection table |
+| 3 | `.\.venv\Scripts\python.exe ..\scripts\verify_live_launcher.py` | All checks pass; database path under a `prahari-launcher-verify-*` temp directory; port released (the tree is stopped with `taskkill /T`) |
+| 4 | `cd ..\frontend; npm ci; npx tsc -p .; npx vitest run` | `tsc` 0 errors; 67 passed |
+| 5 | `npx vite build --outDir $env:TEMP\prahari-spa-check --emptyOutDir` | Build succeeds without touching `frontend\dist` |
+| 6 | **Operator decision:** start PraHari normally, then from the dashboard (or `POST /api/v1/collector/start`), collect for a few polls and stop | `capability_notes` name `Get-NetTCPConnection`; `refresh_dns` on; events persisted; stopping leaves no extra process |
+| 7 | With PraHari running: `POST /api/v1/enrichment/dns/refresh`, `GET /api/v1/enrichment/dns/diagnose` | Real DNS-cache data and a resolver diagnosis - not the "Windows-only" message the Linux gate returns |
+| 8 | `GET /api/v1/hostobs/interfaces`, `POST /api/v1/hostobs/udp/poll` | 200 with data |
+| 9 | `powershell -ExecutionPolicy Bypass -File .\start_prahari.ps1 -CheckOnly` | Preflight passes |
+| 10 | A real browser on `http://127.0.0.1:8000/` | Every tab renders; no console errors; no unexpected 4xx/5xx in the network panel |
+
+Steps 6 to 8 read and write the **operational** database, because that is
+what the running instance uses: that is collection, not a test. Run them
+only when that is intended.

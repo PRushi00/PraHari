@@ -59,6 +59,10 @@ class AppConfig(BaseSettings):
     data_dir: str = "./data"
     models_dir: str = "./models"
     fixtures_dir: str = "./tests/fixtures"
+    # Where experiment manifests are written (ADR-074). Empty keeps the
+    # historical location, <project root>/experiments; a relative path is
+    # resolved against the project root, like database_url.
+    experiments_dir: str = ""
 
     # Logging
     log_level: str = "INFO"
@@ -134,6 +138,15 @@ class AppConfig(BaseSettings):
         else:
             candidate = Path("prahari.db")
 
+        if candidate.is_absolute():
+            return candidate
+        return (self.project_root / candidate).resolve()
+
+    def get_experiments_dir(self) -> Path:
+        """Absolute path of the experiment-manifest directory (not created)."""
+        if not self.experiments_dir.strip():
+            return self.project_root / "experiments"
+        candidate = Path(self.experiments_dir)
         if candidate.is_absolute():
             return candidate
         return (self.project_root / candidate).resolve()

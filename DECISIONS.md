@@ -3206,3 +3206,365 @@ Botnet. Under PraHari's attack-label rule any label other than
 benign/normal/unlabeled counts as an attack, so a CTU-13 importer must map
 labels explicitly, and Background must not become a negative. No such
 importer exists, and none was written for label strings not yet seen.
+
+---
+
+## ADR-073: The Agent's Size Refusals and Ambiguous Drops Now Have a Bound
+
+### Context
+ADR-066 bounded request size because a server refusing an oversized body
+"closes the connection before reading it, so the client never sees the
+413". Running the current revision on Arch Linux showed that sentence is
+timing, not law: on Linux loopback the 413 usually arrives intact. That
+exposed three defects the Windows runs could not show.
+
+1. **A clean 413 dropped every event in the batch.** The 413 was handled
+   like 400/401/403/409 - "the request itself is wrong" - so a 50-event
+   batch over the server's limit was discarded as one permanent failure,
+   although the server's own message says *split the submission*, ADR-066
+   says over-limit batches are split, and none of the events was at fault.
+   `events_oversized` stayed 0, so health could not tell a size refusal
+   from bad data.
+2. **The dropped-connection shape still wedged.** With `max_request_bytes`
+   set above the server's real limit, a drop is retryable, the batch went
+   back to the front, and the next `flush_once` sent the same bytes again.
+   The agent has no loop of its own (callers drive `flush_once` /
+   `flush_all`), so "forever" was at the caller's cadence.
+3. **A broken-off response could lose the batch or hide the 413.**
+   `http.client.IncompleteRead` is not an `OSError`; it escaped
+   `flush_once` after the batch had already left the buffer. And a 413
+   whose body was cut off raised while reading the body, so a definite
+   status was lost.
+
+### Decision: classify by evidence, and bound every path
+
+| Outcome | Evidence | Action |
+|---|---|---|
+| 2xx | Acknowledged | Done; counts stored and duplicates |
+| 413, more than one event | The server says a body of this size is too large | Keep the events, in order; later multi-event bodies are kept below the refused size (`learned_max_request_bytes`, never rises); `batches_split` |
+| 413, one event | The server refuses this event alone | Drop it; `events_oversized` and `batches_failed_permanent` |
+| 400/401/403/409 | The request is wrong | Drop, counted (unchanged) |
+| TLS failure, redirect | The channel is wrong | Halt, keep the events (unchanged, ADR-066) |
+| Refused, unreachable, DNS, timeout, 408/425/429/5xx | Nothing was delivered, or the server is busy | Retry with backoff, keep the batch **unchanged**; never split, never set aside |
+| `connection_dropped` (reset, broken pipe, abort, TLS EOF, `IncompleteRead`, remote disconnect) | Ambiguous: an outage, a size refusal, or a lost response | Retry with backoff; see below if a whole round drops |
+
+**A round in which every attempt dropped mid-request** is the one pattern
+that may mean the request cannot get through:
+
+- **More than one event:** the batch cap (an event count) is halved,
+  marked **unconfirmed** (`batches_split_unconfirmed`), and the events are
+  kept. The identical batch is not resent. Because an outage looks the
+  same, the cap grows back - doubling after 4 successful deliveries, up to
+  `batch_size` - so a flaky network does not shrink batches for good.
+- **One event:** the next buffered event is sent alone as a probe
+  (`channel_probes`). If it also fails, it's an outage: both go back in
+  their original order, still retryable. If it is acknowledged, the
+  suspect gets one immediate further attempt; if that drops too - back to
+  back with a success - the suspect is moved to an in-memory
+  **dead-letter store** (`events_dead_lettered`). It is not discarded:
+  `dead_letters()` lists it and `requeue_dead_letters()` puts it back at
+  the front - as many as the buffer has room for, oldest first, the rest
+  staying dead-lettered. The store is bounded by `buffer_capacity`;
+  overflow drops the oldest dead letter and is counted
+  (`events_dead_letter_overflow`).
+  If the probe is refused outright (400/401/403/409, or 413 for it alone),
+  that refusal applies to the probe event however it was sent, so it is
+  dropped under the normal rule - and any answer proves the channel
+  carries requests, so the suspect is still judged.
+
+**Termination.** A refused body is never resent unchanged. Each
+multi-event 413 strictly lowers the learned byte ceiling. Each
+all-drops round at least halves the batch, so a batch reaches one event in
+at most log2(batch_size) rounds; one event then ends in delivery, a
+dead letter, or - with no evidence the channel works - stays buffered and
+retryable, which is the correct outcome during a real outage.
+
+Also: the transport returns the status of an HTTP error even when its body
+cannot be read, so a truncated 413 is a confirmed 413; any exception a
+transport raises puts the in-flight events back before propagating; and
+`health()` reports `batch_size_cap`, `learned_max_request_bytes` and
+`dead_letter_events`.
+
+*Revised before commit, during the Linux closure audit (ADR-076):* the
+first draft turned a clean 413 into a permanent **event-count** cap set to
+half the refused batch. A 413 on two large events then held every later
+batch - however small its events - to one event per request for the
+agent's lifetime. A 413 is evidence about bytes, so the confirmed limit is
+now a byte ceiling, applied to multi-event bodies only. The same audit
+found the probe livelock and the requeue loss described above.
+
+### Duplicates
+Splitting after an ambiguous drop resends events under different batch
+boundaries and therefore a different `Idempotency-Key`. That is safe only
+because the agent requires `event_id`, so identity is tier 1 of ADR-050
+(source + event id), independent of the batch. Pinned end to end against
+the real ingest path: the server stores every multi-event batch and the
+response is lost; after the split, 8 events are stored exactly once, with
+`duplicates=8` and no 409.
+
+### Trade-offs, stated
+- During an outage that drops connections (rather than refusing them) the
+  cap shrinks to 1 until deliveries resume and it recovers. That costs
+  throughput, not events.
+- Dead-lettering is the one case that changes delivery order: the event
+  behind the suspect is delivered first. The probe costs one extra
+  request.
+- With the bound misconfigured above the limit and a server that drops
+  rather than answering 413, every halving costs up to `max_attempts`
+  sends with backoff. Correct `max_request_bytes` remains the fix; this is
+  the safety net.
+- The dead-letter store is in memory, like the buffer: lost if the process
+  is killed. A dead-lettered event may already have been stored, if what
+  kept failing was the response rather than the request; requeueing it is
+  safe because the server deduplicates by `event_id`.
+
+### Not claimed
+Not exactly-once delivery: at-least-once on the wire, at-most-once in
+storage. The dropped-connection path is exercised deterministically by
+simulated servers; against the real loopback server on this Linux host the
+413 arrived intact, so the out-of-process e2e test took the clean-413
+branch. Not tested against a non-loopback server.
+
+This supersedes the "413 is dropped" bullet of ADR-058 and point 4 of
+ADR-066's claim that the 413 is never seen. Both are left as they were
+written.
+
+---
+
+## ADR-074: Tests Wrote Experiment Manifests Into the Repository
+
+### Context
+`/experiments/capture` writes manifests to `<project root>/experiments/`.
+The API test fixture meant to redirect them - its comment says *keep
+manifests inside the test's temporary tree* - did so by setting
+`cfg._test_root`, an attribute nothing reads. `project_root` is derived
+from the source file's location. So every full run rewrote
+`experiments/api-exp-1.json` and `api-exp-2.json` in the checkout. The
+directory is gitignored, which is why nobody noticed.
+
+### Decision
+`AppConfig.experiments_dir` (`PRAHARI_EXPERIMENTS_DIR`) chooses the
+directory. Empty, the default, keeps `<project root>/experiments`, so a
+deployment behaves exactly as before. A relative path resolves against the
+project root, like `database_url`. `tests/conftest.py` points it at the
+session's throwaway directory, and the experiment fixture injects its own
+`tmp_path`.
+
+Pinned by tests: a capture lands in the injected directory and leaves the
+repository's `experiments/` unchanged, by name, mtime and size; and the
+suite's default configuration cannot resolve inside the repository.
+Measured across a full run: both pre-existing manifests kept their
+SHA-256, mtime and size.
+
+### Not changed
+The two existing manifests were written by earlier test runs, not by an
+operator. They are left in place: deleting files in the checkout is the
+operator's call.
+
+---
+
+## ADR-075: The Current Revision on Arch Linux, and What It Corrected
+
+### Context
+`docs/PLATFORM_SUPPORT.md` section 6 described a Linux re-verification
+procedure that had never been run against the current code. It was run on
+Arch Linux (kernel 7.2.9, Python 3.14.8, `backend/.venv-linux`). The first
+full run: 3 failed, 1243 passed, 3 skipped.
+
+### What the three failures were
+- **`test_real_os_collection_is_refused_off_windows` was stale.** It
+  predates ADR-053, which deliberately enabled Linux collection through
+  `/proc/net/tcp`. It is replaced by two tests. On Linux, a poll reads
+  `/proc` through the Linux reader only and spawns no subprocess. On a
+  platform that is neither Windows nor Linux, poll and start still return
+  501 and the PowerShell query is never called. The Windows-only
+  `hostobs` sources (UDP endpoints, interface counters) still return 501
+  off Windows.
+- **`test_path_traversal_protection` could not test what it named.**
+  httpx removes `..` segments before sending, so the app received
+  `/etc/passwd`, and the expected 200 (the SPA shell) exists only when
+  `frontend/dist` has been built. `create_app(frontend_dist=...)` now
+  lets tests build a throwaway dist and send raw ASGI paths, which reach
+  the `..` guard, the `/assets` mount and the symlink check. Without a
+  build there is no fallback route and every non-API path is 404.
+- **`test_an_unbounded_agent_would_wedge_on_that_batch`** - ADR-073.
+
+### Two defects found alongside them
+- On Linux, genuine collection defaulted `refresh_dns` on, so every real
+  poll tried to spawn `powershell` to read the *Windows* DNS cache. It
+  failed only because PowerShell is not installed. DNS cache enrichment
+  now defaults on for Windows only.
+- On Linux, collector status and source registration described the source
+  as `Get-NetTCPConnection` with OS creation times. Linux now reports its
+  own capability notes and source description: `/proc/net/tcp[6]`, no
+  creation time (always poll time, flagged), `comm` only, no DNS
+  enrichment.
+
+### Result, current revision
+`pytest -q -rs`: **1278 passed, 3 skipped**, 0 failed. The skips are the
+two `live_windows` tests and `test_the_collector_selects_the_windows_query_off_linux`,
+which asserts the non-Linux branch and therefore cannot run on Linux.
+`tests/unit/test_linux_telemetry.py`: 30 passed, 1 skipped (that same
+test). Loopback startup against a disposable database: `/health` 200 with
+`x-request-id`, collector `stopped` with 0 polls, port closed after stop.
+
+### Not claimed
+Windows was not re-run for this revision. The identifiers
+`source_type="windows_connection_table"`, `source_id="windows_local_host"`
+and the `windows:tcp` prefix of `raw_reference` are still used for Linux
+records. `analysis.py` parses that prefix, so renaming them is a
+data-model change, not a fix. A full collector poll against live `/proc`
+returned 200 once, during the reproduction, on pre-fix code; it was not
+repeated, because collection is not started as a validation step. The
+live `/proc` read itself is covered by `test_the_live_linux_table_is_readable`.
+
+---
+
+## ADR-076: Linux Closure Audit — Accounting at the Buffer Edge, Windows Probes Behind a Platform Gate
+
+### Context
+A full audit of the Linux workstream before returning to Windows: every
+changed file re-read, every Windows-originating workflow inventoried, and
+the frontend built and tested on Arch for the first time. Each defect
+below was reproduced by a test that failed before its fix.
+
+### Defects and fixes
+1. **Events lost to a full buffer were undercounted** (pre-existing).
+   `_return_batch` stopped at the first event that did not fit, counted
+   one drop and silently lost the rest of the batch. It is reachable
+   whenever the collector keeps offering while a batch is in flight. Now
+   every event that cannot go back is counted; the oldest are the ones
+   dropped, consistent with `DROP_OLDEST`.
+2. **`requeue_dead_letters()` could lose every dead letter** (introduced
+   in ADR-073's draft). Into a full buffer it dropped them, counted one,
+   and reported them all as requeued. It now moves only as many as fit
+   and leaves the rest dead-lettered.
+3. **A refused probe livelocked the queue** (ADR-073 draft). A probe
+   answered with a definite refusal put both events back, so every later
+   flush repeated the same rounds. See ADR-073.
+4. **One 413 capped batches at one event for good** (ADR-073 draft). See
+   ADR-073.
+5. **The DNS enrichment endpoints spawned PowerShell on Linux**
+   (pre-existing). `POST /enrichment/dns/refresh` and `GET
+   /enrichment/dns/diagnose` ran `powershell` on any platform; on a Linux
+   host with PowerShell Core installed as `powershell` they would have run
+   a Windows DnsClient script. ADR-075 stopped the collector calling it,
+   but the API still did. The default DNS query now refuses off Windows
+   before spawning anything, and the diagnosis endpoint answers in its
+   usual shape stating the source is Windows-only. The dashboard calls
+   both, so the status stays 200 rather than the 501 used by `hostobs`.
+   The Windows parsing logic remains tested on every platform.
+6. **`scripts/verify_live_launcher.py` ran against the operational
+   database** (pre-existing). It started uvicorn on the default database
+   from the caller's working directory with the caller's environment,
+   posted a fabricated flow labelled `live_telemetry` into it, used a
+   Windows-only interpreter path, printed "port released" without
+   checking, and every check was an `assert` that `python -O` removes. It
+   now uses its own throwaway directory, database and manifest directory,
+   strips `PRAHARI_*`, binds 127.0.0.1 on a free port, files its probe as
+   `synthetic_demo`, checks for real (it passes under `-O`), verifies the
+   port closed, and runs on both platforms via `sys.executable`. The SPA
+   checks adapt to whether `frontend/dist` exists, and a forecasting
+   refusal through the research gate counts as correct behaviour on a
+   near-empty database.
+
+### Verified on Arch, beyond the backend suite
+- Frontend: `npm ci` from the lockfile (239 packages, all from
+  registry.npmjs.org with integrity hashes), `tsc` 0 errors, vitest
+  **67 passed**, `vite build` succeeded. The build was written to a
+  scratch directory, never to `frontend/dist`. The backend then served
+  that real build in process: the shell for client routes, real assets as
+  JS, 404 for missing files and unknown API paths, raw `..` paths refused
+  with nothing disclosed.
+- `verify_live_launcher.py` (16 checks pass, 1 by-design skip without a
+  build), `simulate_browser_producer.py` against a throwaway loopback
+  server (all contract checks), `verify_forecasting_pipeline.py`, and
+  `manage_credentials.py` on a scratch file (written with mode 600).
+
+### Result
+Backend `pytest -q -rs`: **1284 passed, 3 skipped**, 0 failed (the same
+three platform skips as ADR-075). Linux telemetry module: 30 passed, 1
+skipped. Frontend: `tsc` 0, 67 passed, build succeeded. Both experiment
+manifests byte-identical to their baseline; no operational database
+existed or was created.
+
+### Not claimed
+Windows was not re-run. The collector was never started; Linux TCP
+collection is verified through the live `/proc` read test and fixtures,
+not a sustained run. The frontend was exercised by vitest under jsdom and
+by serving its build, not in a real browser. `simulate_synthetic_stream.py`
+hard-codes `127.0.0.1:8000` and was not run, because that port may belong
+to an operator's instance.
+
+---
+
+## ADR-077: Restart-Safe Repeat Suppression, and Three More Agent Event-Loss Paths
+
+### Context
+A further Linux audit, tracing every event from creation to acknowledgement
+or explicit loss. Each defect was reproduced first - against the real
+collector service or the real in-process ingest app - and is pinned by a
+test that failed before its fix.
+
+### Collector
+1. **A restart turned every still-open Linux connection into an identity
+   conflict, and the poll's new connections were lost for good.** The
+   fingerprint cache is in memory, so a restart (or the 50,000-entry
+   clear) re-normalizes connections already stored. On Windows their
+   `observed_at` is the OS creation time, so the re-insert is identical and
+   absorbed. On Linux `/proc` has no creation time, `observed_at` is the
+   poll time, the content differs, and `EventIdentityConflictError` rolled
+   back the whole poll. Reproduced: 2 events expected, 1 stored.
+   The collector now asks storage which ids it already holds
+   (`Database.existing_event_ids`, parameterized and chunked) and does not
+   re-insert them; the first observation stays canonical. Accounting is
+   unchanged: re-observed connections count as accepted, not persisted,
+   as `test_restart_preserves_previously_stored_events` already pinned.
+2. **Fingerprints were marked seen before storage succeeded** (both
+   platforms). Any failed write - disk full, a lock, the conflict above -
+   meant the next poll suppressed those connections as repeats of events
+   never stored. The adapter now forgets the fingerprints it first saw in
+   a batch whose write failed (`forget_last_batch`).
+
+### Sensor agent
+3. **A record JSON cannot encode took its whole batch with it.** A
+   `datetime` value (the usual one from a collector) passed validation,
+   then made encoding raise inside `flush_once` after the batch left the
+   buffer; the valid events beside it were lost, uncounted. It is now
+   refused on `offer()` (`not_json_serialisable`, counted in
+   `events_invalid`), and an encoding failure in flight - a record
+   mutated after `offer()` - puts the batch, or the probe and the suspect,
+   back before raising.
+4. **Records the server rejected inside a 2xx were invisible.** The server
+   validates each record and reports `rejected_records`; the agent read
+   only stored and duplicate counts, so a batch with rejected records
+   looked fully delivered. Now counted (`events_rejected_reported`) and
+   logged with the server's reasons. Those events are gone - a resend
+   would be rejected the same way - and are reported as such.
+5. **A wrong endpoint URL dropped every batch.** 404 and 405 fell under the
+   permanent-refusal rule. The ingest route never returns them about the
+   data (its only data refusal is 403 for a source mismatch), so they now
+   **halt** and keep the events (`endpoint_refused`, counted in
+   `channel_refusals`), like a redirect.
+
+### Scripts
+`simulate_synthetic_stream.py` gained `--base-url` (default unchanged), so
+it can be pointed at a throwaway server; it was then run against one. A
+connection failure used to print an error and return `None`, so the script
+crashed later with an unrelated error; it now exits 1.
+
+### Kept as a limitation, not changed
+- **Linux connection identity has no creation time.** It is the 5-tuple
+  plus PID, so a later connection reusing the same 5-tuple and PID merges
+  into the stored event: an undercount, not a failure. The socket inode
+  would distinguish them, but it is excluded from records by ADR-053 and
+  changing the identity derivation is a compatibility change to do
+  deliberately, with a migration note, not inside a defect fix.
+- **401/403 still drop the batch** (ADR-058). A rotated or revoked token
+  therefore loses whatever is sent before the operator notices
+  (`batches_failed_permanent`, `last_error_kind`). Recorded as a risk.
+- **The buffer and dead-letter store are in memory**; killing the process
+  loses both.
+
+### Result
+Backend `pytest -q -rs`: **1292 passed, 3 skipped**, 0 failed.

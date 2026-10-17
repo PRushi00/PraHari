@@ -42,6 +42,7 @@ import json
 import logging
 import socket
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
@@ -115,6 +116,14 @@ class DnsCacheUnavailable(RuntimeError):
     """Raised when the Windows DNS client cache cannot be read."""
 
 
+def windows_only_dns_message() -> str:
+    return (
+        "DNS cache enrichment reads the Windows DNS client cache and is "
+        f"unavailable on platform '{sys.platform}'. Hostnames are not "
+        "attributed from local DNS evidence on this host."
+    )
+
+
 def query_windows_dns_cache(
     timeout_seconds: float = 20.0,
     powershell_path: str = "powershell",
@@ -124,7 +133,13 @@ def query_windows_dns_cache(
 
     Returns raw ``{hostname, data, type, ttl}`` records. Reading the cache
     sends no DNS queries and requires no privileges.
+
+    Windows only. Elsewhere it refuses before spawning anything: there is
+    no Windows DNS client to read, and a `powershell` on PATH (PowerShell
+    Core exists for Linux) would not have the DnsClient module either.
     """
+    if sys.platform != "win32":
+        raise DnsCacheUnavailable(windows_only_dns_message())
     try:
         proc = subprocess.run(
             [powershell_path, "-NoProfile", "-NonInteractive", "-Command", _PS_DNS_CACHE_SCRIPT],

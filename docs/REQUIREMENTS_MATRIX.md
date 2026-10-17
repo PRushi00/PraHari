@@ -565,3 +565,17 @@ Still **BLOCKED** (authorization or environment, not code): real-data
 metrics, cross-dataset generalization, live network-sensor integration,
 binary NetFlow collection, PCAP, PyTorch, PostgreSQL/Parquet, Linux
 execution.
+
+## Linux closure delta (17 Oct 2026) — statuses that changed
+
+Current status lives in [`ACCEPTANCE_MATRIX.md`](ACCEPTANCE_MATRIX.md);
+this records the change for the history above.
+
+| Criterion | Was | Now | Evidence |
+|---|---|---|---|
+| §4.4 Windows **and Linux** host support | Implemented; not yet run on Linux | **Linux run** for the current revision | Arch, Python 3.14.8: Linux telemetry module 30 passed, 1 by-design skip, including the live `/proc` read. Collector not started (ADR-075) |
+| §18 local deployment on declared OSes (Linux) | Earlier revision only | **Current revision** | backend 1284 passed / 3 skipped; frontend `tsc` 0, 67 passed, build; loopback runtime and `verify_live_launcher.py` clean (ADR-075, ADR-076) |
+| "Linux execution" in the BLOCKED list above | BLOCKED | **No longer blocked** | as above |
+
+Unchanged: Windows has not been re-run for this revision; no sustained
+Linux collector run; no real-browser session.

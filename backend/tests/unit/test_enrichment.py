@@ -7,6 +7,7 @@ confidence is a defect, and so is naming an address owner as though it were
 the site the user visited.
 """
 
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -532,3 +533,52 @@ def test_diagnosis_failure_is_reported_not_swallowed(monkeypatch):
     diag = diagnose_dns_visibility()
     assert diag["error"] is not None
     assert "could not be diagnosed" in diag["conclusion"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="asserts the non-Windows gate")
+def test_dns_endpoints_never_spawn_powershell_off_windows(tmp_path, monkeypatch):
+    """
+    DNS-cache enrichment and its diagnosis read the Windows DNS client
+    through PowerShell. Off Windows the endpoints still answer in their
+    usual shape - the dashboard calls both - but say the source is
+    Windows-only, and no process is spawned to find that out.
+    """
+    import subprocess as _sp
+
+    from fastapi.testclient import TestClient
+
+    from app.api.deps import get_db
+    from app.main import app
+    from app.services.enrichment import reset_enrichment_service
+
+    spawned: list = []
+
+    def _refuse(*a, **k):
+        spawned.append(a[0] if a else k.get("args"))
+        raise AssertionError(f"unexpected subprocess: {spawned[-1]}")
+
+    monkeypatch.setattr(_sp, "run", _refuse)
+    monkeypatch.setattr(_sp, "Popen", _refuse)
+
+    db = Database(db_path=str(tmp_path / "dns_gate.db"))
+    db.initialize()
+    reset_enrichment_service(None)
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        refreshed = client.post("/api/v1/enrichment/dns/refresh")
+        assert refreshed.status_code == 200
+        body = refreshed.json()
+        assert body["succeeded"] is False
+        assert "windows" in body["error"].lower()
+
+        diagnosed = client.get("/api/v1/enrichment/dns/diagnose")
+        assert diagnosed.status_code == 200
+        diag = diagnosed.json()
+        assert "windows" in (diag["error"] or "").lower()
+        assert "windows" in diag["conclusion"].lower()
+    finally:
+        app.dependency_overrides.clear()
+        reset_enrichment_service(None)
+        db.close()
+    assert spawned == []

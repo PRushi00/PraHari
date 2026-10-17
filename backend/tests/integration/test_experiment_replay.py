@@ -305,9 +305,12 @@ def test_non_deterministic_outputs_are_documented():
 @pytest.fixture
 def api(seeded_db, tmp_path):
     reset_forecasting_pipeline()
-    cfg = AppConfig(database_url=f"sqlite:///{tmp_path / 'exp.db'}")
-    # Keep manifests inside the test's temporary tree.
-    object.__setattr__(cfg, "_test_root", tmp_path)
+    # Keep manifests inside the test's temporary tree. (This once set an
+    # attribute nothing read, so manifests landed in <repo>/experiments.)
+    cfg = AppConfig(
+        database_url=f"sqlite:///{tmp_path / 'exp.db'}",
+        experiments_dir=str(tmp_path / "experiments"),
+    )
     app.dependency_overrides[get_db] = lambda: seeded_db
     app.dependency_overrides[get_config] = lambda: cfg
     with TestClient(app) as client:
@@ -345,6 +348,55 @@ def test_capture_then_replay_through_the_api(api):
     body = replayed.json()
     assert body["reproduced"] is True
     assert body["differences"] == []
+
+
+def _repo_experiment_artifacts() -> dict[str, tuple[int, int]]:
+    from app.core.config import get_config
+
+    repo = get_config().project_root / "experiments"
+    if not repo.is_dir():
+        return {}
+    return {p.name: (p.stat().st_mtime_ns, p.stat().st_size) for p in repo.iterdir()}
+
+
+def test_captured_manifests_stay_in_the_test_tree(api):
+    """
+    Capturing through the API writes into the injected directory and
+    creates or rewrites nothing under the repository's experiments/.
+    """
+    client, _, tmp_path = api
+    before = _repo_experiment_artifacts()
+
+    assert client.post(
+        "/api/v1/forecast/train", json={"source_id": "s", "max_events": 20000}
+    ).status_code == 200
+    assert client.post(
+        "/api/v1/experiments/capture",
+        json={"experiment_id": "isolation-check", "source_id": "s"},
+    ).status_code == 200
+
+    assert (tmp_path / "experiments" / "isolation-check.json").is_file()
+    assert _repo_experiment_artifacts() == before
+
+
+def test_the_suite_default_experiments_dir_is_not_the_repository():
+    """A test that forgets to override get_config still cannot write there."""
+    from app.core.config import AppConfig as _Fresh, get_config
+
+    for cfg in (get_config(), _Fresh()):
+        resolved = cfg.get_experiments_dir().resolve()
+        assert not resolved.is_relative_to(cfg.project_root.resolve()), resolved
+
+
+def test_experiments_dir_defaults_and_relative_paths_resolve_against_the_project_root(
+    monkeypatch,
+):
+    monkeypatch.delenv("PRAHARI_EXPERIMENTS_DIR", raising=False)
+    default = AppConfig()
+    assert default.get_experiments_dir() == default.project_root / "experiments"
+
+    relative = AppConfig(experiments_dir="./manifests")
+    assert relative.get_experiments_dir() == (relative.project_root / "manifests").resolve()
 
 
 def test_replay_api_refuses_a_changed_dataset(api):

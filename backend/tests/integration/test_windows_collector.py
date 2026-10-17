@@ -31,7 +31,7 @@ from app.adapters.windows_telemetry import (
 )
 from app.api.deps import get_db
 from app.main import app
-from app.schemas.events import DataCategory, EventType
+from app.schemas.events import DataCategory, EventType, QualityFlag
 from app.services.collector import (
     WindowsTelemetryCollectorService,
     reset_collector,
@@ -670,9 +670,15 @@ async def test_injected_query_does_not_touch_the_real_operating_system(temp_db, 
 
 @run_async
 async def test_real_collection_still_refreshes_dns_evidence(temp_db):
-    """The production path keeps enrichment enabled."""
+    """
+    The production path keeps enrichment enabled where it exists.
+
+    DNS cache enrichment reads the Windows DNS client through PowerShell,
+    so genuine collection on any other host defaults it off rather than
+    spawning a PowerShell process per poll.
+    """
     collector = WindowsTelemetryCollectorService(db=temp_db, source_id="win_real_default")
-    assert collector.refresh_dns is True
+    assert collector.refresh_dns is (sys.platform == "win32")
 
     # An explicit value always wins, in either direction.
     off = WindowsTelemetryCollectorService(db=temp_db, source_id="x", refresh_dns=False)
@@ -683,22 +689,208 @@ async def test_real_collection_still_refreshes_dns_evidence(temp_db):
     assert on.refresh_dns is True
 
 
-def test_real_os_collection_is_refused_off_windows(temp_db):
+def _track_subprocesses(monkeypatch) -> list:
+    """Record, and refuse, any subprocess the code under test tries to spawn."""
+    import subprocess as _sp
+
+    spawned: list = []
+
+    def _refuse(*args, **kwargs):
+        spawned.append(args[0] if args else kwargs.get("args"))
+        raise AssertionError(f"unexpected subprocess: {spawned[-1]}")
+
+    monkeypatch.setattr(_sp, "run", _refuse)
+    monkeypatch.setattr(_sp, "Popen", _refuse)
+    return spawned
+
+
+def _refusing_windows_query(calls: list):
+    def _query(*_args, **_kwargs):
+        calls.append("windows")
+        raise AssertionError("the PowerShell connection-table query must not run here")
+
+    return _query
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="asserts the non-Windows gate")
+def test_real_os_collection_is_refused_on_an_unsupported_platform(temp_db, monkeypatch):
     """
     The platform gate still applies to the genuine connection-table probe.
-    Relaxing it for injected sources must not let the PowerShell path run
-    on a host that has no Windows connection table.
+
+    Relaxing it for injected sources (and adding the Linux /proc source,
+    ADR-053) must not let the PowerShell path run on a host that has
+    neither a Windows connection table nor /proc - macOS, for example.
+    Simulated here by reporting "not Linux" on a non-Windows host; the
+    Windows query is replaced by one that fails loudly if invoked.
     """
+    import app.services.collector as collector_mod
+
+    windows_calls: list = []
+    monkeypatch.setattr(collector_mod, "platform_is_linux", lambda: False)
+    monkeypatch.setattr(
+        collector_mod, "query_windows_connections", _refusing_windows_query(windows_calls)
+    )
     reset_collector(db=temp_db, source_id="real_os", query_fn=None)
     app.dependency_overrides[get_db] = lambda: temp_db
     try:
         with TestClient(app) as client:
+            spawned = _track_subprocesses(monkeypatch)
             res = client.post("/api/v1/collector/poll")
-            if sys.platform == "win32":
-                assert res.status_code in (200, 503)
-            else:
-                assert res.status_code == 501
-                assert "connection-table" in str(res.json()["detail"]).lower()
+            assert res.status_code == 501
+            assert "connection-table" in str(res.json()["detail"]).lower()
+
+            started = client.post("/api/v1/collector/start", json={"interval_seconds": 60})
+            assert started.status_code == 501
+
+            status_body = client.get("/api/v1/collector/status").json()
+            assert status_body["platform_supported"] is False
+            assert status_body["state"] == "unsupported"
+        assert windows_calls == []
+        assert spawned == []
     finally:
         app.dependency_overrides.clear()
         reset_collector(None)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux host source")
+def test_real_os_collection_on_linux_reads_proc_and_never_powershell(temp_db, monkeypatch):
+    """
+    On Linux the generic collector's genuine source is /proc/net/tcp
+    (ADR-053), so a poll with no injected query succeeds - but it must
+    reach that only through the Linux reader, and neither the PowerShell
+    connection-table query nor the PowerShell DNS-cache enrichment may run.
+
+    Formerly `test_real_os_collection_is_refused_off_windows`, which
+    predates the Linux adapter and expected 501 on every non-Windows host.
+
+    The Linux reader is replaced with a canned /proc-shaped record so the
+    test is hermetic, while `query_fn=None` still exercises the platform
+    selection and gate rather than the injected-source bypass.
+    """
+    import app.services.collector as collector_mod
+
+    linux_calls: list = []
+    windows_calls: list = []
+
+    def _fake_proc_query(*_args, **_kwargs):
+        linux_calls.append("linux")
+        return [{
+            "protocol": "TCP",
+            "local_address": "192.0.2.10", "local_port": 51000,
+            "remote_address": "198.51.100.7", "remote_port": 443,
+            "state": "Established",
+            # What /proc genuinely yields without attribution or creation time.
+            "owning_pid": None, "process_name": None, "creation_time": None,
+        }]
+
+    monkeypatch.setattr(collector_mod, "query_linux_connections", _fake_proc_query)
+    monkeypatch.setattr(
+        collector_mod, "query_windows_connections", _refusing_windows_query(windows_calls)
+    )
+    collector = reset_collector(db=temp_db, source_id="real_os_linux", query_fn=None)
+    assert collector.refresh_dns is False
+    app.dependency_overrides[get_db] = lambda: temp_db
+    try:
+        with TestClient(app) as client:
+            spawned = _track_subprocesses(monkeypatch)
+            res = client.post("/api/v1/collector/poll")
+            assert res.status_code == 200, res.text
+            body = res.json()
+            assert body["succeeded"] is True
+            assert body["events_persisted"] == 1
+
+            status_body = client.get("/api/v1/collector/status").json()
+            assert status_body["platform_supported"] is True
+            assert status_body["polls_succeeded"] == 1
+            notes = " ".join(status_body["capability_notes"])
+            assert "/proc/net/tcp" in notes
+            assert "Get-NetTCPConnection" not in notes
+        assert linux_calls == ["linux"]
+        assert windows_calls == []
+        assert spawned == []
+
+        # Nothing is invented for fields /proc does not provide.
+        (event,) = temp_db.list_events(source_id="real_os_linux", limit=10)
+        assert QualityFlag.TIMESTAMP_UNCERTAINTY in event.quality_flags
+        assert "pid=" not in event.raw_reference and "process=" not in event.raw_reference
+        source = temp_db.get_source("real_os_linux")
+        assert "Linux" in source.name and "/proc/net/tcp" in source.description
+    finally:
+        app.dependency_overrides.clear()
+        reset_collector(None)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Restart-safe repeat suppression (ADR-077)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _proc_shaped(port: int, pid: int = 4242) -> dict:
+    """What the Linux /proc reader yields: no OS creation time."""
+    return {
+        "protocol": "TCP", "local_address": "192.0.2.10", "local_port": port,
+        "remote_address": "198.51.100.7", "remote_port": 443, "state": "Established",
+        "owning_pid": pid, "process_name": "app", "creation_time": None,
+    }
+
+
+@run_async
+async def test_a_still_open_connection_after_a_restart_does_not_fail_the_poll(temp_db):
+    """
+    A connection open across a restart is re-observed with an empty
+    in-memory cache. Without an OS creation time its observed_at is the
+    poll time, so it reaches storage as the same event id with different
+    content. That used to be an identity conflict that failed the whole
+    poll - and every NEW connection in it was lost. A repeat observation is
+    a repeat observation: the first stays canonical.
+    """
+    rows = [_proc_shaped(51000)]
+    first = WindowsTelemetryCollectorService(
+        db=temp_db, source_id="restart_src", query_fn=lambda *a, **k: [dict(r) for r in rows]
+    )
+    assert (await first.poll_once()).events_persisted == 1
+    stored_first = temp_db.list_events(source_id="restart_src", limit=10)[0].observed_at
+
+    first.adapter._seen_fingerprints.clear()  # what a process restart does
+    rows = [_proc_shaped(51000), _proc_shaped(51001)]
+    result = await first.poll_once()
+
+    assert result.succeeded, result.error
+    assert result.events_accepted == 2, "both parsed and valid"
+    assert result.events_persisted == 1, "only the new connection is stored"
+    events = temp_db.list_events(source_id="restart_src", limit=10)
+    assert len(events) == 2
+    old = next(e for e in events if e.src_port == 51000)
+    assert old.observed_at == stored_first, "the first observation stays canonical"
+
+
+@run_async
+async def test_events_from_a_poll_that_failed_to_persist_are_not_suppressed_later(
+    temp_db, monkeypatch
+):
+    """
+    Fingerprints used to be marked seen before storage succeeded, so a poll
+    whose write failed lost its events for good: the next poll suppressed
+    them as repeats of connections that were never stored.
+    """
+    rows = [_fake_connections(2, base_port=52000)()]
+    collector = WindowsTelemetryCollectorService(
+        db=temp_db, source_id="persist_fail", query_fn=lambda *a, **k: [dict(r) for r in rows[0]]
+    )
+    collector._ensure_source_registered()
+
+    real_insert = temp_db.insert_events
+
+    def _disk_full(events):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(temp_db, "insert_events", _disk_full)
+    failed = await collector.poll_once()
+    assert not failed.succeeded
+
+    monkeypatch.setattr(temp_db, "insert_events", real_insert)
+    retried = await collector.poll_once()
+
+    assert retried.succeeded
+    assert retried.events_persisted == 2, "the unstored events are observed again"
+    assert temp_db.count_events(source_id="persist_fail") == 2

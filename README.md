@@ -147,6 +147,37 @@ start_prahari.bat
 .\backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
+### Option D: Linux
+There is no Linux launcher script; these are the commands verified on Arch
+(ADR-075, ADR-076). From the repository root:
+
+```bash
+python -m venv backend/.venv-linux
+```
+
+```bash
+backend/.venv-linux/bin/python -m pip install -r backend/requirements.txt
+```
+
+To serve the dashboard, build the frontend once (needs Node and npm):
+
+```bash
+cd frontend && npm ci && npm run build
+```
+
+Then start the server on loopback:
+
+```bash
+backend/.venv-linux/bin/python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+Without `frontend/dist`, only the API is served and `/` returns a JSON
+index. The default database is `<repo>/prahari.db`; set
+`PRAHARI_DATABASE_URL` to use another. Local TCP collection on Linux reads
+`/proc/net/tcp` and runs only on request - the dashboard, `POST
+/api/v1/collector/start`, or a single `POST /api/v1/collector/poll` -
+never automatically at startup.
+
 ---
 
 ## 5. Live Windows Telemetry (Genuine Host Data)
@@ -261,6 +292,11 @@ Destination hostnames are inferred from **locally observed DNS
 resolutions** read from the Windows DNS client cache. No DNS query is sent
 for this and no external service is contacted.
 
+**Windows only.** On any other platform `POST /enrichment/dns/refresh`
+reports `succeeded: false` and `GET /enrichment/dns/diagnose` says the
+source is Windows-only. Nothing is spawned to find that out (ADR-076), and
+no hostname is attributed from local DNS evidence.
+
 Every attribution carries its method, confidence, evidence timestamp,
 competing candidate hostnames and limitations:
 
@@ -334,11 +370,35 @@ with `synthetic`, `sim` or `test`.
 
 ## 6. Verification & Automated Test Suites
 
-### Run the automated test suite (1070 backend tests, 4 skipped)
+### Run the automated test suite
 
 ```bash
 cd backend && .venv/Scripts/python.exe -m pytest tests/ -v
 ```
+
+On Linux, with a venv at `backend/.venv-linux`:
+
+```bash
+cd backend && .venv-linux/bin/python -m pytest -q -rs
+```
+
+Last recorded results:
+
+| Platform | Revision | Result |
+|---|---|---|
+| Arch Linux, Python 3.14.8 | current (ADR-075 to ADR-077) | **1292 passed, 3 skipped** - two `live_windows` tests and one test of the non-Linux collector branch |
+| Windows 11 | earlier revision | 1070 tests, 4 skipped; not re-run for the current revision |
+
+A skip is not a pass. The tests set their own throwaway database and
+experiment directory (`tests/conftest.py`) and never touch the
+repository's `prahari.db` or `experiments/`.
+
+**SPA tests and `frontend/dist`.** Two tests (deep links, missing assets)
+exercise the checkout's built frontend only when `frontend/dist` exists,
+and otherwise assert nothing. The SPA fallback and its traversal guards are
+tested regardless, against a throwaway build created per test. Run
+`npm run build` in `frontend/` first if you want the checkout's own bundle
+covered.
 
 Two of those tests are marked `live_windows`: they query the real Windows
 connection table and are skipped automatically on other platforms. Run only
@@ -361,6 +421,20 @@ backend/.venv/Scripts/python.exe scripts/verify_live_windows_telemetry.py
 ```powershell
 .\backend\.venv\Scripts\python.exe scripts\verify_live_launcher.py
 ```
+
+On Linux:
+
+```bash
+backend/.venv-linux/bin/python scripts/verify_live_launcher.py
+```
+
+It starts its **own** server on 127.0.0.1 (a free port unless `--port` is
+given) against a throwaway database and manifest directory, with inherited
+`PRAHARI_*` variables removed. It checks health and request ids, SPA
+routing (or the no-build behaviour), ingestion and deduplication, the
+forecasting gate and the collector staying stopped, then stops the server
+and confirms the port closed. It never touches `prahari.db`. Before
+ADR-076 it ran against the default, operational database.
 
 ### Run Empirical Forecasting Audit
 ```powershell
@@ -389,9 +463,12 @@ npm run build
 cd frontend && npm test
 ```
 
-36 tests covering the error boundary, the Feasibility and Stream & Replay
-page contracts and states, numeric-formatting safety, and navigation across
-every tab (including with all API calls failing).
+67 tests in 8 files covering the error boundary, the page contracts and
+states (Feasibility, Stream & Replay, Research, System Health,
+Administration), numeric-formatting safety, and navigation across every
+tab (including with all API calls failing). Verified on Arch Linux
+(Node 26, npm 12): `npm ci`, `tsc` 0 errors, 67 passed, `vite build`
+succeeded (ADR-076). They run under jsdom; no real-browser test exists.
 
 A render error in one page can no longer blank the application: page
 content is wrapped in an `ErrorBoundary` that contains the failure, keeps
@@ -494,8 +571,9 @@ Current position, stated plainly:
   capability and health reporting; target and negative-label semantics;
   dashboard fidelity; the full test matrix including security tests; no
   disruptive response; documented limitations and negative results.
-- **PARTIAL**: Windows verified / Linux not; host sensor tested / network
-  sensor not; manifest covers the local store but no external dataset;
+- **PARTIAL**: Windows verified on earlier revisions, Linux (Arch) verified
+  for the current revision's test suite and loopback startup, neither on
+  both at once; host sensor tested / network sensor not; manifest covers the local store but no external dataset;
   no sequence model (deliberately — see the blueprint's advanced-feature
   rule); lead time and generalization not measured; retention reported but
   not enforced.
@@ -527,6 +605,11 @@ number computed from different inputs as a reproduction.
 
 Timings and timestamps are declared non-deterministic; instance counts,
 split sizes and confusion matrices are expected to match exactly.
+
+Manifests are written to `<repo>/experiments/` unless
+`PRAHARI_EXPERIMENTS_DIR` names another directory (a relative path is
+resolved against the repository root). The test suite always uses a
+temporary one (ADR-074).
 
 ---
 
@@ -588,23 +671,31 @@ the audit log.
 
 ## 16. Platform Support and Network Sensors
 
-PraHari runs on **Windows 11** (fully verified) and on **Linux** (the
-application starts, serves and shuts down cleanly; verified on Ubuntu
-26.04 / Python 3.14.4 in an earlier run).
+PraHari runs on **Windows 11** (verified on earlier revisions, including
+live collection) and on **Linux**: the current revision was run on Arch
+Linux with Python 3.14.8 - 1292 backend tests passed, 3 skipped, and the
+application started on loopback against a disposable database and shut
+down cleanly (ADR-075).
 
-**Linux host telemetry is implemented but not yet executed on Linux.**
-`app/adapters/linux_telemetry.py` reads `/proc/net/tcp` and
-`/proc/net/tcp6` and emits the same raw record shape as the Windows
-adapter, so the collector, normalization and deterministic event identity
-are the same code on both. It is tested against real `/proc` text and
-synthetic `/proc` trees, and four tests that need a live Linux host or
-POSIX symlinks are **declared skips** on Windows. Until those run on
-Linux, this README does not call Linux host collection verified.
+**Linux TCP collection** reads `/proc/net/tcp` and `/proc/net/tcp6`
+(`app/adapters/linux_telemetry.py`) and emits the same raw record shape as
+the Windows adapter, so the collector, normalization and deterministic
+event identity are the same code on both. On Arch the Linux module ran
+30 passed, 1 skipped - the skip is the test of the *non-Linux* selection
+branch - including the live `/proc` read. The collector was not started as
+part of validation.
 
-To verify on an authorized Linux host:
+On Linux the collector reports what it cannot see: no socket creation
+time (poll time, flagged), process names only for processes the user may
+inspect, no DNS-cache enrichment. The UDP-endpoint and interface-counter
+sources and DNS enrichment are **Windows only** and return 501 elsewhere;
+on a platform that is neither Windows nor Linux, TCP collection returns
+501 too.
+
+To re-verify on an authorized Linux host:
 
 ```bash
-cd backend && python -m pytest tests/unit/test_linux_telemetry.py -v
+cd backend && python -m pytest tests/unit/test_linux_telemetry.py -v -rs
 ```
 
 macOS is unassessed and Docker is unverified. See
@@ -850,10 +941,45 @@ database, not prevented on the wire.
 The buffer is **bounded and in memory**: unacknowledged events are lost if
 the process is killed. Other deliberate behaviours:
 
-- 400 / 401 / 403 / 409 / 413 are **not retried** — resending the same
-  bytes is a loop. The batch is dropped with a counted, logged reason.
-- Transient failures retry with bounded exponential backoff and jitter; a
-  server-supplied `Retry-After` wins.
+- 400 / 401 / 403 / 409 are **not retried** — resending the same bytes is
+  a loop. The batch is dropped with a counted, logged reason. A revoked or
+  rotated token therefore loses what is sent until it is replaced.
+- **404 / 405** mean the endpoint URL or method is wrong - the ingest route
+  never returns them about the data - so delivery **halts and keeps the
+  events** (`endpoint_refused`), like a redirect (ADR-077).
+- Records the server rejects individually inside a successful response
+  are counted in `events_rejected_reported` and logged with the server's
+  reasons; they are not delivered and a resend would not change that.
+- An event JSON cannot encode (a `datetime`, for example) is refused on
+  `offer()` and counted in `events_invalid`, instead of failing a whole
+  batch later.
+- A **413** on a multi-event batch keeps the events, and every later
+  multi-event body is kept below the refused size
+  (`learned_max_request_bytes`); the identical body is never resent. A 413
+  for one event alone drops that event and counts it in
+  `events_oversized` (ADR-073).
+- Transient failures (refused connection, timeout, 429, 5xx) retry with
+  bounded exponential backoff and jitter; a server-supplied `Retry-After`
+  wins. The batch is kept unchanged.
+- A connection **dropped mid-request** is ambiguous - outage, size
+  refusal or lost response. It is retried; if every attempt in a round
+  drops, the batch is split (`batches_split_unconfirmed`), and the cap
+  recovers after successful deliveries. A single event that keeps dropping
+  while the event behind it is delivered is moved to an in-memory
+  dead-letter store (`dead_letters()`, `requeue_dead_letters()`), not
+  discarded. A requeue moves only what the buffer has room for. A
+  dead-lettered event may already have been stored (if the response was
+  what kept failing); requeueing it is safe because of deduplication.
+- While the process runs, every event leaves the buffer only by
+  acknowledgement, a counted refusal or oversize drop, a counted overflow,
+  or the dead-letter store. Killing the process loses the buffer and the
+  dead-letter store; both are in memory. During a real outage the probe fails, so nothing is set
+  aside: events stay buffered in order and only the batch size shrinks
+  until deliveries resume.
+- A resend after a lost response, including one regrouped by a split, is
+  absorbed by the server through each event's `event_id` and reported as
+  `duplicates`. Delivery is at-least-once on the wire and at-most-once in
+  storage.
 - Plaintext HTTP to a non-loopback host is **refused at configuration
   time**: a bearer credential over plaintext is compromised on first use.
 - The agent registers no service, opens no port and changes no firewall
@@ -874,10 +1000,13 @@ HTTPS server with a throwaway test PKI):
   events: the channel is at fault, not the data. It is not retried, and
   `channel_refusals` counts it.
 - A batch over `max_request_bytes` is **split** before sending. A server
-  refusing an oversized body closes the connection before reading it, so
-  the client sees a dropped connection rather than a 413 - which used to
-  look transient and was resent forever. A single event too large to send
-  alone is dropped and counted in `events_oversized`.
+  refusing an oversized body may close the connection before reading it,
+  so the client can see a dropped connection rather than a 413 - which
+  used to look transient and was resent forever. Whether the 413 arrives
+  is timing: on Linux loopback it usually does. Both shapes are now
+  bounded (ADR-073). A single event too large to send alone is dropped and
+  counted in `events_oversized`. Set `max_request_bytes` at or below the
+  server's limit; the splitting is a safety net, not a substitute.
 
 ### Audit attribution in central mode
 
@@ -928,7 +1057,7 @@ credentials.
 | Adapter | Status | Boundary |
 |---|---|---|
 | Windows host (`windows_telemetry.py`) | Live-verified | Connection-table polling; metadata only, no packet capture |
-| Linux host (`linux_telemetry.py`) | Implemented, **not run on Linux** | `/proc/net/tcp`; process attribution is partial without elevation |
+| Linux host (`linux_telemetry.py`) | Test suite run on Arch Linux; live `/proc` read tested; collector not started during validation | `/proc/net/tcp`; process attribution is partial without elevation; no creation time |
 | CSV / NDJSON / Zeek / Suricata | Verified against fixtures | Parses exports; no live sensor has fed PraHari |
 | NetFlow / IPFIX (`netflow.py`) | Implemented | Parses **exported** flow text (nfdump, SiLK, YAF). **Not a collector**: it does not speak the binary protocol or open a UDP port |
 | Synthetic replay | Verified | Test fixtures; never evidence of real-world performance |
@@ -954,6 +1083,11 @@ was applied to the live database. The data survived intact, but the guard
 and a WARNING-level log on any migration against a populated table were
 added so it cannot happen silently again.
 
+Experiment manifests are isolated the same way: the suite points
+`PRAHARI_EXPERIMENTS_DIR` at a temporary directory. Before ADR-074 the
+experiment API tests rewrote two manifests in the repository's
+gitignored `experiments/`.
+
 ## 27. What PraHari Does Not Establish
 
 Read this before drawing conclusions from anything above.
@@ -964,12 +1098,16 @@ Read this before drawing conclusions from anything above.
   **BLOCKED**, not met.
 - **No live network-sensor integration.** The Zeek/Suricata adapters are
   verified against fixtures; no real sensor has fed this system.
-- **No Linux host-collection run.** The adapter exists and is tested on
-  fixtures; the Linux-only tests are declared skips on Windows.
+- **No sustained Linux host-collection run.** The current revision's
+  suite passes on Arch, including a live `/proc` read, but the collector
+  was not started and run over time on Linux. Windows has not been re-run
+  for the current revision.
 - **No cryptographic source authenticity.** Credentials are bearer tokens.
   PraHari does not terminate TLS, so central mode must sit behind HTTPS —
   a deployment prerequisite, not a property of this code.
-- **No exactly-once delivery** anywhere, and no automatic blocking,
+- **No exactly-once delivery** anywhere: the agent is at-least-once on the
+  wire, deduplicated in storage, with an in-memory buffer and dead-letter
+  store that are lost if the process is killed. No automatic blocking,
   isolation or remediation. PraHari is advisory.
 
 A passing test suite shows the software behaves as specified. It is not
@@ -982,5 +1120,6 @@ evidence and a command to reproduce it, is in
 [`docs/ACCEPTANCE_MATRIX.md`](docs/ACCEPTANCE_MATRIX.md). It distinguishes
 what is verified, what is partial, what is missing and what is blocked by
 an external resource. PraHari is **not** fully verified: real-data
-forecasting, current-revision Linux, live NetFlow, PostgreSQL and a remote
-TLS deployment are not.
+forecasting, live NetFlow, PostgreSQL and a remote TLS deployment are not.
+The current revision has been verified on Linux (Arch: test suite and
+loopback startup) but not re-run on Windows.
