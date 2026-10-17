@@ -423,6 +423,16 @@ class JsonStreamAdapter(BaseTelemetryAdapter):
             total += 1
             try:
                 record = json.loads(line)
+                if not isinstance(record, dict):
+                    # Valid JSON that is not an object - an array, a number,
+                    # a string, null. It used to reach the validator, which
+                    # called .get() on it and raised AttributeError: one such
+                    # line turned the whole batch into a 500 and cost every
+                    # good record beside it (ADR-068). It is one bad record.
+                    rejection_reasons["record_not_an_object"] = (
+                        rejection_reasons.get("record_not_an_object", 0) + 1
+                    )
+                    continue
                 res = self.validate_and_normalize(
                     record,
                     idx,

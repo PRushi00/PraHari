@@ -141,6 +141,7 @@ def _ingest_ndjson_admitted(
         # objects, but with the time captured at the boundary above.
         event.received_at = received_at
 
+    stored = 0
     if events:
         try:
             stored = db.insert_events(events)
@@ -166,17 +167,25 @@ def _ingest_ndjson_admitted(
                 },
             ) from exc
 
-        # What parsed is not what was written. A retry parses perfectly and
-        # stores nothing, and the caller is entitled to know which happened.
-        summary.stored_records = stored
-        summary.duplicate_records = len(events) - stored
-        controller.record_batch(
-            stored=stored,
-            duplicates=len(events) - stored,
-            rejected=summary.rejected_records,
-            elapsed_ms=admission.elapsed_ms(),
-        )
+    # What parsed is not what was written. A retry parses perfectly and
+    # stores nothing, and the caller is entitled to know which happened.
+    #
+    # Recorded on EVERY path (ADR-068), including a batch in which every
+    # record was rejected. That case used to skip this block entirely, so
+    # the response said "not reported" for a count that was measured -
+    # zero - and the rejections never reached /system/health. A sensor
+    # whose every record fails validation is the failure an operator most
+    # needs to see, and it was the one health could not show.
+    summary.stored_records = stored
+    summary.duplicate_records = len(events) - stored
+    controller.record_batch(
+        stored=stored,
+        duplicates=len(events) - stored,
+        rejected=summary.rejected_records,
+        elapsed_ms=admission.elapsed_ms(),
+    )
 
+    if events:
         db.refresh_source_activity(
             source_id,
             last_event_at=max(e.observed_at for e in events),

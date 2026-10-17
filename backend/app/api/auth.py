@@ -105,7 +105,20 @@ class CentralAuthMiddleware(BaseHTTPMiddleware):
             )
 
         request.state.principal = principal
-        response = await call_next(request)
+        # Published for the audit layer (ADR-067), and reset even when the
+        # route raises, so one request's identity cannot leak into the
+        # next request served from the same context.
+        from app.api.request_context import (
+            describe_principal,
+            reset_principal_identity,
+            set_principal_identity,
+        )
+
+        identity_token = set_principal_identity(describe_principal(principal))
+        try:
+            response = await call_next(request)
+        finally:
+            reset_principal_identity(identity_token)
         response.headers["X-PraHari-Source"] = principal.source_id
         return response
 

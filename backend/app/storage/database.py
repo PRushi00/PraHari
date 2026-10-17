@@ -431,7 +431,7 @@ class Database:
         resource_type: str = "",
         resource_id: str = "",
         details: str = "",
-        user_identity: str = "local_operator",
+        user_identity: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> None:
         """
@@ -449,6 +449,21 @@ class Database:
                 request_id = get_request_id()
             except Exception:  # pragma: no cover - storage must not depend on the API
                 request_id = None
+
+        # The actor (ADR-067): an explicit identity wins; otherwise the
+        # authenticated principal of the request in flight; otherwise the
+        # local operator, which is accurate only because there is then no
+        # authenticated caller - a local deployment, the CLI, a collector.
+        if user_identity is None:
+            try:
+                from app.api.request_context import (
+                    LOCAL_OPERATOR_IDENTITY,
+                    get_principal_identity,
+                )
+
+                user_identity = get_principal_identity() or LOCAL_OPERATOR_IDENTITY
+            except Exception:  # pragma: no cover - storage must not depend on the API
+                user_identity = "local_operator"
 
         with self.get_connection() as conn:
             try:

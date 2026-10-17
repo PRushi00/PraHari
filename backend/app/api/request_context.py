@@ -74,6 +74,44 @@ def reset_request_id(token) -> None:
     _request_id.reset(token)
 
 
+# The authenticated caller, as recorded in audit entries (ADR-067).
+#
+# Before this, no audit call site passed `user_identity`, so in central
+# mode every entry - a sensor's ingest, a credential change, a prune - was
+# attributed to "local_operator": a person at the console who did none of
+# it. The audit log named the wrong actor.
+#
+# Only identifiers are recorded: the credential id, its source and its
+# role. Never the token, and nothing derived from it.
+_principal_identity: ContextVar[Optional[str]] = ContextVar(
+    "prahari_principal_identity", default=None
+)
+
+LOCAL_OPERATOR_IDENTITY = "local_operator"
+
+
+def describe_principal(principal) -> str:
+    """The audit form of an authenticated principal. Contains no secret."""
+    role = getattr(principal.role, "value", principal.role)
+    return (
+        f"credential:{principal.credential_id} "
+        f"source:{principal.source_id} role:{role}"
+    )
+
+
+def get_principal_identity() -> Optional[str]:
+    """The authenticated caller in this context, or None if there is none."""
+    return _principal_identity.get()
+
+
+def set_principal_identity(value: Optional[str]):
+    return _principal_identity.set(value)
+
+
+def reset_principal_identity(token) -> None:
+    _principal_identity.reset(token)
+
+
 def sanitise_request_id(raw: Optional[str]) -> Optional[str]:
     """
     Accept a client-supplied id only if it is safe to persist.
