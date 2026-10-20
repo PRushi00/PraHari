@@ -426,7 +426,12 @@ because their tests were skipped elsewhere.
 
 ## 7. Re-verifying on Windows (current revision)
 
-**Status: not executed.** The Arch host cannot reach the Windows checkout:
+**Status: executed on 17 Oct 2026** for `4360ca3` - results in §7.1, after
+the procedure. Steps 1-5 and 7-10 ran; step 6 (collector lifecycle against
+the operational database) is blocked pending explicit authorization.
+
+The note below is from the Linux side and is kept as written. The Arch
+host cannot reach the Windows checkout:
 the Windows partition is BitLocker-encrypted and unmounted, and the
 machine dual-boots, so Windows cannot run alongside Linux.
 
@@ -454,7 +459,7 @@ steps 6 to 8, which use the running instance deliberately.
 |---|---|---|
 | 1 | `cd backend; .\.venv\Scripts\python.exe -m pytest -q -rs` | All pass; the skips are the Linux-only tests (`/proc` reads, POSIX symlinks, Linux selection, the non-Windows gates) - none of the `live_windows` tests skip |
 | 2 | `.\.venv\Scripts\python.exe -m pytest -m live_windows -v -rs` | 2 passed, against the real connection table |
-| 3 | `.\.venv\Scripts\python.exe ..\scripts\verify_live_launcher.py` | All checks pass; database path under a `prahari-launcher-verify-*` temp directory; port released (the tree is stopped with `taskkill /T`) |
+| 3 | `.\.venv\Scripts\python.exe ..\scripts\verify_live_launcher.py` | All checks pass; database path under a `prahari-launcher-verify-*` temp directory; port released. Since ADR-080 the server is stopped with `CTRL_BREAK`, gracefully, and a forced `taskkill` is a failed check |
 | 4 | `cd ..\frontend; npm ci; npx tsc -p .; npx vitest run` | `tsc` 0 errors; 67 passed |
 | 5 | `npx vite build --outDir $env:TEMP\prahari-spa-check --emptyOutDir` | Build succeeds without touching `frontend\dist` |
 | 6 | **Operator decision:** start PraHari normally, then from the dashboard (or `POST /api/v1/collector/start`), collect for a few polls and stop | `capability_notes` name `Get-NetTCPConnection`; `refresh_dns` on; events persisted; stopping leaves no extra process |
@@ -466,3 +471,76 @@ steps 6 to 8, which use the running instance deliberately.
 Steps 6 to 8 read and write the **operational** database, because that is
 what the running instance uses: that is collection, not a test. Run them
 only when that is intended.
+
+### 7.1 Windows results (17 Oct 2026, revision `4360ca3` plus ADR-078..081)
+
+Windows 11 Home Single Language 10.0.26300 · Python 3.12.0 (project venv) ·
+Node 24.19.0 · npm 12.0.2. Every check used temporary storage; neither
+operational database was opened. `npm ci` was not run: the installed
+dependencies already matched the lockfile (`npm ls` clean), and `npm ci`
+deletes `node_modules`.
+
+| # | Result |
+|---|---|
+| 1 | **1334 passed, 8 skipped, 0 failed**, 3 warnings (Starlette/httpx deprecations). Baseline before this work: 1287 passed, 8 skipped. Skips: 4 Linux `/proc`, 2 non-Windows gates, 1 Linux host-source selection, and the POSIX symlink escape (WinError 1314), whose Windows equivalent now runs as a junction test |
+| 2 | `live_windows`: **8 passed**: the two connection-table tests plus six new endpoint tests |
+| 3 | **21 checks passed, 0 skipped**, under `python` and `python -O`; stopped gracefully, shutdown hook ran, port released. Linux reported 16 + 1 designed skip; the difference is that Windows has a built frontend |
+| 4 | `tsc` 0 errors; Vitest **77 passed** (67 before; +10 for ADR-078/079) |
+| 5 | Build to a temp directory succeeds; `frontend\dist` untouched (hash unchanged). Same 500 kB chunk advisory as Linux |
+| 6 | **Blocked - authorization required.** The single-poll endpoint was not used as a substitute |
+| 7 | Ran against temporary storage, not the running instance. DNS diagnose and refresh executed the **Windows** path, not the platform gate, but the DNS client cache was **empty**: refresh succeeded with 0 entries. Live DNS parsing is therefore unproven on this host (ADR-082) |
+| 8 | Temporary storage: 38 real UDP sockets read; 2 adapters with counters, scope declared |
+| 9 | `-CheckOnly` passes and creates nothing (fingerprint of `dist`, venv and `node_modules` unchanged). It no longer installs or builds (ADR-080) |
+| 10 | Real browser, two isolated servers, every page. Found and fixed: the loopback claim (ADR-078) and local time under UTC headers (ADR-079). Expected 404s: `/sources/windows_local_host` before first collection (handled), `/favicon.ico` on non-HTML responses. No server errors |
+
+Windows-only evidence, separated from mocks:
+- **Real OS:** `Get-NetTCPConnection` (live tests), `Get-NetUDPEndpoint`,
+  `Get-NetAdapterStatistics`, the DNS client cache and resolver diagnosis,
+  a directory junction against both static paths, real PowerShell running
+  the launcher, `CTRL_BREAK` shutdown, and a missing PowerShell executable.
+- **Stand-ins:** PowerShell timeout, nonzero exit and output shapes
+  (`test_windows_query_subprocess.py`), stated as such in that file.
+
+### 7.2 Windows closure, second pass (17 Oct 2026, ADR-083..086)
+
+| Check | Result |
+|---|---|
+| Backend `pytest -q -rs` | 1334 passed, 8 skipped, 0 failed, 3 warnings |
+| `pytest -m live_windows -v` | **15 passed**: connection table (2), collector lifecycle into a temporary database (2), DNS-cache pipeline through real PowerShell (5), host-observation and DNS endpoints (6) |
+| `verify_live_launcher.py` (`python`, `python -O`) | 21/21 each, graceful stop |
+| Frontend | `tsc` 0; Vitest 90 passed; build to a temporary directory OK |
+| Real browser | Deep links, refresh, back/forward, aliases, unknown routes; System Health and Administration now reachable |
+
+Fixed: a new collector inherited the previous one's deduplication cache and
+configuration (ADR-083); the dashboard had no URLs and two unreachable
+pages (ADR-084); four defects in the first pass's own changes (ADR-085).
+
+Still open: `Get-DnsClientCache` returning populated objects (the cache on
+this host is empty); a shutdown hang seen twice with a real browser and not
+reproduced (ADR-086); a Linux re-run of ADR-080 and ADR-083;
+`frontend/dist` to be rebuilt by the operator.
+
+### 7.3 Re-validation on Python 3.12.10 (17 Oct 2026, ADR-087, ADR-088)
+
+Python 3.12.10 was installed on this host after §7.1-7.2 were measured on
+3.12.0, so every check was repeated rather than inherited.
+
+| Check | Result on 3.12.10 |
+|---|---|
+| Backend `pytest -q -rs` | 1334 passed, 8 skipped, 0 failed, 3 warnings |
+| `pytest -m live_windows` | 15 passed |
+| `verify_live_launcher.py` (`python`, `-O`) | 23/23 each (now including `/system-health` and `/admin`), graceful |
+| Real `start_prahari.ps1` on a temporary database | Served the rebuilt `frontend/dist`; every client route; binding `CONFIGURED`; real browser opened deep links and showed `LOOPBACK CONFIGURED`; stopped gracefully with the browser open |
+| Frontend | `tsc` 0; 90 passed; `frontend/dist` rebuilt (byte-identical to the build already present) |
+| Static | 144 Python files parse with warnings as errors; `start_prahari.ps1` 0 parse errors |
+
+The DNS client cache on this host is still empty (0 entries), so the one
+unproven DNS step remains unproven.
+
+### 7.4 Final run before the Windows commit (ADR-089)
+
+After the independent review's fixes: backend 1336 passed, 8 skipped, 0
+failed; `live_windows` 15 passed; verifier 23/23 under `python` and `-O`;
+frontend `tsc` 0 and 91 passed; static 144 files, 0 problems. The real
+launcher on a temporary database served the rebuilt `frontend/dist` and
+stopped gracefully. Python 3.12.10, Node 24.20.0.

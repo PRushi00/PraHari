@@ -92,6 +92,19 @@ class AdapterRegistry:
         self._adapters[adapter.adapter_id] = adapter
         return adapter
 
+    def replace(self, adapter: BaseTelemetryAdapter) -> BaseTelemetryAdapter:
+        """
+        Register `adapter`, replacing any instance already under its id.
+
+        For an owner whose adapter carries per-instance STATE that must not
+        be inherited (ADR-083). `register` deliberately returns an existing
+        instance, which is right for a stateless file adapter but made every
+        new collector reuse the previous collector's deduplication cache and
+        configuration.
+        """
+        self._adapters[adapter.adapter_id] = adapter
+        return adapter
+
     def get(self, adapter_id: str) -> Optional[BaseTelemetryAdapter]:
         return self._adapters.get(adapter_id)
 

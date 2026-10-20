@@ -21,6 +21,8 @@ const TABS = [
   "Analytics",
   "Feasibility",
   "Threat Forecasting",
+  "System Health",
+  "Administration",
   "Audit & Security",
 ];
 

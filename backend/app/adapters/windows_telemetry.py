@@ -70,6 +70,18 @@ DEFAULT_TCP_STATES = (
     "TimeWait",
 )
 
+# Every value of the NetTCPConnection State enum, as Windows itself reports
+# them (read from `[enum]::GetNames(...)` on Windows 11, build 26300).
+#
+# `states` is interpolated into the PowerShell script inside quotes. Today
+# only DEFAULT_TCP_STATES is ever passed, so nothing is exploitable - but
+# the first caller to pass a configurable value would otherwise inject
+# PowerShell. An allow-list closes that before it can exist.
+VALID_TCP_STATES = frozenset({
+    "Closed", "Listen", "SynSent", "SynReceived", "Established", "FinWait1",
+    "FinWait2", "CloseWait", "Closing", "LastAck", "TimeWait", "DeleteTCB", "Bound",
+})
+
 # PowerShell emits one JSON object per connection. Timestamps are forced to
 # round-trip ISO-8601 UTC ('o') so host locale settings cannot corrupt them.
 _PS_COLLECT_SCRIPT = r"""
@@ -156,6 +168,13 @@ def query_windows_connections(
     name. Processes owned by other users are not visible without elevation;
     their names simply come back absent, which is reported rather than guessed.
     """
+    unknown = [s for s in states if s not in VALID_TCP_STATES]
+    if unknown or not states:
+        # Refused before any process is spawned.
+        raise ValueError(
+            f"Unknown TCP state(s) {unknown!r}; expected a non-empty subset of "
+            f"{sorted(VALID_TCP_STATES)}"
+        )
     state_literal = ",".join(f"'{s}'" for s in states)
     script = _PS_COLLECT_SCRIPT.format(
         states=state_literal,

@@ -14,6 +14,13 @@ operator's data:
   * the server is stopped, and the port checked closed, however the checks
     end; the throwaway directory is then removed.
 
+Shutdown is GRACEFUL first, then forced only if that fails. On Windows the
+server runs in its own process group and receives CTRL_BREAK, which
+uvicorn handles; elsewhere it receives SIGTERM. Before this, Windows always
+used `taskkill /F`, so the application's shutdown hook never ran there and
+"clean shutdown" was claimed without being exercised. The report says
+which way the server stopped, and a forced stop is a failed check.
+
 Before this, the script started uvicorn against the default (operational)
 database and posted a fabricated flow labelled `live_telemetry` into it,
 and its checks were `assert` statements that `python -O` removes.
@@ -29,6 +36,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -88,21 +96,47 @@ def _request(base: str, method: str, path: str, body: dict | None = None):
         return status, headers, text
 
 
-def _stop(proc: subprocess.Popen) -> None:
+GRACEFUL_TIMEOUT_SECONDS = 15
+
+
+def _popen_flags() -> int:
+    # Its own process group, so CTRL_BREAK reaches the server (and the real
+    # interpreter behind a venv launcher) without reaching this script.
+    return subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+
+
+def _stop(proc: subprocess.Popen) -> str:
+    """
+    Stop the server: gracefully if possible, by force only if not.
+
+    Returns "already_exited", "graceful" or "forced".
+    """
     if proc.poll() is not None:
-        return
+        return "already_exited"
+    try:
+        if os.name == "nt":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.terminate()
+        proc.wait(timeout=GRACEFUL_TIMEOUT_SECONDS)
+        return "graceful"
+    except (subprocess.TimeoutExpired, OSError):
+        # The signal can fail because the server exited between poll() and
+        # send_signal(); that is not a forced stop and is not reported as one.
+        if proc.poll() is not None:
+            return "already_exited"
     if os.name == "nt":
         # A venv python.exe may be a launcher with the real interpreter as
         # a child; stop the whole tree.
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                        capture_output=True, timeout=30)
     else:
-        proc.terminate()
+        proc.kill()
     try:
         proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=15)
+        pass
+    return "forced"
 
 
 def run(python: str, port: int) -> int:
@@ -131,6 +165,7 @@ def run(python: str, port: int) -> int:
         [python, "-m", "uvicorn", "app.main:app", "--app-dir", str(BACKEND),
          "--host", HOST, "--port", str(port), "--log-level", "info"],
         cwd=str(work), env=env, stdout=log, stderr=subprocess.STDOUT,
+        creationflags=_popen_flags(),
     )
     try:
         deadline = time.monotonic() + 60
@@ -158,7 +193,8 @@ def run(python: str, port: int) -> int:
         if spa_built:
             c.check(status == 200 and "text/html" in headers.get("content-type", "")
                     and "PraHari" in str(body), "GET / serves the SPA shell")
-            for route in ["/events", "/forecast", "/analytics", "/stream"]:
+            # Includes the two pages that had no navigation entry (ADR-084).
+            for route in ["/events", "/forecast", "/analytics", "/stream", "/system-health", "/admin"]:
                 s, h, _ = _request(base, "GET", route)
                 c.check(s == 200 and "text/html" in h.get("content-type", ""),
                         f"deep link {route} falls back to the shell")
@@ -211,9 +247,13 @@ def run(python: str, port: int) -> int:
                 "collector reports itself not started", f"state={col.get('state')}")
     finally:
         print("\n[5] Shutdown")
-        _stop(proc)
+        how = _stop(proc)
         log.close()
         c.check(proc.returncode is not None, "server process exited", f"code={proc.returncode}")
+        c.check(how == "graceful", "stopped gracefully, without force", how)
+        server_log = (work / "server.log").read_text(encoding="utf-8", errors="replace")
+        c.check("Application shutdown complete" in server_log,
+                "the application's shutdown hook ran")
         time.sleep(0.5)
         c.check(not _listening(port), f"port {port} released")
         shutil.rmtree(work, ignore_errors=True)

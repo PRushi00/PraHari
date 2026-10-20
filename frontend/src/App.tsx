@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Header, NavTab } from "./components/Header";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -12,6 +12,8 @@ import { ForecastPage } from "./pages/ForecastPage";
 import { SystemHealthPage } from "./pages/SystemHealthPage";
 import { AdministrationPage } from "./pages/AdministrationPage";
 import { AuditPage } from "./pages/AuditPage";
+import { NotFoundPage } from "./pages/NotFoundPage";
+import { pathFor, resolvePath } from "./routing";
 import { api } from "./services/api";
 import { HealthResponse } from "./types";
 
@@ -30,7 +32,36 @@ const PAGE_LABELS: Record<string, string> = {
 };
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<NavTab>("overview");
+  // The URL is the source of truth for the page (ADR-084): a deep link or
+  // a refresh opens the page it names, and back/forward move between pages.
+  const [route, setRoute] = useState(() => resolvePath(window.location.pathname));
+  const activeTab = route.tab;
+
+  const setActiveTab = useCallback((tab: NavTab) => {
+    const path = pathFor(tab);
+    if (window.location.pathname !== path) {
+      window.history.pushState({ tab }, "", path);
+    }
+    setRoute({ tab, canonicalPath: path });
+  }, []);
+
+  useEffect(() => {
+    // An alias or trailing slash is shown as the canonical path, without
+    // adding a history entry.
+    const initial = resolvePath(window.location.pathname);
+    if (initial.tab && initial.canonicalPath !== window.location.pathname) {
+      window.history.replaceState({ tab: initial.tab }, "", initial.canonicalPath);
+    }
+    const onPopState = () => setRoute(resolvePath(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    document.title = activeTab
+      ? `${PAGE_LABELS[activeTab]} · PraHari`
+      : "Page not found · PraHari";
+  }, [activeTab]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loadingHealth, setLoadingHealth] = useState(true);
 
@@ -64,7 +95,17 @@ export const App: React.FC = () => {
         {/* A render error inside a page must not unmount the application.
             Keying on activeTab resets the boundary on navigation, so a
             failed view recovers instead of staying broken forever. */}
-        <ErrorBoundary pageName={PAGE_LABELS[activeTab] ?? activeTab} resetKey={activeTab}>
+        <ErrorBoundary
+          pageName={activeTab ? PAGE_LABELS[activeTab] : "Page not found"}
+          resetKey={activeTab ?? `not-found:${route.canonicalPath}`}
+        >
+        {activeTab === null && (
+          <NotFoundPage
+            path={route.canonicalPath}
+            labels={PAGE_LABELS}
+            onNavigate={setActiveTab}
+          />
+        )}
         {activeTab === "overview" && (
           <OverviewPage
             onNavigateToImport={() => setActiveTab("import")}

@@ -1121,5 +1121,47 @@ evidence and a command to reproduce it, is in
 what is verified, what is partial, what is missing and what is blocked by
 an external resource. PraHari is **not** fully verified: real-data
 forecasting, live NetFlow, PostgreSQL and a remote TLS deployment are not.
-The current revision has been verified on Linux (Arch: test suite and
-loopback startup) but not re-run on Windows.
+The Linux evidence is for revision `4360ca3` (Arch: test suite and loopback
+startup). The Windows evidence below is for the `windows-closure` changes
+built on it, which have **not yet been re-run on Linux**.
+
+### Windows validation (17 Oct 2026, `windows-closure`)
+
+Measured on Windows 11 (build 26300), Python 3.12.10 (ADR-087; earlier
+Windows runs were on 3.12.0), Node 24.20.0:
+
+| Check | Result |
+|---|---|
+| Backend `pytest -q -rs` | 1336 passed, 8 skipped (Linux-only, non-Windows gates, POSIX symlink), 0 failed |
+| `pytest -m live_windows` | 15 passed: connection table, collector lifecycle into a temporary database, DNS-cache pipeline through real PowerShell, host-observation endpoints |
+| `scripts/verify_live_launcher.py` | 23/23 under `python` and `python -O`, graceful stop |
+| Frontend | `tsc` 0 errors, 91 tests passed, production build OK |
+| Real launcher + browser | `start_prahari.ps1` on a temporary database served the current `frontend/dist`, deep links, refresh, back/forward and the binding card, and stopped gracefully |
+
+Fixed on Windows: a dashboard card that claimed "LOOPBACK ENFORCED"
+unconditionally (ADR-078, ADR-089), UTC-headed tables showing local time
+(ADR-079), a `-CheckOnly` that installed and built (ADR-080), collectors
+inheriting each other's deduplication cache and configuration (ADR-083), and
+a dashboard without URLs, with two unreachable pages (ADR-084).
+
+`frontend/dist` is a local, git-ignored build. Rebuild it with
+`cd frontend; npm run build` after pulling frontend changes; the launcher
+serves whatever is there.
+
+**Not established on Windows:**
+- **Live DNS cache entries.** The DNS client cache on the test host was
+  empty. The pipeline was proven through real PowerShell over instances of
+  the real CIM class, but not on cached entries (ADR-086).
+- **The shutdown hang.** Two hangs were seen on Python 3.12.0 with a real
+  browser. None occurred on 3.12.10, and none was reproduced; no fix is
+  applied (ADR-087).
+- **The application's collector against `prahari.db`.** It has been run
+  only into temporary databases; running it on operational data is an
+  operator decision.
+
+**Labelled data, checked without downloading.** The forecasting pipeline's
+requirements are in `docs/FORECASTING_DATA_REQUIREMENTS.md`. Of
+CSE-CIC-IDS2018's ten processed CSVs only one (Tuesday 20-02-2018, 4.05 GB)
+has the address columns the importer requires (ADR-088; options in
+`docs/DATASET_ACQUISITION.md`). No dataset has been downloaded and no
+forecasting result is claimed.

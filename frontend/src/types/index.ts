@@ -322,11 +322,18 @@ export interface SecurityConfig {
   deployment_mode: string;
   host_binding: string;
   port: number;
-  loopback_enforced: boolean;
+  // null: the configuration does not describe the listener (ADR-089).
+  loopback_enforced: boolean | null;
   authentication_required: boolean;
   max_request_size_mb: number;
   database_url: string;
   retention_days: number;
+  // Measured, not configured (ADR-078): the local address the request
+  // actually arrived on, and whether the configuration describes it.
+  serving_host?: string | null;
+  serving_port?: number | null;
+  listener_matches_configuration?: boolean | null;
+  binding_evidence?: string;
   security_boundaries: Record<string, unknown>;
 }
 

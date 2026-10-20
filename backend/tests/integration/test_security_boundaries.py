@@ -43,7 +43,8 @@ def test_default_binding_is_loopback():
 
 def test_security_config_reports_loopback_and_no_capture(client):
     c, _ = client
-    cfg = c.get("/api/v1/audit/config").json()
+    # Arrive on the configured listener; see ADR-089.
+    cfg = c.get("http://127.0.0.1:8000/api/v1/audit/config").json()
     assert cfg["loopback_enforced"] is True
     assert cfg["security_boundaries"]["packet_capture_in_use"] is False
     assert cfg["security_boundaries"]["external_telemetry_transmission"] is False
