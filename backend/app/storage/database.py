@@ -735,15 +735,23 @@ class Database:
         return [r["event_id"] for r in rows]
 
     def delete_events_by_id(self, event_ids: list[str]) -> int:
-        """Delete exactly these events. One transaction, so a batch is atomic."""
+        """
+        Delete exactly these events; return how many rows were ACTUALLY removed.
+
+        Not `len(event_ids)`. The caller selects ids and deletes them in two
+        statements, so a row another writer removed in between is already
+        gone - counting it here would report a deletion this run did not
+        perform. The difference matters because that count is what the
+        retention result tells an operator was destroyed.
+        """
         if not event_ids:
             return 0
         with self.get_connection() as conn:
-            conn.executemany(
+            cur = conn.executemany(
                 "DELETE FROM normalized_events WHERE event_id = ?",
                 [(i,) for i in event_ids],
             )
-        return len(event_ids)
+            return cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
 
     # ──────────────── diagnostics (ADR-093) ────────────────
 

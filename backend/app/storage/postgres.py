@@ -464,14 +464,19 @@ class PostgresStore:
         return [r["event_id"] for r in rows]
 
     def delete_events_by_id(self, event_ids: list[str]) -> int:
+        """
+        Delete exactly these events; return how many rows were ACTUALLY
+        removed - not `len(event_ids)`. See the SQLite backend's note: the
+        count is what an operator is told was destroyed.
+        """
         if not event_ids:
             return 0
         with self.get_connection() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "DELETE FROM normalized_events WHERE event_id = ANY(%s)",
                 (list(event_ids),),
             )
-        return len(event_ids)
+            return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     # ──────────────── diagnostics (ADR-093) ────────────────
 

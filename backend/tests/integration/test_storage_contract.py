@@ -411,3 +411,20 @@ def test_diagnostics_event_count_tracks_what_is_stored(store):
     before = store.storage_diagnostics()["event_count"]
     store.insert_events([_ev("src-a", i) for i in range(6)])
     assert store.storage_diagnostics()["event_count"] == before + 6
+
+
+def test_deletion_reports_rows_actually_removed_not_ids_supplied(store):
+    """
+    The count is what an operator is told was destroyed.
+
+    Selecting ids and deleting them are two statements, so an id that is
+    already gone must not be counted as this call's deletion.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(4)])
+
+    assert store.delete_events_by_id(["src-a-0", "src-a-1"]) == 2
+    # Re-deleting the same ids removes nothing, and says so.
+    assert store.delete_events_by_id(["src-a-0", "src-a-1"]) == 0
+    # A mix of present and absent counts only the present one.
+    assert store.delete_events_by_id(["src-a-2", "never-existed"]) == 1
+    assert store.count_events(source_id="src-a") == 1

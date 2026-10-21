@@ -196,8 +196,13 @@ class RetentionService:
             )
             if not ids:
                 break
-            self.db.delete_events_by_id(ids)
-            deleted_total += len(ids)
+            # Count what was actually removed: selecting and deleting are
+            # two statements, so a row another writer removed in between is
+            # not this run's deletion to report.
+            removed = self.db.delete_events_by_id(ids)
+            if removed == 0:
+                break
+            deleted_total += removed
             batches += 1
             logger.info(
                 "Retention: deleted batch of %d (total %d)", len(ids), deleted_total

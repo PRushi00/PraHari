@@ -4336,8 +4336,20 @@ source scoping; oldest-first deletion touching only what was named; an
 empty category list refused rather than read as "everything"; and
 diagnostics never reporting a check that was not run.
 
-Backend with a server: **1424 passed, 22 skipped, 0 failed**. Without a
-DSN: 1386 passed, 60 skipped. Frontend: `tsc` 0, 100 passed, build OK.
+Backend with a server: **1426 passed, 22 skipped, 0 failed**. Without a
+DSN: 1387 passed, 61 skipped. Frontend: `tsc` 0, 100 passed, build OK.
+
+### A semantic change the move introduced, and its fix
+The original retention loop selected ids and deleted them **inside one
+transaction**. Behind the contract they are two calls, so a row another
+writer removed in between would have been counted as this run's deletion.
+
+`delete_events_by_id` therefore returns the rows **actually** removed —
+`cursor.rowcount`, not `len(event_ids)` — and retention adds that rather
+than the number of ids it asked for. The count is what an operator is
+told was destroyed, so it has to be a measurement rather than an
+intention. Both backends are tested on it: re-deleting the same ids
+returns 0, and a mix of present and absent ids counts only the present.
 
 ### Incidental fix
 `audit.py`'s route accepted only `limit`, while the dashboard had been
