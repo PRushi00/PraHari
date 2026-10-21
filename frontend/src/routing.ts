@@ -7,7 +7,7 @@
 // and Administration - had no navigation entry at all and could not be
 // reached.
 //
-// No router dependency: the application has twelve flat pages and no
+// No router dependency: the application has thirteen flat pages and no
 // nested routes, which the History API covers directly.
 
 import type { NavTab } from "./components/Header";
@@ -23,6 +23,7 @@ export const ROUTES: Record<NavTab, string> = {
   analysis: "/analytics",
   research: "/feasibility",
   forecast: "/forecast",
+  investigate: "/investigate",
   system: "/system-health",
   admin: "/admin",
   audit: "/audit",
@@ -41,6 +42,7 @@ const ALIASES: Record<string, NavTab> = {
   "/administration": "admin",
   "/security": "audit",
   "/telemetry-sources": "sources",
+  "/investigation": "investigate",
 };
 
 const BY_PATH: Record<string, NavTab> = Object.fromEntries(

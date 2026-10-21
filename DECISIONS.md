@@ -5251,3 +5251,97 @@ rewrite buys a conflict for no benefit. The route must be added to the
 verifier, and the verifier re-run, once that work merges. Until then
 this page has jsdom coverage only — which is exactly the gap ADR-098 was
 written about.
+
+---
+
+## ADR-109: An Investigation View, and Two Bugs Only the Endpoint Test Found
+
+### Context
+Blueprint §11 lists an **Investigation** view: a drill-down "from a
+warning to its input window, contributing features, source references
+and related events". `BLUEPRINT_COVERAGE.md` carried it as `ABSENT` —
+the last absent item in §11.
+
+Feature contributions existed on the Forecast page for a **live**
+prediction. Nothing connected a **recorded** warning to the window that
+produced it, because `HoldoutPredictions` kept scores and times but not
+feature rows.
+
+### Decision
+`research/investigation.py` and `POST /forecast/investigate`, reading
+the evaluation already in memory and running the same event-level
+matching protocol, so a warning index here means what it means there.
+`InvestigationPage.tsx` at `/investigate`.
+
+**The holdout now retains feature rows — but only for the four models
+whose input IS one window's canonical feature vector.** Persistence
+takes an attack indicator, the temporal stack is lag-stacked and the
+LSTM is three-dimensional; for those no row is stored, and the
+investigation reports contributions absent **with the reason** rather
+than attributing a score to the wrong feature names. The alignment
+check mirrors the one already guarding times: a misalignment would
+explain one window's score with another window's features, which is
+worse than having no explanation at all.
+
+**The attribution ships with what it is not.** It is `value x GLOBAL
+importance` — deliberately the same formula the live path uses, because
+two different numbers for one concept would be worse than one crude
+number. It is **not** a local explanation: a feature sitting at its
+baseline in this window still scores highly if it matters globally. The
+response carries `attribution_method` and `attribution_limitations`
+saying so, including that SHAP or permutation on the row would be a
+different measurement and is not implemented. The UI renders those
+**with** the table, not behind a disclosure, because the numbers read as
+an explanation on their own.
+
+Source counts are computed over the **whole** window rather than the
+shown subset, so a truncated view cannot misreport who contributed.
+
+`FeatureContribution` was previously a dict built in code, and
+`test_frontend_api_contract` carried it paired with `None` — "built in
+code, not a Pydantic model". It is now a real model, so that escape
+hatch becomes a genuine pairing and the dashboard's contribution panel
+is pinned to the backend like everything else.
+
+### Two bugs only the endpoint test found
+The first version of these tests exercised `investigate_warning`
+directly and never the route. Two defects passed everything:
+
+* `level.warnings` — **no such field**; it is `warnings_detail`;
+* `extractor.observation_window_seconds` — **no such attribute**; it is
+  `window_size_seconds`.
+
+Both would have raised on the first real request. This is ADR-104's
+lesson in a second place, and from the same hand: a path with no caller
+is not covered by tests of the thing it calls. The route is now driven
+on both its refusal and its happy path, and the mutation restoring
+`level.warnings` fails that test.
+
+Getting the happy path to actually run took one more step worth
+recording: the test first **skipped**, because the active model issues
+no warnings on the synthetic stream and a skip is not a pass. Only
+`baseline_threshold` warns there — the learned models warn zero times,
+which is consistent with this project's wider result — so the test names
+that model explicitly.
+
+### Verification
+18 backend tests (10 investigation, 8 earlier) and 7 frontend tests.
+Mutation-checked: attributing anyway when a model has no feature rows,
+counting sources over the shown subset, dropping the attribution
+limitations (backend and UI separately), showing the shown-count as the
+whole-window count, and the wrong `warnings` attribute — each breaks the
+test that names it.
+
+Backend **1513 passed, 22 skipped, 0 failed** (Linux, real PostgreSQL
+16.15). Frontend `tsc` 0, **116 passed**, build succeeds.
+
+### Not established
+`scripts/verify_browser_session.py`'s hardcoded route list covers
+neither `/sources` nor `/investigate`, so both new pages have **jsdom
+coverage only** — the gap ADR-098 exists about. That file is being
+rewritten concurrently by the Windows verification session (ADR-102);
+both routes must be added and the verifier re-run once that merges.
+
+The drill-down reads the **in-memory** holdout, so it is available only
+in a process where training has run. Predictions are still not
+persisted, so a warning from an earlier process cannot be investigated.

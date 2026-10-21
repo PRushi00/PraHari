@@ -314,4 +314,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data || {}),
     }),
+
+  // §11 investigation drill-down (ADR-109): the evidence behind one
+  // RECORDED warning, as opposed to the live prediction the Forecast
+  // page explains.
+  investigateWarning: (data: {
+    warning_index: number;
+    model_id?: string;
+    source_id?: string;
+    episode_gap_seconds?: number;
+    suppression_seconds?: number;
+    threshold?: number;
+  }): Promise<import("../types").WarningInvestigation> =>
+    request<import("../types").WarningInvestigation>("/forecast/investigate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
 };

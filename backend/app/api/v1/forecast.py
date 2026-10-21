@@ -909,11 +909,11 @@ def investigate_a_warning(
     metrics = pipeline.model_metrics.get(target)
     return investigate_warning(
         warning_index=req.warning_index,
-        warnings=level.warnings,
+        warnings=level.warnings_detail,
         events=events,
         model_id=target,
         prediction_times=times,
         features=held.features_for(target),
         importances=(metrics.feature_importance if metrics else {}),
-        observation_window_seconds=extractor.observation_window_seconds,
+        observation_window_seconds=extractor.window_size_seconds,
     )

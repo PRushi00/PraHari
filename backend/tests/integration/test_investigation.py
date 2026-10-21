@@ -273,3 +273,118 @@ def test_the_attribution_carries_its_limitations(scenario):
     assert "not a local explanation" in joined
     assert "shap" in joined
     assert "do not sum to the score" in joined
+
+
+# ──────────────────────────────────────────────────────────────────
+# The endpoint itself
+# ──────────────────────────────────────────────────────────────────
+#
+# These tests originally exercised `investigate_warning` directly and
+# never the route. A wrong attribute in the handler — `level.warnings`,
+# which does not exist; the field is `warnings_detail` — therefore passed
+# everything and would have raised on the first real request. That is
+# ADR-104's lesson in a second place, so the route is driven here on both
+# its refusal and its happy path.
+
+
+def _app_with(db):
+    from fastapi import FastAPI
+
+    from app.api.deps import get_db
+    from app.api.v1.router import api_v1_router
+
+    app = FastAPI()
+    app.include_router(api_v1_router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db
+    return app
+
+
+def test_the_endpoint_refuses_before_any_evaluation(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app.models.registry import reset_forecasting_pipeline
+    from app.storage.database import Database
+
+    db = Database(str(tmp_path / "inv.db"))
+    db.initialize()
+    reset_forecasting_pipeline()
+    try:
+        with TestClient(_app_with(db)) as client:
+            r = client.post("/api/v1/forecast/investigate", json={"warning_index": 0})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "no_evaluation_in_memory"
+    finally:
+        reset_forecasting_pipeline()
+        db.close()
+
+
+def test_the_endpoint_returns_a_real_drill_down(tmp_path):
+    """
+    The happy path, which is the one the wrong attribute name broke.
+    Trains on the same synthetic stream the event-level API tests use,
+    so the warnings are real ones produced by the real protocol.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.models.registry import get_forecasting_pipeline, reset_forecasting_pipeline
+    from app.storage.database import Database
+    from tests.integration.test_event_level_api import _stream
+
+    events = _stream()
+    db = Database(str(tmp_path / "inv2.db"))
+    db.initialize()
+    db.upsert_source(
+        __import__("app.schemas.events", fromlist=["TelemetrySource"]).TelemetrySource(
+            source_id="src-synth", name="synthetic", source_type="synthetic_replay"
+        )
+    )
+    db.insert_events(events)
+
+    reset_forecasting_pipeline()
+    try:
+        pipeline = get_forecasting_pipeline()
+        pipeline.train_and_evaluate_all(events, train_ratio=0.7)
+
+        with TestClient(_app_with(db)) as client:
+            # The rate-threshold baseline is the model that issues a
+            # warning on this stream; the learned models issue none, which
+            # is itself consistent with this project's wider result. Named
+            # explicitly so the happy path runs rather than skipping.
+            target = "baseline_threshold"
+            level = client.post(
+                "/api/v1/forecast/event-level", json={"model_id": target}
+            )
+            assert level.status_code == 200, level.text
+            warnings = level.json().get("warnings_detail") or []
+            assert warnings, (
+                "baseline_threshold issued no warning on this stream, so "
+                "the drill-down's happy path would go untested"
+            )
+
+            r = client.post(
+                "/api/v1/forecast/investigate",
+                json={
+                    "warning_index": warnings[0]["warning_index"],
+                    "model_id": target,
+                },
+            )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["available"] is True
+        assert body["warning_index"] == warnings[0]["warning_index"]
+        assert body["model_id"] == target
+        # baseline_threshold is a flat model, so contributions must be
+        # present — the branch that needs the retained feature rows.
+        assert body["contributions_available"] is True
+        assert body["contributions"], "a flat model must produce contributions"
+        # The four things §11 asks for are present as fields, whatever
+        # this particular window happens to contain.
+        for key in ("window_events", "contributions", "sources", "related_before"):
+            assert key in body
+        assert "not a local explanation" in " ".join(
+            body["attribution_limitations"]
+        ).lower()
+    finally:
+        reset_forecasting_pipeline()
+        db.close()
