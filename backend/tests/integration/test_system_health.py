@@ -313,12 +313,39 @@ def test_queue_depth_is_null_because_there_is_no_queue(client):
 
 
 def test_unmeasured_inference_latency_is_null_not_zero(client):
+    """
+    Until ADR-106 this asserted `is None` unconditionally, which held
+    only because the field was a hardcoded constant — it pinned a
+    literal, not a behaviour. There is now a real instrument, and
+    whether it has samples depends on whether anything in this process
+    ran a prediction first.
+
+    So this asserts the invariant the test's own name claims, exactly as
+    `test_model_availability_matches_the_registry_exactly` below does for
+    the model registry: either nothing was measured and the field is
+    absent, or it carries real samples. What must never appear is a
+    populated shape full of nulls or zeros, which would read as a
+    measurement of instantaneous inference.
+    """
     c, _ = client
 
     models = c.get("/api/v1/system/health").json()["models"]
+    if not models["available"]:
+        return
 
-    if models["available"]:
-        assert models["data"]["inference_latency"] is None
+    latency = models["data"]["inference_latency"]
+    if latency is None:
+        return  # nothing measured: absence reported as absence
+
+    assert latency["all_models"]["samples"] > 0
+    for field in ("p50_ms", "p95_ms", "max_ms"):
+        assert latency["all_models"][field] is not None
+        assert latency["all_models"][field] > 0, (
+            f"{field} is {latency['all_models'][field]}: a zero claims "
+            "instantaneous inference"
+        )
+    # And it says what it measured, so nobody reads it as endpoint latency.
+    assert "predict_recent_window" in latency["measures"]
 
 
 def test_model_availability_matches_the_registry_exactly(client):

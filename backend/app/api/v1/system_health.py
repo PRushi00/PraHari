@@ -35,6 +35,7 @@ from app.api.deps import get_db
 from app.core.config import AppConfig, get_config
 from app.schemas.events import SCHEMA_VERSION
 from app.services.admission import get_admission_controller
+from app.services.inference_metrics import get_inference_metrics
 from app.services.source_health import summarize_source_health
 from app.storage.database import Database
 
@@ -211,9 +212,10 @@ def _models_block(db: Database) -> Block:
                 "Metrics for these models come from the data they were "
                 "trained on in this process."
             ),
-            # Not measured anywhere yet: there is no inference-latency
-            # instrument, so this is null rather than an invented figure.
-            "inference_latency": None,
+            # Measured since ADR-106. Still null — not a zero-filled
+            # structure — until a prediction has actually run, because an
+            # empty shape full of nulls reads as a measurement.
+            "inference_latency": get_inference_metrics().summary(),
         },
     )
 

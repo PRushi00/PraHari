@@ -4948,3 +4948,169 @@ PostgreSQL branch of `store_identity()` is covered by tests that run
 without a server, but `event_breakdown()` and the ADR-099 reservation
 guard on PostgreSQL remain unexercised — no server was available, and
 those tests skip rather than pass against a mock.
+
+---
+
+## ADR-104: The PostgreSQL Backend Is Now Exercised, Including a Path That Never Ran
+
+### Context
+ADR-092 built `PostgresStore`, ADR-097 made it selectable, and ADR-100
+added `event_breakdown()` to the storage contract and implemented it in
+both backends. Every one of those closed with the same caveat: the
+PostgreSQL tests **skip** without a server, and skipping is not passing.
+
+The container running this work was recycled between sessions, so the
+server ADR-092 and ADR-097 used was gone and 44 tests were skipping.
+
+### Decision
+Run a real server here and close the caveat rather than carry it
+forward. PostgreSQL 16.15, initialised in a throwaway cluster owned by
+the `postgres` user, trust auth, loopback socket only.
+
+Full suite **with** the server: **1474 passed, 22 skipped, 0 failed**.
+Without it: 1428 passed, 66 skipped. The 22 remaining skips are
+Windows-only.
+
+### What this found
+`event_breakdown()` was in the contract Protocol and implemented twice,
+but **nothing called the PostgreSQL implementation.** ADR-100's own
+endpoint test drives `Database` directly, so the second implementation
+shipped having never executed. The 60 passing storage tests did not
+touch it; the method simply had no caller on that side.
+
+A cross-backend conformance test now covers it, and the gap it closes is
+real rather than theoretical: with the PostgreSQL implementation mutated
+to use SQLite's `?` placeholder instead of `%s`, the `[postgres]`
+parametrization fails with `ProgrammingError` while `[sqlite]` passes.
+That is exactly the class of defect an unexercised second implementation
+hides — correct-looking code that cannot run.
+
+### The general lesson, recorded because it recurs
+Adding a method to `contract.py` does not make the conformance suite
+test it. The suite tests what it has a test for. ADR-093 emptied
+`KNOWN_ABSTRACTION_LEAKS` and a test asserts both backends *implement*
+every contract member, but implementing and exercising are different
+claims. A new contract member needs a parametrized test in the same
+change, or the second backend's version is decoration.
+
+### Not established
+Still no PostgreSQL **deployment**: no migration path from an existing
+SQLite database, and TLS, connection pooling, backups, failover and a
+tuned server remain untested. This was a loopback cluster with trust
+auth, created and discarded for the test run. The acceptance matrix's
+PostgreSQL row says the same.
+
+---
+
+## ADR-105: No Security-Platform Adapter Will Be Built Without a Format
+
+### Context
+Blueprint §5 lists six adapter categories. Five exist: host telemetry,
+network flows (parsing), network sensor (Zeek/Suricata-shaped),
+file/replay and synthetic. The sixth — IDS/IPS, firewall, EDR or SIEM
+exports and APIs — has none, and `BLUEPRINT_COVERAGE.md` has carried §5
+as `PARTIAL` for that reason.
+
+Asked which export format was available to target, the operator's answer
+was that none is: nothing available, and no way to find out.
+
+### Decision: not built, and the reason recorded
+This is ADR-072's reasoning applied to a second adapter category. There,
+a NetFlow collector fed packets this project constructs was refused
+because it "would prove the decoder agrees with its author, and a UDP
+listener is attack surface". The same holds here with nothing to listen
+to: an adapter written against an imagined Splunk, Wazuh or Defender
+export would encode this project's guess at a schema, pass tests built
+from the same guess, and mis-map silently against the real thing.
+
+§5.3 requires rejecting incompatible required fields "with a useful
+error rather than silently mis-mapping them". A mapping invented without
+a real export cannot honour that, because there is no ground truth for
+what the required fields are.
+
+So §5 stays `PARTIAL` **by decision, not by omission**, and this is the
+entry that says so. It is a missing input, not missing work.
+
+### What would change it
+One real export file — a Wazuh `alerts.json`, a Suricata-fed SIEM
+export, a Windows Defender or Sysmon EVTX export, a pfSense or OPNsense
+firewall log. The `json_stream.py` adapter already handles
+Zeek/Suricata-shaped JSON, so a JSON-lines security export is the
+shortest path and may need field aliases rather than a new adapter.
+
+Until then no fabricated adapter is better than a plausible one, which
+is the §12 honesty rule applied to code instead of to numbers.
+
+---
+
+## ADR-106: Inference Latency Is Measured
+
+### Context
+Blueprint §10 lists "inference latency and throughput" among the
+measurements an evaluation reports. Nothing measured it. The System
+Health models block returned a hardcoded `inference_latency: None` with a
+comment saying no instrument existed — honest, and a gap
+`BLUEPRINT_COVERAGE.md` carried as `ABSENT — never measured`.
+
+### Decision
+`services/inference_metrics.py`, deliberately the same shape as
+`services/admission.py`'s latency summary so a reader comparing
+ingestion and inference compares like with like.
+
+**What is measured is the decision that matters.** The instrument times
+`ThreatForecastingPipeline.predict_recent_window` — feature extraction
+plus model scoring — and nothing else. It excludes:
+
+* the readiness gate, which refuses before any model runs;
+* the database read that fetches the window, which measures storage;
+* automatic training, which is not inference and is thousands of times
+  slower, so a single autotrain would dominate every percentile.
+
+A figure that mixed those in would describe the endpoint, not the model.
+§16 keeps ingestion delay and processing delay separate for the same
+reason, and the response carries a `measures` string saying so, because a
+latency number without its boundary invites exactly that misreading.
+
+Recorded per **resolved** model id: a random forest and a NumPy LSTM are
+different measurements, and averaging them answers no question anyone
+asked. Samples are bounded at 256, as admission control's are, so a
+long-running process cannot grow the list without limit — and the
+events-per-window list is trimmed in step with the latencies, or
+throughput would be quoted against a window size never measured with it.
+
+Throughput is windows per second derived from those same samples and
+reported beside the events-per-window range, rather than as an
+independent claim: a rate without its window size is not reproducible.
+
+Nothing measured yields `None`, not a structure full of nulls. An empty
+shape reads as a measurement of zero, which would claim instantaneous
+inference.
+
+### A pre-existing test that pinned a literal
+`test_unmeasured_inference_latency_is_null_not_zero` asserted
+`inference_latency is None` unconditionally. That held only because the
+field was a constant; it tested a literal, not a behaviour. With a real
+instrument, whether samples exist depends on whether anything in the
+process ran a prediction first.
+
+It now asserts the invariant its own name claims — absent, or carrying
+real samples, never a populated shape of nulls or zeros — following the
+precedent its neighbour already documents for the model registry:
+"asserting an empty registry would only test the suite's ordering."
+
+### Verification
+11 regression tests. Mutation-checked: an empty summary returning a
+zero-filled shape, unbounded samples, and System Health reverting to a
+hardcoded `None` each break a test; a phantom zero-filled model entry
+breaks four, including the rewritten one.
+
+Full suite with a real PostgreSQL 16.15 server: **1485 passed, 22
+skipped, 0 failed** (Linux).
+
+### Not established
+No latency figure is published anywhere as a service target. §16 is
+explicit that numerical targets are agreed only after measurement, and
+these are per-process samples from a development container — not a
+benchmark of any deployment. §10's **throughput under load** is still
+unmeasured; that needs the §16 ingestion benchmark, which does not exist
+yet.

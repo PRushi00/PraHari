@@ -8,6 +8,7 @@ dashboard click — a disabled button is not a control.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -23,6 +24,7 @@ from app.models.forecaster import (
     SplitIntegrityReport,
 )
 from app.models.registry import get_forecasting_pipeline
+from app.services.inference_metrics import get_inference_metrics
 from app.research.selection import (
     MixedProvenanceRefused,
     SelectionCoverage,
@@ -339,10 +341,21 @@ def predict_threat_propensity(
         except Exception as e:  # noqa: BLE001
             autotrain_note = f"Automatic training failed ({type(e).__name__}: {e})."
 
+    # Inference latency (§10, ADR-106). Timed around THIS call only:
+    # feature extraction plus scoring. The gate, the database read above
+    # and any autotrain are excluded, because each measures something
+    # other than the model — an autotrain in particular is thousands of
+    # times slower and would dominate every percentile.
+    _started = time.perf_counter()
     result = pipeline.predict_recent_window(
         recent_events=events,
         model_id=req.model_id,
         threshold=req.threshold,
+    )
+    get_inference_metrics().record(
+        model_id=result.model_id,
+        duration_ms=(time.perf_counter() - _started) * 1000.0,
+        events_in_window=len(events),
     )
     if autotrain_note:
         result.evaluation_caveats.insert(0, autotrain_note)
