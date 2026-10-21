@@ -94,6 +94,10 @@ class TelemetryStore(Protocol):
         self, source_id: Optional[str] = None,
         not_before: Optional[str] = None, not_after: Optional[str] = None,
     ) -> Optional[tuple[datetime, datetime]]: ...
+    # Label histogram over the whole selection. Whether a dataset contains
+    # any positive at all is a property of the dataset; a sample drawn
+    # from one end of it cannot answer that (ADR-095).
+    def label_counts(self, source_id: Optional[str] = None) -> dict[str, int]: ...
 
     # imports
     def save_import_summary(self, summary: Any) -> None: ...

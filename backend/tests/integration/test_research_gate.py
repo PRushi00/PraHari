@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -345,8 +347,18 @@ def test_split_report_carries_a_reproducibility_manifest(client_with):
     assert "y=1" in target and "y=0 only when" in target
 
     # No telemetry values are embedded.
+    #
+    # Checked by what it means rather than by a loose substring. The
+    # manifest legitimately names the FEATURES it computed, and two of
+    # them are `distinct_src_ips` / `distinct_dst_ips` (ADR-096) - a
+    # schema label, not an observation. What must never appear is a
+    # per-event record: its own keys, or any address value.
     flat = str(manifest)
-    assert "src_ip" not in flat and "dst_ip" not in flat
+    for serialized_key in ("'src_ip'", "'dst_ip'", '"src_ip"', '"dst_ip"'):
+        assert serialized_key not in flat, f"a per-event record leaked: {serialized_key}"
+    assert not re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", flat), (
+        "an IP-address-shaped value appears in the manifest"
+    )
 
 
 def test_dataset_identity_and_split_setup_are_fingerprinted_separately():

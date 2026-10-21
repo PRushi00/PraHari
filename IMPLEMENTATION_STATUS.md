@@ -2549,3 +2549,54 @@ Thursday-15-02 has four separated onsets in one morning (~659k rows in the
 unambiguous span) and is the strongest candidate for an interpretable
 result. It is an 80-column file, so the address-less feature schema is the
 prerequisite - phase 2, not started.
+
+---
+
+## Session 35 — The Address-less Schema, and the First Real Answer
+
+PR #2 merged; this branch restarted from the merged `main`.
+
+### The address-less feature schema (ADR-096)
+Nine of ten IDS2018 CSVs carry no addresses, and they include the only
+days with several separated attack onsets. Two features need addresses.
+Letting them compute `len(set()) == 0` would be a fabricated measurement,
+so the columns are REMOVED and the result is a different, named schema:
+`addressless.v1` (10 features) beside `full.v1` (12). A mixture is
+refused. The import policy gains `address_columns`, declared and
+header-checked in both directions.
+
+### A second instance of ADR-095's defect
+Readiness reported **"0 positive"** for a corpus holding 52,498
+attack-labelled events: the class check still read the most-recent 50,000
+sample, which on this day is the tail, after every attack. Whether a
+corpus contains any positive is a dataset fact, so `label_counts()` joins
+the storage contract as a GROUP BY on both backends.
+
+### The result — and it is negative
+Thursday 15-02: 659,226 flows, 0 rejected, five onsets.
+
+| Split | Holdout holds | LSTM PR-AUC | Persistence |
+|---|---|---|---|
+| 0.6 | continuations only | **0.9925** | 0.9562 |
+| 0.5 | a real onset | **0.3387** | 0.9420 |
+
+At 0.6 the event-level report **refuses** — all five onsets precede the
+holdout. PR-AUC 0.9925 measures "an attack is ongoing".
+
+At 0.5 every learned model collapses below or near the 0.3115 constant
+baseline, while persistence holds 0.9420. Event-level: 1 event in
+coverage, **0 warned, missed-event rate 1.0**, 2 late warnings, 7 false
+alarms (3.08/h), no lead time.
+
+**On this corpus the learned models do not forecast attack onsets.** The
+split was moved for event-level coverage, not for a better number, and
+moving it made every figure worse. Both runs are recorded.
+
+### Results
+| Check | Result |
+|---|---|
+| Backend + PostgreSQL 16.15 | **1442 passed, 22 skipped, 0 failed** |
+
+### Still needs the operator's machine
+Windows re-run; a real-browser session; a sustained collector run; a live
+exporter for row 3.

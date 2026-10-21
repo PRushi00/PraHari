@@ -4496,3 +4496,113 @@ record from stretching the span across centuries.
 
 After the fix the same corpus reports `607785 events`, `1859s`,
 `can_train: true`. Backend 1432 passed, 22 skipped, 0 failed.
+
+---
+
+## ADR-096: The Address-less Feature Schema, and What It Measured
+
+### Context
+Nine of the ten CSE-CIC-IDS2018 processed CSVs carry no `Src IP`, no
+`Dst IP` and no `Flow ID`, so their endpoint addresses are unrecoverable
+(checked, not assumed — ADR-095's provenance record). PraHari's importer
+required both addresses, so those nine days were rejected row by row.
+
+That cost was not evenly distributed. The one day PraHari **could** read,
+20 Feb, holds a single attack onset, which cannot support a chronological
+split. The nine it could not read include **Thursday 15 Feb, which holds
+five separated onsets in one morning** — the only shape of data that can
+answer the research question at all.
+
+### Decision
+Two features need addresses: `distinct_src_ips` and `distinct_dst_ips`.
+
+The tempting fix is to accept address-less rows and let them compute
+`len(set()) == 0`. That is a **fabricated measurement**: "no distinct
+source addresses were observed" is a claim about the traffic, and a false
+one — the flows had addresses, the export dropped them.
+
+So the columns are **removed**, and what results is a different, named
+schema rather than the same schema with two zeroes in it:
+
+- `prahari.window_features.full.v1` — 12 features
+- `prahari.window_features.addressless.v1` — 10 features
+
+The schema is decided from the events, recorded in the windowing report
+with its feature names, and stated in a note. A **mixture** is refused
+(`MixedAddressAvailabilityError`): counting distinct addresses over a set
+where some rows structurally lack them undercounts by exactly the
+address-less share, and nothing in the number would show it.
+
+The import policy gains `address_columns`, **declared and header-checked
+in both directions**, for the same reason `timestamp_format` is declared:
+declaring them absent when the file has them would discard real data;
+declaring them required when the file lacks them rejects every row, one
+at a time, for a fact that is true of the whole file. Address-less rows
+are flagged `SOURCE_LIMITED`, which is already excluded from the quality
+defect count — it describes the source, not the record.
+
+### What it measured
+Thursday 15 Feb imported cleanly: 659,226 flows, 0 rejected, reconciles,
+two attack types (GoldenEye 41,508; Slowloris 10,990). `near_duplicate_flows`
+rose to 481,160 (73 %, against 22,341 on the addressed day) — a direct
+consequence of dropping addresses, counted and kept rather than dropped.
+
+The result depends entirely on where the split falls, and that is the
+finding:
+
+| Split | Holdout contains | LSTM PR-AUC | Persistence PR-AUC |
+|---|---|---|---|
+| 0.6 (test starts 11:08) | attack **continuations** only | **0.9925** | 0.9562 |
+| 0.5 (test starts 10:41) | an actual **onset** (11:00) | **0.3387** | 0.9420 |
+
+At 0.6 every learned model looks strong and the event-level evaluation
+**refuses**: all five documented onsets precede the holdout, so no
+evaluated window could have warned for any of them. The 131 positive test
+windows are continuations of an attack that began in the training period.
+PR-AUC 0.9925 is measuring "an attack is ongoing", not "an attack is
+coming".
+
+At 0.5, with one genuine onset in the holdout, every learned model
+collapses — the LSTM to 0.3387, random forest to 0.2112, the temporal
+stack to 0.2259, against a constant baseline of 0.3115. Only
+`baseline_persistence` ("attack now ⇒ attack next") stays strong at
+0.9420, because detection is what this data supports.
+
+Event-level, LSTM, at the 0.5 split:
+
+| Measure | Value |
+|---|---|
+| Events in coverage | 1 (4 excluded: their onsets precede the holdout) |
+| Events warned | **0** |
+| Missed-event rate | **1.0** |
+| Late warnings | 2 (fired during the attack) |
+| False alarms | 7 — 3.08 per hour |
+| Alarm duty cycle | 9.0 % |
+| Lead time | none to report |
+
+The split was moved from 0.6 to 0.5 to obtain event-level **coverage**,
+not to improve a metric, and both runs are reported above precisely so
+that choice is visible. Moving it made every headline number worse.
+
+### Conclusion
+**On this corpus PraHari's learned models do not forecast attack onsets.**
+What looked like strong performance was detection of attacks already in
+progress, and the persistence baseline does that better. The blueprint
+anticipated exactly this: "Any model that cannot beat it has demonstrated
+nothing."
+
+One event in coverage is too few for a robust rate, and the report says
+so in its own limitations. This is a negative result on one day of one
+corpus, not a claim about the approach in general.
+
+### Evidence
+8 unit tests, mutation-checked: keeping the columns (reporting a zero) and
+tolerating a mixture each break tests. Both declaration guards verified
+through the real API, in both directions. Backend 1442 passed, 22 skipped,
+0 failed.
+
+### Not established
+A 10-feature schema is not comparable with the 12-feature one; no
+controlled ablation between them has been run. The address-less days are
+also truncated at the spreadsheet row limit (ADR-095), so they are
+partial captures.

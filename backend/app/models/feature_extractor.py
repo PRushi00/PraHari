@@ -60,6 +60,12 @@ class WindowingReport(BaseModel):
     reported here rather than left implicit, so no downstream claim can cite
     the nominal parameters for an evaluation that did not use them.
     """
+    # Which feature schema the events supported, and the names it emits.
+    # Carried here so a result is never compared across feature sets
+    # without that being visible (ADR-096).
+    feature_schema: str = "prahari.window_features.full.v1"
+    feature_names: list[str] = Field(default_factory=lambda: list(FEATURE_NAMES))
+
     nominal_window_seconds: float
     nominal_lead_seconds: float
     nominal_horizon_seconds: float
@@ -172,6 +178,42 @@ FEATURE_NAMES = [
     "byte_rate_per_sec",
 ]
 
+# The two features that need endpoint addresses (ADR-096).
+ADDRESS_DEPENDENT_FEATURES = ("distinct_src_ips", "distinct_dst_ips")
+
+# Feature schemas, named and versioned so two runs are never compared
+# across different feature sets without that being visible.
+#
+# A source with no address columns cannot produce the two counts above.
+# Emitting 0 for them would be a FABRICATED MEASUREMENT: "no distinct
+# source addresses were observed" is a claim, and a false one — the flows
+# had addresses, the export dropped them. The columns are therefore
+# REMOVED, and the schema that results is a different schema with a
+# different name, not the same schema with two zeroes in it.
+FEATURE_SCHEMA_FULL = "prahari.window_features.full.v1"
+FEATURE_SCHEMA_ADDRESSLESS = "prahari.window_features.addressless.v1"
+
+ADDRESSLESS_FEATURE_NAMES = [
+    n for n in FEATURE_NAMES if n not in ADDRESS_DEPENDENT_FEATURES
+]
+
+
+def feature_names_for(schema: str) -> list[str]:
+    """The ordered feature names a schema produces."""
+    if schema == FEATURE_SCHEMA_ADDRESSLESS:
+        return list(ADDRESSLESS_FEATURE_NAMES)
+    return list(FEATURE_NAMES)
+
+
+class MixedAddressAvailabilityError(ValueError):
+    """
+    Some events carry addresses and some structurally cannot.
+
+    Refused rather than resolved. Counting distinct addresses over such a
+    mixture undercounts by exactly the address-less share, and nothing in
+    the resulting number would show it.
+    """
+
 
 class WindowFeatureExtractor:
     """
@@ -218,6 +260,10 @@ class WindowFeatureExtractor:
         # Populated by build_dataset_instances() so callers can report the
         # configuration that was genuinely used.
         self.last_windowing_report: Optional[WindowingReport] = None
+        # Decided from the events themselves in build_dataset_instances, and
+        # reported; a run under one schema is not comparable with a run
+        # under the other (ADR-096).
+        self.feature_schema: str = FEATURE_SCHEMA_FULL
 
     @staticmethod
     def arrived_by(event: NormalizedEvent, prediction_time: datetime) -> bool:
@@ -258,9 +304,17 @@ class WindowFeatureExtractor:
         window_events: list[NormalizedEvent],
         window_duration: float,
     ) -> list[float]:
-        """Extract a single feature vector from events in an observation window."""
+        """
+        Extract a single feature vector from events in an observation window.
+
+        Under the address-less schema the two distinct-address counts are
+        OMITTED, not zeroed: a zero there would assert a measurement the
+        source cannot support (ADR-096).
+        """
+        addressless = self.feature_schema == FEATURE_SCHEMA_ADDRESSLESS
+        width = len(feature_names_for(self.feature_schema))
         if not window_events:
-            return [0.0] * len(FEATURE_NAMES)
+            return [0.0] * width
 
         flow_count = float(len(window_events))
         src_ips = set(e.src_ip for e in window_events if e.src_ip)
@@ -279,7 +333,7 @@ class WindowFeatureExtractor:
 
         duration_sec = max(1.0, window_duration)
 
-        return [
+        values = [
             flow_count,
             float(len(src_ips)),
             float(len(dst_ips)),
@@ -293,6 +347,10 @@ class WindowFeatureExtractor:
             float(sum(durations) / len(durations)) if durations else 0.0,
             float(tot_bytes / duration_sec),
         ]
+        if addressless:
+            drop = {FEATURE_NAMES.index(n) for n in ADDRESS_DEPENDENT_FEATURES}
+            values = [v for i, v in enumerate(values) if i not in drop]
+        return values
 
     def build_dataset_instances(
         self,
@@ -339,6 +397,34 @@ class WindowFeatureExtractor:
         if not usable:
             report.notes.append("No events with usable timestamps; no windows generated.")
             return _empty_dataset()
+
+        # Which feature schema these events can support, decided from the
+        # events themselves and reported (ADR-096). A mixture is REFUSED:
+        # counting distinct addresses over a set where some rows
+        # structurally lack them undercounts by exactly the address-less
+        # share, and nothing in the resulting number would show it.
+        with_addr = sum(1 for e in usable if e.src_ip or e.dst_ip)
+        if with_addr == 0:
+            self.feature_schema = FEATURE_SCHEMA_ADDRESSLESS
+        elif with_addr == len(usable):
+            self.feature_schema = FEATURE_SCHEMA_FULL
+        else:
+            raise MixedAddressAvailabilityError(
+                f"{with_addr} of {len(usable)} event(s) carry an endpoint "
+                "address and the rest cannot. Distinct-address counts over "
+                "that mixture would undercount by the address-less share "
+                "with nothing to show it. Select one provenance, or import "
+                "the address-less source under its own source id."
+            )
+        report.feature_schema = self.feature_schema
+        report.feature_names = feature_names_for(self.feature_schema)
+        if self.feature_schema == FEATURE_SCHEMA_ADDRESSLESS:
+            report.notes.append(
+                "No event carries an endpoint address, so the two "
+                "distinct-address features are OMITTED and the schema is "
+                f"{FEATURE_SCHEMA_ADDRESSLESS}. Results under it are not "
+                "comparable with results under the full schema."
+            )
 
         sorted_events = sorted(usable, key=lambda e: e.observed_at)
         start_time = sorted_events[0].observed_at

@@ -95,6 +95,27 @@ _DURATION_TO_SECONDS = {
 }
 
 
+class AddressColumns(str, Enum):
+    """
+    Whether the source carries endpoint addresses at all.
+
+    Declared, never inferred, for the same reason as `timestamp_format`:
+    a corpus silently read under the wrong assumption is exactly the
+    failure this policy object exists to prevent. The declaration is
+    CHECKED against the header, so declaring them absent when the file has
+    them is refused rather than quietly discarding real data.
+
+    Nine of the ten CSE-CIC-IDS2018 processed CSVs carry no `Src IP`,
+    `Dst IP` or even `Flow ID`, so their addresses are unrecoverable
+    (ADR-096). Rejecting every row of those files loses nine days of
+    labelled attacks; accepting them silently would leave two of the
+    twelve window features computing a count over nothing.
+    """
+
+    REQUIRED = "required"
+    ABSENT_IN_SOURCE = "absent_in_source"
+
+
 @dataclass
 class ResearchCsvPolicy:
     """Everything the operator must state before a corpus can be imported."""
@@ -107,6 +128,10 @@ class ResearchCsvPolicy:
     # CICFlowMeter reports forward and backward counts separately. When only
     # the forward column is present, the result is NOT a total.
     require_bidirectional_counts: bool = True
+    # Whether the source has address columns at all. ABSENT_IN_SOURCE marks
+    # every row SOURCE_LIMITED - a property of the source, not a defect in
+    # the record - and narrows the feature schema accordingly.
+    address_columns: AddressColumns = AddressColumns.REQUIRED
     max_records: int = 1_000_000
 
     def describe(self) -> dict[str, Any]:
@@ -115,6 +140,7 @@ class ResearchCsvPolicy:
             "source_timezone": self.source_timezone or "unknown",
             "duration_unit": self.duration_unit.value,
             "require_bidirectional_counts": self.require_bidirectional_counts,
+            "address_columns": self.address_columns.value,
             "max_records": self.max_records,
         }
 
@@ -440,6 +466,29 @@ def import_research_csv(
     if not header:
         raise ResearchCsvError("CSV has no header row; refusing to guess columns.")
 
+    # The address declaration is checked against the file, both ways. A
+    # declaration that disagrees with the header is refused rather than
+    # applied: declaring them absent when they are present would discard
+    # real addresses and silently narrow the feature schema, and declaring
+    # them required when they are absent would reject every row with a
+    # per-row reason that hides a whole-file fact.
+    present = {c for c in COLUMN_CANDIDATES["src_ip"] + COLUMN_CANDIDATES["dst_ip"]
+               if c in header}
+    if policy.address_columns is AddressColumns.ABSENT_IN_SOURCE and present:
+        raise ResearchCsvError(
+            "address_columns was declared 'absent_in_source', but the header "
+            f"carries {sorted(present)}. Importing under that declaration "
+            "would discard addresses the file actually has."
+        )
+    if policy.address_columns is AddressColumns.REQUIRED and not present:
+        raise ResearchCsvError(
+            "address_columns is 'required', but the header carries neither a "
+            "source nor a destination address column. Every row would be "
+            "rejected one at a time for a fact that is true of the whole "
+            "file. Declare 'absent_in_source' to import it without "
+            "addresses, which narrows the feature schema and is recorded."
+        )
+
     quality = ImportQuality()
     events: list[NormalizedEvent] = []
     seen_ids: set[str] = set()
@@ -504,25 +553,31 @@ def import_research_csv(
         if any("unknown" in w or "interpreted_as" in w for w in ts_warnings):
             flags.append(QualityFlag.TIMESTAMP_UNCERTAINTY)
 
-        src_ip_raw = _find(row, COLUMN_CANDIDATES["src_ip"])
-        dst_ip_raw = _find(row, COLUMN_CANDIDATES["dst_ip"])
         src_ip = dst_ip = None
-        for raw_value, setter in ((src_ip_raw, "src"), (dst_ip_raw, "dst")):
-            if not raw_value:
-                rejection = rejection or f"missing_{setter}_ip"
+        if policy.address_columns is AddressColumns.ABSENT_IN_SOURCE:
+            # Declared and header-verified above. Both stay None, and the
+            # row is marked SOURCE_LIMITED rather than rejected or given a
+            # fabricated address.
+            flags.append(QualityFlag.SOURCE_LIMITED)
+        else:
+            src_ip_raw = _find(row, COLUMN_CANDIDATES["src_ip"])
+            dst_ip_raw = _find(row, COLUMN_CANDIDATES["dst_ip"])
+            for raw_value, setter in ((src_ip_raw, "src"), (dst_ip_raw, "dst")):
+                if not raw_value:
+                    rejection = rejection or f"missing_{setter}_ip"
+                    continue
+                try:
+                    ipaddress.ip_address(raw_value)
+                except ValueError:
+                    rejection = rejection or f"invalid_{setter}_ip"
+                    continue
+                if setter == "src":
+                    src_ip = raw_value
+                else:
+                    dst_ip = raw_value
+            if rejection:
+                quality.reject(rejection)
                 continue
-            try:
-                ipaddress.ip_address(raw_value)
-            except ValueError:
-                rejection = rejection or f"invalid_{setter}_ip"
-                continue
-            if setter == "src":
-                src_ip = raw_value
-            else:
-                dst_ip = raw_value
-        if rejection:
-            quality.reject(rejection)
-            continue
 
         ports: dict[str, Optional[int]] = {}
         for key in ("src_port", "dst_port"):
