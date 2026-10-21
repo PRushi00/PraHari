@@ -2461,7 +2461,7 @@ honoured now.
 |---|---|
 | Backend, inherited revision | 1335 passed, 22 skipped, 0 failed |
 | Backend, with this work + PostgreSQL | **1428 passed, 22 skipped, 0 failed** |
-| Backend, without a PostgreSQL DSN | 1387 passed, 61 skipped, 0 failed |
+| Backend, without a PostgreSQL DSN | 1389 passed, 61 skipped, 0 failed |
 | Conformance suite | 43 passed (both backends) |
 | Application served from PostgreSQL | 6 passed |
 | Frontend | `tsc` 0, **100 passed**; production build succeeded |

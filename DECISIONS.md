@@ -4337,7 +4337,7 @@ empty category list refused rather than read as "everything"; and
 diagnostics never reporting a check that was not run.
 
 Backend with a server: **1426 passed, 22 skipped, 0 failed**. Without a
-DSN: 1387 passed, 61 skipped. Frontend: `tsc` 0, 100 passed, build OK.
+DSN: 1389 passed, 61 skipped. Frontend: `tsc` 0, 100 passed, build OK.
 
 ### A semantic change the move introduced, and its fix
 The original retention loop selected ids and deleted them **inside one
@@ -4416,4 +4416,4 @@ half-done.
 `tests/unit/test_database.py` covers the refusal for `postgresql://`,
 `postgres://` and `mysql://`, asserting the message says what is
 supported, and covers that a SQLite URL still resolves against the
-project root. Backend 1428 passed, 22 skipped, 0 failed.
+project root. Backend 1428 passed, 22 skipped, 0 failed with a server; 1389 passed, 61 skipped without one.

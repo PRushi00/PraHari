@@ -1207,7 +1207,7 @@ PostgreSQL 16.15:
 |---|---|
 | Backend, inherited `windows-closure` revision | 1335 passed, 22 skipped (Windows-only and explicitly non-Linux), 0 failed |
 | Backend, with Session 34 work and a PostgreSQL server | **1428 passed, 22 skipped, 0 failed** |
-| Backend, without a PostgreSQL DSN | 1387 passed, 61 skipped, 0 failed — the PostgreSQL tests skip rather than pass |
+| Backend, without a PostgreSQL DSN | 1389 passed, 61 skipped, 0 failed — the PostgreSQL tests skip rather than pass |
 | Storage conformance suite | 43 passed, every parametrized test against both SQLite and PostgreSQL 16.15 |
 | Application served from PostgreSQL | 6 passed: audit, system health, retention, ingestion, event query, sources, analysis |
 | Frontend | `tsc` 0 errors, **100 tests passed**, production build OK |
