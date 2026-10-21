@@ -45,11 +45,10 @@ from typing import Any, Optional, Protocol, runtime_checkable
 
 from app.schemas.events import NormalizedEvent, TelemetrySource
 
-KNOWN_ABSTRACTION_LEAKS = frozenset({
-    "app/api/v1/audit.py",          # audit log listing and filters
-    "app/api/v1/system_health.py",  # per-source health aggregates
-    "app/services/retention.py",    # retention preview and deletion
-})
+# Empty, and kept as a ratchet (ADR-093): the three modules that used to
+# open a raw connection - audit listing, storage diagnostics and retention
+# - now go through the methods below. A test fails if a new one appears.
+KNOWN_ABSTRACTION_LEAKS: frozenset[str] = frozenset()
 
 # SQLite-specific constructs a port must translate. Recorded from
 # database.py so the size of the job is known rather than estimated.
@@ -115,7 +114,33 @@ class TelemetryStore(Protocol):
         request_id: Optional[str] = None,
     ) -> None: ...
 
+    def list_audit_events(
+        self, limit: int = 100, offset: int = 0,
+        resource_type: Optional[str] = None,
+    ) -> list[dict]: ...
+
     # settings
     def get_setting(self, key: str) -> Optional[str]: ...
     def set_setting(self, key: str, value: str, updated_by: str = "operator") -> None: ...
     def clear_setting(self, key: str) -> bool: ...
+
+    # retention - the POLICY (budget, batching, confirmation) stays in
+    # services/retention.py; only the queries live here.
+    def count_events_before(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None,
+    ) -> int: ...
+    def count_events_at_or_after(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None,
+    ) -> int: ...
+    def oldest_event_ids_before(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None, limit: int = 1000,
+    ) -> list[str]: ...
+    def delete_events_by_id(self, event_ids: list[str]) -> int: ...
+
+    # diagnostics - each backend describes ITSELF. A store must never
+    # report a check it did not run: where a backend has no equivalent of
+    # another's check, the key is present and None, with a note saying so.
+    def storage_diagnostics(self) -> dict: ...

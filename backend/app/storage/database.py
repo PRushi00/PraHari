@@ -640,6 +640,142 @@ class Database:
                     ),
                 )
 
+
+    # ──────────────── audit listing (ADR-093) ────────────────
+
+    def list_audit_events(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        resource_type: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Audit entries, newest first.
+
+        Returns plain dicts, not API models: storage describes rows, and the
+        route decides how to present them. `request_id` is None on an entry
+        written before the column existed and on anything with no request
+        behind it (ADR-063) - both are accurate, and neither is invented.
+        """
+        query = "SELECT * FROM audit_events"
+        params: list = []
+        if resource_type:
+            query += " WHERE resource_type = ?"
+            params.append(resource_type)
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "action": r["action"],
+                "resource_type": r["resource_type"] or "",
+                "resource_id": r["resource_id"] or "",
+                "details": r["details"] or "",
+                "user_identity": r["user_identity"] or "system",
+                "request_id": _opt(r, "request_id"),
+            }
+            for r in rows
+        ]
+
+    # ──────────────── retention queries (ADR-093) ────────────────
+
+    def _retention_where(
+        self, comparison: str, cutoff_iso: str,
+        categories: list[str], source_id: Optional[str],
+    ) -> tuple[str, list]:
+        if not categories:
+            raise ValueError(
+                "A retention query must name at least one category; an empty "
+                "list is ambiguous between 'nothing' and 'everything'."
+            )
+        placeholders = ",".join("?" * len(categories))
+        where = f"observed_at {comparison} ? AND data_category IN ({placeholders})"
+        params: list = [cutoff_iso, *categories]
+        if source_id:
+            where += " AND source_id = ?"
+            params.append(source_id)
+        return where, params
+
+    def count_events_before(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None,
+    ) -> int:
+        where, params = self._retention_where("<", cutoff_iso, categories, source_id)
+        with self.get_connection() as conn:
+            return conn.execute(
+                f"SELECT COUNT(*) FROM normalized_events WHERE {where}", params
+            ).fetchone()[0]
+
+    def count_events_at_or_after(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None,
+    ) -> int:
+        where, params = self._retention_where(">=", cutoff_iso, categories, source_id)
+        with self.get_connection() as conn:
+            return conn.execute(
+                f"SELECT COUNT(*) FROM normalized_events WHERE {where}", params
+            ).fetchone()[0]
+
+    def oldest_event_ids_before(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None, limit: int = 1000,
+    ) -> list[str]:
+        """The oldest eligible ids, so deletion proceeds oldest-first."""
+        where, params = self._retention_where("<", cutoff_iso, categories, source_id)
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT event_id FROM normalized_events WHERE {where} "
+                f"ORDER BY observed_at ASC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        return [r["event_id"] for r in rows]
+
+    def delete_events_by_id(self, event_ids: list[str]) -> int:
+        """Delete exactly these events. One transaction, so a batch is atomic."""
+        if not event_ids:
+            return 0
+        with self.get_connection() as conn:
+            conn.executemany(
+                "DELETE FROM normalized_events WHERE event_id = ?",
+                [(i,) for i in event_ids],
+            )
+        return len(event_ids)
+
+    # ──────────────── diagnostics (ADR-093) ────────────────
+
+    def storage_diagnostics(self) -> dict:
+        """
+        What SQLite can say about itself.
+
+        `healthy` rests on PRAGMA integrity_check, a real structural check,
+        and `health_basis` records that - so a reader comparing two backends
+        can see what the word is standing on in each.
+        """
+        with self.get_connection() as conn:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            columns = [
+                r["name"] for r in conn.execute("PRAGMA table_info(normalized_events)")
+            ]
+        return {
+            "backend": "sqlite",
+            "integrity_check": integrity,
+            "healthy": integrity == "ok",
+            "health_basis": "PRAGMA integrity_check",
+            "journal_mode": journal,
+            "size_bytes": page_count * page_size,
+            "event_count": self.count_events(),
+            "source_count": len(self.list_sources()),
+            "received_at_column_present": "received_at" in columns,
+            "normalized_events_columns": len(columns),
+        }
+
     # ──────────────── Telemetry Sources ────────────────
 
     def upsert_source(self, source: TelemetrySource) -> None:

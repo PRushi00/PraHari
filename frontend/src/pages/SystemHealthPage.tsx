@@ -288,12 +288,23 @@ export const SystemHealthPage: React.FC = () => {
               <div className="metric-grid">
                 <div className="metric">
                   <span className="metric-label">Integrity</span>
-                  <span
-                    className={d.healthy ? "metric-value ok" : "metric-value bad"}
-                  >
-                    {d.healthy ? <CheckCircle size={14} /> : <XCircle size={14} />}{" "}
-                    {d.integrity_check}
-                  </span>
+                  {/* A backend with no equivalent structural check reports
+                      null, and that reads as "not measured" rather than
+                      borrowing the healthy tick from a check nobody ran. */}
+                  {d.integrity_check == null ? (
+                    <Measured value={null} />
+                  ) : (
+                    <span
+                      className={d.healthy ? "metric-value ok" : "metric-value bad"}
+                    >
+                      {d.healthy ? <CheckCircle size={14} /> : <XCircle size={14} />}{" "}
+                      {d.integrity_check}
+                    </span>
+                  )}
+                </div>
+                <div className="metric">
+                  <span className="metric-label">Store</span>
+                  <Measured value={d.backend} />
                 </div>
                 <div className="metric">
                   <span className="metric-label">Events stored</span>

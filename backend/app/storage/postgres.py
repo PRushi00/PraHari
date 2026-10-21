@@ -371,6 +371,163 @@ class PostgresStore:
                 ),
             )
 
+
+    # ──────────────── audit listing (ADR-093) ────────────────
+
+    def list_audit_events(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        resource_type: Optional[str] = None,
+    ) -> list[dict]:
+        """Audit entries, newest first, with the same keys as SQLite returns."""
+        query = "SELECT * FROM audit_events"
+        params: list = []
+        if resource_type:
+            query += " WHERE resource_type = %s"
+            params.append(resource_type)
+        query += " ORDER BY id DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "action": r["action"],
+                "resource_type": r["resource_type"] or "",
+                "resource_id": r["resource_id"] or "",
+                "details": r["details"] or "",
+                "user_identity": r["user_identity"] or "system",
+                "request_id": r["request_id"],
+            }
+            for r in rows
+        ]
+
+    # ──────────────── retention queries (ADR-093) ────────────────
+
+    @staticmethod
+    def _retention_where(
+        comparison: str, cutoff_iso: str,
+        categories: list[str], source_id: Optional[str],
+    ) -> tuple[str, list]:
+        if not categories:
+            raise ValueError(
+                "A retention query must name at least one category; an empty "
+                "list is ambiguous between 'nothing' and 'everything'."
+            )
+        where = f"observed_at {comparison} %s AND data_category = ANY(%s)"
+        params: list = [cutoff_iso, list(categories)]
+        if source_id:
+            where += " AND source_id = %s"
+            params.append(source_id)
+        return where, params
+
+    def count_events_before(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None,
+    ) -> int:
+        where, params = self._retention_where("<", cutoff_iso, categories, source_id)
+        with self.get_connection() as conn:
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(*) AS n FROM normalized_events WHERE {where}",
+                    params,
+                ).fetchone()["n"]
+            )
+
+    def count_events_at_or_after(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None,
+    ) -> int:
+        where, params = self._retention_where(">=", cutoff_iso, categories, source_id)
+        with self.get_connection() as conn:
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(*) AS n FROM normalized_events WHERE {where}",
+                    params,
+                ).fetchone()["n"]
+            )
+
+    def oldest_event_ids_before(
+        self, cutoff_iso: str, categories: list[str],
+        source_id: Optional[str] = None, limit: int = 1000,
+    ) -> list[str]:
+        where, params = self._retention_where("<", cutoff_iso, categories, source_id)
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT event_id FROM normalized_events WHERE {where} "
+                f"ORDER BY observed_at ASC LIMIT %s",
+                [*params, limit],
+            ).fetchall()
+        return [r["event_id"] for r in rows]
+
+    def delete_events_by_id(self, event_ids: list[str]) -> int:
+        if not event_ids:
+            return 0
+        with self.get_connection() as conn:
+            conn.execute(
+                "DELETE FROM normalized_events WHERE event_id = ANY(%s)",
+                (list(event_ids),),
+            )
+        return len(event_ids)
+
+    # ──────────────── diagnostics (ADR-093) ────────────────
+
+    def storage_diagnostics(self) -> dict:
+        """
+        What PostgreSQL can say about itself.
+
+        `integrity_check` and `journal_mode` are SQLite's; PostgreSQL has no
+        single-statement equivalent of the first, and its WAL is not a mode
+        that can be switched the way SQLite's journal can. Both keys are
+        therefore present and **None**, each with a note, rather than filled
+        with a plausible-looking value: reporting "ok" for a check that was
+        never run would be a fabricated measurement, which is exactly what
+        §11's honesty rules forbid.
+
+        `healthy` here means the store answered a query, and `health_basis`
+        says so, so the word is not read as the structural check SQLite
+        actually performs.
+        """
+        with self.get_connection() as conn:
+            version = conn.execute("SHOW server_version").fetchone()["server_version"]
+            size = conn.execute(
+                "SELECT pg_database_size(current_database()) AS n"
+            ).fetchone()["n"]
+            columns = [
+                r["column_name"]
+                for r in conn.execute(
+                    """SELECT column_name FROM information_schema.columns
+                       WHERE table_schema = %s AND table_name = 'normalized_events'""",
+                    (self.schema,),
+                ).fetchall()
+            ]
+        return {
+            "backend": "postgresql",
+            "server_version": version,
+            "schema": self.schema,
+            "integrity_check": None,
+            "integrity_check_note": (
+                "PostgreSQL has no single-statement equivalent of SQLite's "
+                "PRAGMA integrity_check. Reported as not measured rather than "
+                "as 'ok'."
+            ),
+            "healthy": True,
+            "health_basis": "the store answered a query; no structural check was run",
+            "journal_mode": None,
+            "journal_mode_note": (
+                "PostgreSQL always uses WAL and it is not a per-database mode "
+                "to report, so this SQLite field is not measured here."
+            ),
+            "size_bytes": int(size),
+            "event_count": self.count_events(),
+            "source_count": len(self.list_sources()),
+            "received_at_column_present": "received_at" in columns,
+            "normalized_events_columns": len(columns),
+        }
+
     # ──────────────── sources ────────────────
 
     def upsert_source(self, source: TelemetrySource) -> None:

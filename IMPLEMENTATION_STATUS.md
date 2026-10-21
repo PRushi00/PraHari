@@ -2430,24 +2430,52 @@ foreign-key violation that had to be raised rather than absorbed as a
 duplicate. Two conformance tests were themselves SQLite-specific and are
 now backend-neutral.
 
+### Abstraction leaks closed (ADR-093)
+ADR-071 named three modules outside `storage/` that opened a raw
+connection and issued SQLite SQL — audit listing, the storage health
+PRAGMAs, and retention's counting and deletion — and recorded what they
+cost: "A second backend cannot be substituted until each moves behind a
+method of this contract." ADR-092 had to carry the same caveat.
+
+They are now behind the contract. `KNOWN_ABSTRACTION_LEAKS` is empty and
+the ratchet asserts no module outside `storage/` opens a connection at
+all. **The real FastAPI application is served from PostgreSQL** through
+audit, system health, retention, ingestion, event query, sources and
+analysis — if any SQLite dialect remained in the request path those tests
+would fail.
+
+The health PRAGMAs were the interesting case: not a dialect to translate,
+but a check PostgreSQL does not have. Rather than dropping the fields or
+mapping them to something plausible, `integrity_check` and
+`journal_mode` are present and **None** with notes, and `healthy` now
+carries `health_basis` saying what it rests on in each backend. The
+dashboard renders a null integrity check as "not measured" instead of
+borrowing the green tick.
+
+Incidental: the audit route accepted only `limit` while the dashboard had
+been sending `offset` and `resource_type`, silently ignored. Both are
+honoured now.
+
 ### Results
 | Check | Result |
 |---|---|
 | Backend, inherited revision | 1335 passed, 22 skipped, 0 failed |
-| Backend, with this work + PostgreSQL | **1400 passed, 22 skipped, 0 failed** |
-| Backend, without a PostgreSQL DSN | 1377 passed, 45 skipped, 0 failed |
-| Conformance suite | 23 passed (both backends) |
-| Frontend | `tsc` 0, **99 passed**; production build succeeded |
+| Backend, with this work + PostgreSQL | **1424 passed, 22 skipped, 0 failed** |
+| Backend, without a PostgreSQL DSN | 1386 passed, 60 skipped, 0 failed |
+| Conformance suite | 41 passed (both backends) |
+| Application served from PostgreSQL | 6 passed |
+| Frontend | `tsc` 0, **100 passed**; production build succeeded |
 
 ### Not done, and why
 - **Real-data forecasting** — still no approved corpus. The gate refuses,
   correctly. Unchanged.
 - **Live NetFlow/IPFIX** — no exporter or observation point (ADR-072).
 - **Remote TLS** — no remote host.
-- **PostgreSQL under the running application** — the three
-  `KNOWN_ABSTRACTION_LEAKS` still issue SQLite-dialect SQL. That, not the
-  backend, is now what stands between a conforming store and a PostgreSQL
-  deployment.
+- **A PostgreSQL deployment** — the application runs on PostgreSQL in
+  tests, but configuration still selects SQLite, there is no migration
+  path from an existing SQLite database, and nothing about production
+  deployment, TLS termination, pooling, backups or a tuned server is
+  tested. The evidence is a loopback server with trust authentication.
 - **Windows re-run of this session's changes** — the new code is
   platform-neutral and the Windows-only suites still skip here by design,
   but it has not been run on Windows. Same class of gap as Session 33's,

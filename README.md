@@ -590,8 +590,11 @@ the evidence:
   TLS (no host).
 
 PostgreSQL has a conforming backend tested against a real server
-(ADR-092), but the application still runs on SQLite — three modules
-outside `storage/` issue SQLite-dialect SQL directly.
+(ADR-092), and since ADR-093 the application **runs on it end-to-end** —
+the three modules that issued SQLite-dialect SQL directly now go through
+the storage contract. It is not *deployed* on PostgreSQL: configuration
+still selects SQLite and there is no migration path from an existing
+SQLite database.
 
 **No forecasting effectiveness is claimed.** Every metric produced so far
 comes from synthetic data; locally collected telemetry has no incident
@@ -1151,10 +1154,12 @@ Read this before drawing conclusions from anything above.
 - **No Windows run of the Session 34 changes.** Event-level measurement
   and the PostgreSQL backend are platform-neutral and pass on Linux; they
   have not been re-run on Windows.
-- **No PostgreSQL deployment.** The backend conforms and is tested
-  against a real server, but the application still runs on SQLite: three
-  modules outside `storage/` issue SQLite-dialect SQL directly. Nothing
-  about production deployment, TLS, backups or migrations is tested.
+- **No PostgreSQL deployment.** The application runs on PostgreSQL
+  end-to-end in tests against a real server, but configuration still
+  selects SQLite, there is no migration path from an existing SQLite
+  database, and nothing about production deployment, TLS termination,
+  pooling, backups or a tuned server is tested. The evidence is a
+  loopback server with trust authentication.
 - **No cryptographic source authenticity.** Credentials are bearer tokens.
   PraHari does not terminate TLS, so central mode must sit behind HTTPS —
   a deployment prerequisite, not a property of this code.
@@ -1201,10 +1206,11 @@ PostgreSQL 16.15:
 | Check | Result |
 |---|---|
 | Backend, inherited `windows-closure` revision | 1335 passed, 22 skipped (Windows-only and explicitly non-Linux), 0 failed |
-| Backend, with Session 34 work and a PostgreSQL server | 1400 passed, 22 skipped, 0 failed |
-| Backend, without a PostgreSQL DSN | 1377 passed, 45 skipped, 0 failed — the 23 PostgreSQL tests skip rather than pass |
-| Storage conformance suite | 23 passed, every parametrized test against both SQLite and PostgreSQL 16.15 |
-| Frontend | `tsc` 0 errors, 99 tests passed, production build OK |
+| Backend, with Session 34 work and a PostgreSQL server | **1424 passed, 22 skipped, 0 failed** |
+| Backend, without a PostgreSQL DSN | 1386 passed, 60 skipped, 0 failed — the PostgreSQL tests skip rather than pass |
+| Storage conformance suite | 41 passed, every parametrized test against both SQLite and PostgreSQL 16.15 |
+| Application served from PostgreSQL | 6 passed: audit, system health, retention, ingestion, event query, sources, analysis |
+| Frontend | `tsc` 0 errors, **100 tests passed**, production build OK |
 
 The launcher is Windows PowerShell and the live host collector is
 Windows-only; both skip on Linux by design. No real-browser session was

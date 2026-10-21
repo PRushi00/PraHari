@@ -4268,3 +4268,86 @@ that, not the backend, is now what stands between a conforming store and
 a PostgreSQL deployment. A conformance run says nothing about production
 deployment, TLS termination, backups, migrations or a tuned server, and
 the server used here was a loopback instance with trust authentication.
+
+---
+
+## ADR-093: Closing the Abstraction Leaks — The Application Runs on PostgreSQL
+
+### Context
+ADR-071 recorded three modules outside `storage/` that opened a raw
+connection and issued SQLite-dialect SQL themselves:
+
+- `app/api/v1/audit.py` — `SELECT * FROM audit_events ORDER BY id DESC`
+- `app/api/v1/system_health.py` — `PRAGMA integrity_check`,
+  `journal_mode`, `page_count`, `page_size`, `table_info`
+- `app/services/retention.py` — counting and deleting events by
+  `observed_at`, category and source
+
+It also recorded what they cost: "A second backend cannot be substituted
+until each moves behind a method of this contract", and kept a ratchet
+test so a fourth could not appear unnoticed.
+
+ADR-092 then built a conforming PostgreSQL store and had to carry the
+same caveat: conforming, but not substitutable. The leaks, not the
+backend, were what stood between the two.
+
+### Decision
+The queries move behind the contract; the **policy stays where it was**.
+
+- `list_audit_events(limit, offset, resource_type)` returns plain dicts.
+  Storage describes rows; the route decides how to present them.
+- `count_events_before` / `count_events_at_or_after` /
+  `oldest_event_ids_before` / `delete_events_by_id`. Retention's
+  eligibility rules, deletion budget, batching and the confirmation
+  requirement stay in `services/retention.py`, which is where an operator
+  safeguard belongs. Only the SQL moved. Each batch is still its own
+  transaction.
+- `storage_diagnostics()` — **each backend describes itself**.
+
+That last one is the interesting case. The PRAGMAs were not a dialect
+difference to translate; PostgreSQL has no equivalent of
+`PRAGMA integrity_check`, and its WAL is not a per-database mode to
+report. Two wrong answers were available: drop the fields, which loses a
+real SQLite check an operator relies on; or map them to something
+plausible, which would report "ok" for a check nobody ran.
+
+Both keys are therefore **present and None**, each with a note saying
+why, and `healthy` is accompanied by `health_basis` — "PRAGMA
+integrity_check" on SQLite, "the store answered a query; no structural
+check was run" on PostgreSQL. The dashboard renders a null integrity
+check as "not measured" rather than borrowing the green tick. This is
+§11's honesty rule applied to the storage layer: a displayed metric must
+be traceable to a measurement, and a backend may not claim another's.
+
+`KNOWN_ABSTRACTION_LEAKS` is now empty, and the ratchet test asserts that
+no module outside `storage/` opens a connection at all.
+
+### Evidence
+`tests/integration/test_app_on_postgres.py` serves the **real FastAPI
+application** with a `PostgresStore` in place of SQLite and drives it
+through the three routes that used to leak, plus ingestion, event query,
+sources and analysis. If any SQLite dialect remained in the request path,
+these fail rather than a reviewer having to take the claim on trust.
+
+The new contract methods are tested on **both** backends in the
+conformance suite: audit ordering, paging and filtering; the cutoff
+partitioning exactly (`before + at_or_after == total`); category and
+source scoping; oldest-first deletion touching only what was named; an
+empty category list refused rather than read as "everything"; and
+diagnostics never reporting a check that was not run.
+
+Backend with a server: **1424 passed, 22 skipped, 0 failed**. Without a
+DSN: 1386 passed, 60 skipped. Frontend: `tsc` 0, 100 passed, build OK.
+
+### Incidental fix
+`audit.py`'s route accepted only `limit`, while the dashboard had been
+sending `offset` and `resource_type` as well — silently ignored by
+FastAPI. Now that the query has one home, both are honoured.
+
+### Not established
+The application *can* run on PostgreSQL; it is not *deployed* on
+PostgreSQL. Configuration still selects SQLite, and no migration path
+from an existing SQLite database exists. Nothing about production
+deployment, TLS termination, connection pooling, backups or a tuned
+server is claimed: the evidence is a loopback server with trust
+authentication, exercised by a test client.

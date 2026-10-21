@@ -206,4 +206,35 @@ describe("System Health view", () => {
     });
     expect(screen.getByText("Ingestion concurrency")).toBeInTheDocument();
   });
+
+
+  it("does not borrow the healthy tick for a check the backend never ran", async () => {
+    // A PostgreSQL store reports integrity_check as null: it has no
+    // single-statement equivalent of SQLite's PRAGMA integrity_check.
+    // Rendering the green tick there would claim a check nobody ran.
+    vi.spyOn(api, "getSystemHealth").mockResolvedValue({
+      ...report,
+      storage: {
+        available: true,
+        data: {
+          ...report.storage.data,
+          backend: "postgresql",
+          integrity_check: null,
+          integrity_check_note:
+            "PostgreSQL has no single-statement equivalent of PRAGMA integrity_check.",
+          healthy: true,
+          health_basis: "the store answered a query; no structural check was run",
+          journal_mode: null,
+        },
+      },
+    } as never);
+
+    render(<SystemHealthPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("postgresql")).toBeInTheDocument();
+    });
+    // Two "not measured" readings: integrity and journal mode.
+    expect(screen.getAllByText("not measured").length).toBeGreaterThanOrEqual(2);
+  });
 });
