@@ -12,6 +12,7 @@ import {
   Lock,
   HeartPulse,
   Settings,
+  Search,
 } from "lucide-react";
 import { HealthResponse } from "../types";
 
@@ -25,6 +26,7 @@ export type NavTab =
   | "analysis"
   | "research"
   | "forecast"
+  | "investigate"
   | "system"
   | "admin"
   | "audit";
@@ -120,6 +122,13 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Radio size={15} />
           Sources
+        </button>
+        <button
+          className={`nav-btn ${activeTab === "investigate" ? "active" : ""}`}
+          onClick={() => onSelectTab("investigate")}
+        >
+          <Search size={15} />
+          Investigation
         </button>
         <button
           className={`nav-btn ${activeTab === "system" ? "active" : ""}`}

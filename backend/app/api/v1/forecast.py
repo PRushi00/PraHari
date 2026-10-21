@@ -29,6 +29,10 @@ from app.research.calibration import (
     CalibrationReport,
     measure_calibration,
 )
+from app.research.investigation import (
+    WarningInvestigation,
+    investigate_warning,
+)
 from app.services.inference_metrics import get_inference_metrics
 from app.research.selection import (
     MixedProvenanceRefused,
@@ -795,4 +799,121 @@ def measure_probability_calibration(
         outcomes=[int(y) for y in y_true],
         model_id=target,
         n_bins=req.n_bins,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# Investigation (§11, ADR-109)
+# ──────────────────────────────────────────────────────────────────
+
+
+class InvestigateRequest(BaseModel):
+    warning_index: int = Field(
+        ge=0, description="Index of the warning in the event-level report."
+    )
+    model_id: Optional[str] = Field(
+        default=None, description="Defaults to the active model."
+    )
+    source_id: Optional[str] = None
+    max_events: int = Field(default=20_000, ge=100, le=200_000)
+    episode_gap_seconds: float = Field(
+        default=DEFAULT_EPISODE_GAP_SECONDS, gt=0, le=86_400
+    )
+    suppression_seconds: float = Field(
+        default=DEFAULT_SUPPRESSION_SECONDS, ge=0, le=86_400
+    )
+    threshold: float = Field(default=DEFAULT_THRESHOLD, gt=0, lt=1)
+
+
+@router.post("/investigate", response_model=WarningInvestigation)
+def investigate_a_warning(
+    req: InvestigateRequest,
+    db: Database = Depends(get_db),
+) -> WarningInvestigation:
+    """
+    Drill from one warning to the evidence behind it (§11).
+
+    The Forecast page explains a LIVE prediction. This explains a
+    RECORDED one: the window the model scored, the records inside it,
+    which sources contributed, what happened either side, and — where the
+    model's input is a window feature vector — the same contribution
+    figures the live path produces.
+
+    The attribution is `value x global importance`, which is **not** a
+    local explanation. The response says so rather than letting the
+    number imply more than it supports.
+    """
+    pipeline = get_forecasting_pipeline()
+    held = pipeline.last_holdout
+    if held is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_evaluation_in_memory",
+                "message": (
+                    "No evaluation has been performed in this process, so "
+                    "there are no warnings to investigate. Train first."
+                ),
+            },
+        )
+
+    target = req.model_id or pipeline.active_model_id
+    scores = held.scores.get(target)
+    if scores is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "unknown_model",
+                "message": f"No held-out predictions for model {target!r}.",
+                "available": sorted(held.scores),
+            },
+        )
+
+    times = held.times_for(target)
+    if not times:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_prediction_times",
+                "message": (
+                    f"The holdout for {target!r} carries no window times, so "
+                    "a warning cannot be placed in time."
+                ),
+            },
+        )
+
+    extractor = pipeline.extractor
+    windowing = getattr(extractor, "last_windowing_report", None)
+    lead = (
+        windowing.effective_lead_seconds
+        if windowing else extractor.lead_time_seconds
+    )
+    horizon = (
+        windowing.effective_horizon_seconds
+        if windowing else extractor.prediction_horizon_seconds
+    )
+
+    events = db.list_events(source_id=req.source_id, limit=req.max_events)
+    # The same matching protocol the event-level report uses, so a warning
+    # index here means the index it means there.
+    level = evaluate_event_level(
+        events, times, scores,
+        lead_seconds=lead,
+        horizon_seconds=horizon,
+        episode_gap_seconds=req.episode_gap_seconds,
+        suppression_seconds=req.suppression_seconds,
+        threshold=req.threshold,
+        model_id=target,
+    )
+
+    metrics = pipeline.model_metrics.get(target)
+    return investigate_warning(
+        warning_index=req.warning_index,
+        warnings=level.warnings_detail,
+        events=events,
+        model_id=target,
+        prediction_times=times,
+        features=held.features_for(target),
+        importances=(metrics.feature_importance if metrics else {}),
+        observation_window_seconds=extractor.window_size_seconds,
     )

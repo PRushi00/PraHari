@@ -5251,3 +5251,250 @@ rewrite buys a conflict for no benefit. The route must be added to the
 verifier, and the verifier re-run, once that work merges. Until then
 this page has jsdom coverage only — which is exactly the gap ADR-098 was
 written about.
+
+---
+
+## ADR-109: An Investigation View, and Two Bugs Only the Endpoint Test Found
+
+### Context
+Blueprint §11 lists an **Investigation** view: a drill-down "from a
+warning to its input window, contributing features, source references
+and related events". `BLUEPRINT_COVERAGE.md` carried it as `ABSENT` —
+the last absent item in §11.
+
+Feature contributions existed on the Forecast page for a **live**
+prediction. Nothing connected a **recorded** warning to the window that
+produced it, because `HoldoutPredictions` kept scores and times but not
+feature rows.
+
+### Decision
+`research/investigation.py` and `POST /forecast/investigate`, reading
+the evaluation already in memory and running the same event-level
+matching protocol, so a warning index here means what it means there.
+`InvestigationPage.tsx` at `/investigate`.
+
+**The holdout now retains feature rows — but only for the four models
+whose input IS one window's canonical feature vector.** Persistence
+takes an attack indicator, the temporal stack is lag-stacked and the
+LSTM is three-dimensional; for those no row is stored, and the
+investigation reports contributions absent **with the reason** rather
+than attributing a score to the wrong feature names. The alignment
+check mirrors the one already guarding times: a misalignment would
+explain one window's score with another window's features, which is
+worse than having no explanation at all.
+
+**The attribution ships with what it is not.** It is `value x GLOBAL
+importance` — deliberately the same formula the live path uses, because
+two different numbers for one concept would be worse than one crude
+number. It is **not** a local explanation: a feature sitting at its
+baseline in this window still scores highly if it matters globally. The
+response carries `attribution_method` and `attribution_limitations`
+saying so, including that SHAP or permutation on the row would be a
+different measurement and is not implemented. The UI renders those
+**with** the table, not behind a disclosure, because the numbers read as
+an explanation on their own.
+
+Source counts are computed over the **whole** window rather than the
+shown subset, so a truncated view cannot misreport who contributed.
+
+`FeatureContribution` was previously a dict built in code, and
+`test_frontend_api_contract` carried it paired with `None` — "built in
+code, not a Pydantic model". It is now a real model, so that escape
+hatch becomes a genuine pairing and the dashboard's contribution panel
+is pinned to the backend like everything else.
+
+### Two bugs only the endpoint test found
+The first version of these tests exercised `investigate_warning`
+directly and never the route. Two defects passed everything:
+
+* `level.warnings` — **no such field**; it is `warnings_detail`;
+* `extractor.observation_window_seconds` — **no such attribute**; it is
+  `window_size_seconds`.
+
+Both would have raised on the first real request. This is ADR-104's
+lesson in a second place, and from the same hand: a path with no caller
+is not covered by tests of the thing it calls. The route is now driven
+on both its refusal and its happy path, and the mutation restoring
+`level.warnings` fails that test.
+
+Getting the happy path to actually run took one more step worth
+recording: the test first **skipped**, because the active model issues
+no warnings on the synthetic stream and a skip is not a pass. Only
+`baseline_threshold` warns there — the learned models warn zero times,
+which is consistent with this project's wider result — so the test names
+that model explicitly.
+
+### Verification
+18 backend tests (10 investigation, 8 earlier) and 7 frontend tests.
+Mutation-checked: attributing anyway when a model has no feature rows,
+counting sources over the shown subset, dropping the attribution
+limitations (backend and UI separately), showing the shown-count as the
+whole-window count, and the wrong `warnings` attribute — each breaks the
+test that names it.
+
+Backend **1513 passed, 22 skipped, 0 failed** (Linux, real PostgreSQL
+16.15). Frontend `tsc` 0, **116 passed**, build succeeds.
+
+### Not established
+`scripts/verify_browser_session.py`'s hardcoded route list covers
+neither `/sources` nor `/investigate`, so both new pages have **jsdom
+coverage only** — the gap ADR-098 exists about. That file is being
+rewritten concurrently by the Windows verification session (ADR-102);
+both routes must be added and the verifier re-run once that merges.
+
+The drill-down reads the **in-memory** holdout, so it is available only
+in a process where training has run. Predictions are still not
+persisted, so a warning from an earlier process cannot be investigated.
+
+---
+
+## ADR-110: Ingestion Has Operational Acceptance Figures
+
+### Context
+§16 requires that, **before claiming a supported live integration**, an
+operator record measured event rate, ingestion and processing delay,
+queue behaviour, dropped or rejected records, reconnect behaviour,
+resource consumption, and the duration and environment of the test.
+Nothing had measured any of it; `BLUEPRINT_COVERAGE.md` carried §16 as
+`PARTIAL — no ingestion benchmark`.
+
+### Decision
+`scripts/benchmark_ingestion.py`, driving the real ingestion API over
+loopback with synthetic NDJSON, and `docs/INGESTION_BENCHMARK.md`
+recording two scenarios.
+
+**Steady state** (concurrency 4, capacity 8): 10,000 records in 1.407 s
+= **7,106 records/s**, 40/40 HTTP 200, 10,000 stored, 0 rejected, 0
+duplicate. Request latency p50 87.9 / p95 286.3 / p99 1287.1 ms; server
+processing p50 49.4 / p95 183.8 / max 724.1 ms.
+
+**Saturation** (concurrency 24, three times capacity): 8 admitted, **52
+refused with 503**, 1,600 stored, reconciling exactly. This is the
+documented design measured rather than asserted — over capacity, work is
+refused immediately and **nothing is buffered**. Every offered record is
+accounted for as stored or refused.
+
+**Reconnect**: a request to a closed port is refused immediately rather
+than hanging, and the live endpoint recovers afterwards.
+
+Client and server counters are read before and after and **reconciled**.
+A figure only one side agreed with would not be evidence.
+
+### Two holes in my own benchmark, found by running it
+**The first run reported a throughput of 52,627 records/s with zero
+records stored.** Every request had returned 422 — the payload field is
+`ndjson_content`, not `ndjson` — and the script computed a rate over
+failed requests and called it a pass, because its only check was that
+client and server agreed, and 0 == 0. That is exactly the fabricated
+measurement this project refuses, produced by the tool meant to prevent
+it. The script now fails loudly when nothing was stored.
+
+**The second version then failed a legitimate run.** At saturation
+nothing was stored because the batches re-offered the previous run's
+identities and deduplicated correctly — deduplication working, reported
+as a failure. Batch identities now carry a per-run nonce so the two
+causes cannot be confused, and overload refusal is recognised as a
+measured outcome rather than a broken run.
+
+### Not established
+Resource consumption is **recorded as unmeasured**, not estimated: the
+benchmark notes platform and CPU count but samples neither memory nor
+CPU during the run. No PostgreSQL run, no network, no sustained run —
+both scenarios last about a second. `peak_in_flight` is a
+process-lifetime high-water mark and is labelled as such. Nothing here
+is published as a service target; §16 agrees targets only after
+measurement.
+
+---
+
+## ADR-111: Cross-Period Generalization Is Measured, and Negative
+
+### Context
+§10 requires generalization to be evaluated.
+`BLUEPRINT_COVERAGE.md` carried that row as `ABSENT — one corpus only`,
+and the acceptance matrix named "a second corpus" as the prerequisite.
+
+**CIC-IDS2017 cannot be acquired here.** Its download is behind a form
+requiring a person's name, email, organisation, job title and country —
+the operator's identity, not a technical decision — and no public bucket
+exists (the IDS2018 bucket answers 200; the obvious 2017 names 404).
+CTU-13 was rejected separately on the project's own recorded grounds: it
+distributes each scenario's malware executable, states no licence, and
+needs a label mapping that does not exist (ADR-072).
+
+### Decision
+Measure **cross-period** generalization with data already acquired and
+hash-verified: two different days of IDS2018, leave-one-day-out, via the
+existing `generalization_evaluation(group_by="source_id")`. A second day
+(Wednesday 14 Feb) was sliced under the **identical** clock rule as the
+first, which is what makes the comparison fair.
+
+It is named cross-**period**, not cross-dataset, throughout. The
+distinction is not cosmetic: this says nothing about another capture
+environment, exporter or network, and that row stays open.
+
+| Train → Test | Within-day PR-AUC | Cross-day PR-AUC | Gap |
+|---|---|---|---|
+| Wed 14 (BruteForce) → Thu 15 (DoS) | **1.0000** | **0.3852** | 0.6148 |
+| Thu 15 (DoS) → Wed 14 (BruteForce) | 0.9774 | **0.6979** | 0.2795 |
+
+**Mean transfer gap 0.4472.** Two groups evaluated, none refused. Both
+days imported with 0 rejected and reconciling counts.
+
+### Two findings beyond the headline
+**The within-day 1.0000 is a red flag, not an achievement.** It is the
+"suspiciously perfect metrics" row of `TROUBLESHOOTING.md`, with the
+cause this project has twice diagnosed: within a day the model largely
+distinguishes *ongoing* activity, which is continuation, not forecasting
+(ADR-096). The transfer gap is therefore measured against an inflated
+baseline — which strengthens the finding. Even so, the unseen day
+collapses.
+
+**The clock defect biases which rows survive, not just how many.** A
+same-family day-pair was sought and rejected on evidence: Friday 16 Feb
+carries the same DoS family, but inside the unambiguous clock span it is
+**99.75 % attack** (139,890 against 345 benign). ADR-095 recorded the
+12-hour clock as a row-loss defect; it is also a **selection** defect,
+because attacks ran in scheduled blocks and the surviving span can
+coincide with one.
+
+### Not established
+IDS2018 runs one attack family per day, so every cross-day test on it is
+**also cross-family**; the two variables cannot be separated with this
+data and no claim here separates them. The asymmetry between directions
+is reported, not explained — one day-pair gives no basis to attribute it
+to the families, the very different positive rates (8.0 % against
+28.9 %), or the models each direction selected. Test sets are ~1,100
+windowed instances per direction after purging: enough for a direction,
+not for a tight interval. **Cross-dataset generalization remains
+`ABSENT`** and needs CIC-IDS2017, which needs the operator.
+
+---
+
+## ADR-112: The Real-Browser Verifier Covers the New Pages
+
+### Context
+ADR-108 and ADR-109 added `/sources` and `/investigate`, and both closed
+with the same caveat: `scripts/verify_browser_session.py` has a
+hardcoded route list that did not include them, so both pages had
+**jsdom coverage only** — the exact gap ADR-098 exists about. Three
+recorded defects (ADR-084 routing, ADR-089 the binding card, the
+blank-page `undefined.toFixed`) were visible only once something really
+rendered.
+
+### Decision
+Both canonical routes and both aliases (`/telemetry-sources`,
+`/investigation`) join the verifier, which was then run against a real
+server serving the real production bundle in real Chromium.
+
+**31 passed, 0 failed** (27 before): 14 canonical deep links, 11
+aliases, reload, back, forward, unknown path, React root never empty, no
+uncaught page error, no unexpected HTTP failure.
+
+So the caveat those two ADRs carried is closed on Linux.
+
+### Not established
+Linux and one browser engine only. The verifier has not been re-run on
+Windows for this revision, so the Windows half of §18 row 1 does not
+cover these pages. Navigation only — no form interaction, no screenshot
+or visual-regression comparison, no reduced viewport.

@@ -7,6 +7,7 @@ import { LiveTelemetryPage } from "./pages/LiveTelemetryPage";
 import { StreamReplayPage } from "./pages/StreamReplayPage";
 import { EventsPage } from "./pages/EventsPage";
 import { SourcesPage } from "./pages/SourcesPage";
+import { InvestigationPage } from "./pages/InvestigationPage";
 import { AnalysisPage } from "./pages/AnalysisPage";
 import { ResearchPage } from "./pages/ResearchPage";
 import { ForecastPage } from "./pages/ForecastPage";
@@ -28,6 +29,7 @@ const PAGE_LABELS: Record<string, string> = {
   analysis: "Analytics",
   research: "Feasibility",
   forecast: "Threat Forecasting",
+  investigate: "Investigation",
   system: "System Health",
   admin: "Administration",
   audit: "Audit & Security",
@@ -128,6 +130,7 @@ export const App: React.FC = () => {
         {activeTab === "analysis" && <AnalysisPage />}
         {activeTab === "research" && <ResearchPage />}
         {activeTab === "forecast" && <ForecastPage />}
+        {activeTab === "investigate" && <InvestigationPage />}
         {activeTab === "system" && <SystemHealthPage />}
         {activeTab === "admin" && <AdministrationPage />}
         {activeTab === "audit" && <AuditPage />}

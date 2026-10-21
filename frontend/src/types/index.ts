@@ -262,6 +262,48 @@ export interface FeatureContribution {
   importance_weight: number;
 }
 
+/** One source's contribution to an investigated window (§11, ADR-109). */
+export interface SourceReference {
+  source_id: string;
+  events_in_window: number;
+  first_at?: string | null;
+  last_at?: string | null;
+}
+
+/**
+ * `POST /forecast/investigate` — the evidence behind one recorded warning.
+ *
+ * `contributions` is `value x GLOBAL importance`, NOT a local explanation;
+ * `attribution_limitations` carries that and must be rendered with it.
+ */
+export interface WarningInvestigation {
+  available: boolean;
+  refusal_reason?: string | null;
+  model_id?: string | null;
+  warning_index: number;
+  outcome: string;
+  issued_at?: string | null;
+  last_window_at?: string | null;
+  windows: number;
+  peak_score?: number | null;
+  matched_event_index?: number | null;
+  lead_time_seconds?: number | null;
+  window_event_count: number;
+  window_events_shown: number;
+  window_events: NormalizedEvent[];
+  window_truncated: boolean;
+  contributions: FeatureContribution[];
+  contributions_available: boolean;
+  contributions_unavailable_reason?: string | null;
+  attribution_method: string;
+  attribution_limitations: string[];
+  sources: SourceReference[];
+  related_before: NormalizedEvent[];
+  related_after: NormalizedEvent[];
+  related_window_seconds: number;
+  notes: string[];
+}
+
 export interface PredictionResult {
   prediction_id: string;
   predicted_at: string;

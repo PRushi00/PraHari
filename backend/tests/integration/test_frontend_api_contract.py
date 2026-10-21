@@ -62,7 +62,13 @@ MODEL_PAIRS = [
     ("EventSummaryStats", "EventSummaryStats"),
     ("ConnectionDetail", "ConnectionDetail"),
     ("CollectionGap", "CollectionGap"),
-    ("FeatureContribution", None),  # built in code, not a Pydantic model
+    # Was built as a dict in code and so could not be paired. ADR-109 made
+    # it a real model for the investigation drill-down, so the dashboard
+    # contribution panel is now pinned to the backend like everything else.
+    ("FeatureContribution", "FeatureContribution"),
+    # Investigation drill-down (§11, ADR-109).
+    ("WarningInvestigation", "WarningInvestigation"),
+    ("SourceReference", "SourceReference"),
     ("ReadinessRequirement", "Requirement"),
     # Event-level warning performance (§10, ADR-091). Paired so the
     # dashboard's lead-time and missed-event panel cannot drift from what

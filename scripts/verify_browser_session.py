@@ -48,9 +48,11 @@ ROUTES: list[tuple[str, str]] = [
     ("/import", "Import"),
     ("/stream", "Stream"),
     ("/events", "Events"),
+    ("/sources", "Sources"),
     ("/analytics", "Analy"),
     ("/feasibility", "Feasibility"),
     ("/forecast", "Forecast"),
+    ("/investigate", "Investigation"),
     ("/system-health", "Health"),
     ("/admin", "Admin"),
     ("/audit", "Audit"),
@@ -71,6 +73,8 @@ ALIASES: list[tuple[str, str]] = [
     ("/health", "/system-health"),
     ("/administration", "/admin"),
     ("/security", "/audit"),
+    ("/telemetry-sources", "/sources"),
+    ("/investigation", "/investigate"),
 ]
 
 
