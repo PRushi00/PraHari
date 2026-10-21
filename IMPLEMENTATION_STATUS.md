@@ -2460,7 +2460,7 @@ honoured now.
 | Check | Result |
 |---|---|
 | Backend, inherited revision | 1335 passed, 22 skipped, 0 failed |
-| Backend, with this work + PostgreSQL | **1426 passed, 22 skipped, 0 failed** |
+| Backend, with this work + PostgreSQL | **1428 passed, 22 skipped, 0 failed** |
 | Backend, without a PostgreSQL DSN | 1387 passed, 61 skipped, 0 failed |
 | Conformance suite | 43 passed (both backends) |
 | Application served from PostgreSQL | 6 passed |
@@ -2472,10 +2472,15 @@ honoured now.
 - **Live NetFlow/IPFIX** — no exporter or observation point (ADR-072).
 - **Remote TLS** — no remote host.
 - **A PostgreSQL deployment** — the application runs on PostgreSQL in
-  tests, but configuration still selects SQLite, there is no migration
+  tests, but it is not selectable from configuration (ADR-094). Two
+  protections are defined in terms of a database FILE PATH: research-store
+  isolation and the protected-database guard. A backend swap that silently
+  dropped research isolation would be worse than not offering the choice,
+  so a non-SQLite URL now REFUSES rather than falling back to the local
+  SQLite file as it used to. Restating those two protections in terms of a
+  store identity is the next piece of work. There is also no migration
   path from an existing SQLite database, and nothing about production
-  deployment, TLS termination, pooling, backups or a tuned server is
-  tested. The evidence is a loopback server with trust authentication.
+  deployment, TLS, pooling, backups or a tuned server is tested.
 - **Windows re-run of this session's changes** — the new code is
   platform-neutral and the Windows-only suites still skip here by design,
   but it has not been run on Windows. Same class of gap as Session 33's,

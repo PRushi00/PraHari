@@ -4363,3 +4363,57 @@ from an existing SQLite database exists. Nothing about production
 deployment, TLS termination, connection pooling, backups or a tuned
 server is claimed: the evidence is a loopback server with trust
 authentication, exercised by a test client.
+
+---
+
+## ADR-094: A Database URL the Wiring Cannot Serve Is Refused
+
+### Context
+Found while reviewing whether the PostgreSQL backend (ADR-092/093) could
+simply be selected by configuration.
+
+`database_url` carries a scheme — the default is
+`sqlite:///./prahari.db` — so setting `PRAHARI_DATABASE_URL` to a
+PostgreSQL URL *looks* like configuring PostgreSQL.
+
+It was not. `AppConfig.get_database_path()` read the path only when the
+URL began with `sqlite:///`, and otherwise fell back to
+`Path("prahari.db")` — the operator's live telemetry. An operator who
+pointed PraHari at PostgreSQL would have got a system that read and wrote
+the local SQLite file while appearing to be configured for a central
+store, with no error and nothing in the logs to say so.
+
+### Decision
+A non-SQLite URL now raises `UnsupportedDatabaseURL`, naming the URL,
+saying that only `sqlite:///` is wired up, and saying that a conforming
+PostgreSQL backend exists but is not selectable here.
+
+§13's configuration rules are "Validate all configuration before starting
+collection or inference" and "Fail closed when a required credential,
+model artifact, or target definition is missing". A silent fallback to a
+*different store than the one configured* is the opposite of both.
+
+### Why PostgreSQL is not simply wired up
+The backend conforms and the application runs on it under test (ADR-093),
+but selecting it from configuration is not a matter of swapping the
+class. Two protections are currently defined in terms of a database
+**file path**:
+
+- `app/core/research_store.py` keeps research data out of the operational
+  database by comparing resolved paths (`is_operational_database`,
+  `operational_database_paths`);
+- `app/storage/guard.py` refuses to migrate a non-temporary database under
+  pytest by inspecting the path.
+
+Under PostgreSQL neither comparison means anything, and a backend swap
+that silently dropped research isolation would be a worse outcome than
+not offering the choice. Making PostgreSQL selectable requires restating
+those two protections in terms of a store identity rather than a path.
+That is a separate piece of work, and it is named here rather than
+half-done.
+
+### Evidence
+`tests/unit/test_database.py` covers the refusal for `postgresql://`,
+`postgres://` and `mysql://`, asserting the message says what is
+supported, and covers that a SQLite URL still resolves against the
+project root. Backend 1428 passed, 22 skipped, 0 failed.

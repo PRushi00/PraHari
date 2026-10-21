@@ -81,3 +81,40 @@ def test_insert_and_query_events(temp_db: Database):
     single = temp_db.get_event(events[0].event_id)
     assert single is not None
     assert single.event_id == events[0].event_id
+
+
+# ──────────────────────────────────────────────────────────────────
+# Configuration fails closed on a store it cannot serve (ADR-094)
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_a_non_sqlite_database_url_is_refused_not_silently_sqlite():
+    """
+    The trap this closes: `database_url` carries a scheme, so setting a
+    PostgreSQL URL looks like configuring PostgreSQL. It used to fall back
+    to `prahari.db` — the operator's live telemetry — and run on SQLite
+    while appearing configured for something else.
+    """
+    from app.core.config import AppConfig, UnsupportedDatabaseURL
+
+    for url in (
+        "postgresql://user@host/prahari",
+        "postgres://user@host/prahari",
+        "mysql://user@host/prahari",
+    ):
+        config = AppConfig(database_url=url)
+        with pytest.raises(UnsupportedDatabaseURL) as exc:
+            config.get_database_path()
+        # The refusal has to say why, and what does exist.
+        assert "sqlite:///" in str(exc.value)
+        assert "postgres" in str(exc.value).lower()
+
+
+def test_a_sqlite_url_still_resolves_against_the_project_root():
+    from app.core.config import AppConfig
+
+    config = AppConfig(database_url="sqlite:///./prahari.db")
+    resolved = config.get_database_path()
+    assert resolved.is_absolute()
+    assert resolved.name == "prahari.db"
+    assert resolved.parent == config.project_root

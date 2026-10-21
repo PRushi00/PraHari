@@ -21,6 +21,10 @@ class DeploymentMode(str, Enum):
     CENTRAL = "central"
 
 
+class UnsupportedDatabaseURL(ValueError):
+    """A configured database URL that the application wiring cannot serve."""
+
+
 class AppConfig(BaseSettings):
     """
     Validated application configuration.
@@ -131,12 +135,29 @@ class AppConfig(BaseSettings):
         how the app was started — the launcher (run from the project root)
         and a backend-directory invocation each created their own file, so
         telemetry collected through one was invisible to the other.
+
+        A URL that is not SQLite is **refused** (ADR-094). It previously
+        fell back to ``prahari.db`` — the operator's live telemetry — so
+        setting ``PRAHARI_DATABASE_URL`` to a PostgreSQL URL would quietly
+        read and write the local SQLite file while appearing to be
+        configured for PostgreSQL. §13's rule is that configuration is
+        validated and fails closed; a silent fallback to a different store
+        than the one configured is the opposite of that.
         """
         raw = self.database_url
-        if raw.startswith("sqlite:///"):
-            candidate = Path(raw[len("sqlite:///"):])
-        else:
-            candidate = Path("prahari.db")
+        if not raw.startswith("sqlite:///"):
+            raise UnsupportedDatabaseURL(
+                f"database_url {raw!r} is not a SQLite URL. PraHari's "
+                "application wiring currently supports sqlite:/// only: "
+                "research-store isolation and operational-database identity "
+                "are defined in terms of a database FILE PATH "
+                "(app/core/research_store.py), and those protections would "
+                "not apply to another store. A conforming PostgreSQL backend "
+                "exists and is tested (app/storage/postgres.py, ADR-092/093), "
+                "but selecting it here is not wired up, so this refuses "
+                "rather than silently using the local SQLite database."
+            )
+        candidate = Path(raw[len("sqlite:///"):])
 
         if candidate.is_absolute():
             return candidate
