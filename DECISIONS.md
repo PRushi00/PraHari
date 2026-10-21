@@ -4859,3 +4859,92 @@ cannot disagree with the counts already trusted elsewhere.
 Full suite: 1427 passed, 66 skipped, 0 failed (Linux).
 PostgreSQL's implementation is **not** covered: no server is available
 in this container and those tests skip rather than pass against a mock.
+
+---
+
+## ADR-101: A Store Identity Pinned to a POSIX Path
+
+### Context
+ADR-099 and ADR-100 close with the same caveat: "everything here ran on
+Linux. The 24 `live_windows` tests skip in this environment, so no
+Windows claim rests on these runs." Running the full suite on Windows 11
+is what that caveat asks for, and it surfaced one failure out of 1,441 —
+unrelated to either fix:
+
+```
+tests/integration/test_store_selection.py::test_a_sqlite_url_identifies_as_its_resolved_path
+AssertionError: assert False
+  where False = 'sqlite:C:\Users\...\prahari.db'.startswith('sqlite:/')
+```
+
+`AppConfig.store_identity()` returns `f"sqlite:{self.get_database_path()}"`,
+and `get_database_path()` resolves to an **absolute** path. On Linux that
+opens with a separator, so `sqlite:/home/...` satisfies
+`startswith("sqlite:/")`. On Windows it opens with a drive letter, so the
+identity reads `sqlite:C:` and then the path, and the assertion fails.
+
+ADR-097's store-selection suite had only ever run on Linux. The
+acceptance matrix carried `1336 passed, 8 skipped, 0 failed` for Windows
+from a revision predating it, so nothing had contradicted the claim.
+
+### Decision: fix the test, not the identity
+The assertion was the thing encoding a platform assumption, not the
+product.
+
+`store_identity()` is documented as "a canonical, comparable name for the
+configured store", and that is all its consumers want: it is logged
+(`main.py`), displayed (`/health`, `/research/import`), and compared for
+inequality (`research_store.py`). Nothing parses it as a URI, and it is
+deliberately not one — a URI would need escaping rules that a comparison
+does not benefit from. A host spelling its own absolute paths its own way
+is correct behaviour.
+
+Rewriting the identity as `sqlite:///C:/Users/...` to satisfy a leading
+slash would change a value that the protected-store guard and the
+research-isolation check both compare, to buy nothing.
+
+So the test now asserts the actual contract — scheme plus resolved
+absolute path — on any platform:
+
+```python
+assert resolved.is_absolute()
+assert identity == f"sqlite:{resolved}"
+```
+
+### Regression test
+`test_the_sqlite_identity_makes_no_posix_path_assumption` pins it
+separately and names the defect, so a future rewrite back to a
+separator-prefixed form fails on Linux as well as on Windows rather than
+silently passing on one of them.
+
+### Evidence
+`tests/integration/test_store_selection.py`: 10 passed, 1 skipped
+(PostgreSQL, no `psycopg`).
+
+Full backend suite on Windows 11, Python 3.12.10, on this branch:
+
+| Run | Result |
+|---|---|
+| 7ad866e as inherited | **1 failed, 1440 passed, 52 skipped** in 149.5 s |
+| with this fix | **1442 passed, 52 skipped, 0 failed** in 150.2 s |
+
+All **15** `live_windows` tests pass against real connection-table
+collection. ADR-099 and ADR-100 both refer to "the 24 `live_windows`
+tests"; `pytest -m live_windows --collect-only` collects **15** on this
+revision, so that figure is wrong in both ADRs. The marker count, not the
+Windows result, is what was misstated.
+
+The Linux runs recorded in ADR-099 and ADR-100 report 66 skips against
+52 here. The difference is platform, in both directions: Linux skips the
+15 `live_windows` tests and Windows skips the Linux `/proc` and symlink
+tests. A working copy with no `.git` skips a further 19
+(`test_ignore_rules.py` needs `git check-ignore`), which is why a figure
+measured outside a checkout is not comparable.
+
+### Not established
+Whether `store_identity()` should be a URI at all. It is compared and
+displayed, never parsed, so the question was not forced here. The
+PostgreSQL branch of `store_identity()` is covered by tests that run
+without a server, but `event_breakdown()` and the ADR-099 reservation
+guard on PostgreSQL remain unexercised — no server was available, and
+those tests skip rather than pass against a mock.

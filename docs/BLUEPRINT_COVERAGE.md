@@ -6,6 +6,9 @@ This document audits the **other eighteen sections**, which carry roughly
 
 **Assessed 21 Oct 2026** against commit on `ccr-58caddbd-1gv7jn`, by
 reading each section's requirement lists and checking them in the code.
+**§15 re-assessed 21 Oct 2026** on Windows 11, after
+`docs/TROUBLESHOOTING.md` was written and its claims checked in the
+source and against a running instance.
 
 | Status | Meaning |
 |---|---|
@@ -39,17 +42,18 @@ reading each section's requirement lists and checking them in the code.
 | 12 | Security, privacy, threat model | 16 | `MET` |
 | 13 | Repository structure and configuration | 7 | `DEVIATES` (layout, keys) |
 | 14 | Installation and operating guide | 2 | `MET` |
-| 15 | Troubleshooting and failure handling | 15 | `ABSENT` as a guide |
+| 15 | Troubleshooting and failure handling | 15 | `MET` — `docs/TROUBLESHOOTING.md` |
 | 16 | Reproducibility, testing, release readiness | 17 | `PARTIAL` — no ingestion benchmark |
 | 17 | Research positioning and claims | 6 | `MET` |
 | 18 | Definition of done | 15 | 13 `MET`, 2 `PARTIAL` |
 | 19 | References and decision register | 2 | `MET` |
 
-**≈ 222 of ≈ 249 discrete requirements — about 89 %.**
+**≈ 237 of ≈ 249 discrete requirements — about 95 %.**
+(Was ≈ 222 / 89 % before §15's fifteen rows were written on 21 Oct 2026.)
 
-The missing ~11 % is not evenly trivial. It contains one thing the
-project exists for (live network-level collection) and one guide a user
-would actually reach for (§15).
+The missing ~5 % is not evenly trivial. It still contains the thing the
+project exists for: live network-level collection. §15's guide, the other
+half of that sentence until today, is now `docs/TROUBLESHOOTING.md`.
 
 ---
 
@@ -148,22 +152,30 @@ The forecast record contract (all 8 fields), the API surface (every route
 family), the streaming decision (polling, explicitly permitted) and all
 six UI honesty rules are met.
 
-### §15 — the troubleshooting guide · `ABSENT`
+### §15 — the troubleshooting guide · `MET`
 
 The blueprint gives a fifteen-row table of symptom → investigate first →
 safe response ("no live events", "queue grows continuously", "model
 predicts nearly all negatives", "suspiciously perfect metrics",
 "implausibly long lead time", …).
 
-Most of the *behaviour* exists — the gate refuses, the report states
-limitations, counters reconcile. What does not exist is **the guide**. A
-user hitting "suspiciously perfect metrics" has nowhere to look, even
-though this project has twice produced exactly that and diagnosed it
-(window recall 1.000 on a single-class holdout; PR-AUC 0.9925 measuring
-continuation). Those diagnoses live in ADRs, not in a troubleshooting
-page.
+**Written 21 Oct 2026: `docs/TROUBLESHOOTING.md`.** Fifteen rows, each
+grounded in a diagnosis this repository actually made and citing its ADR
+— eleven distinct ADRs across the fifteen rows — with every behavioural
+claim read in the source or exercised against a running instance rather
+than assumed. The two diagnoses that motivated this row are rows 5 and 4
+of the guide (window recall 1.000 while warning 0 of 3 events, ADR-091;
+PR-AUC 0.9925 measuring attack continuation, ADR-096), so they are now
+where an operator will find them rather than only in `DECISIONS.md`.
 
-This is the single most user-visible gap, and the cheapest to close.
+Rows 7 and 13 cover this revision's own two fixes (ADR-100, ADR-099),
+each with a measured before and after from Windows, because an operator
+on an older build still meets them and the ADR-099 case leaves data that
+cannot be repaired afterwards.
+
+It also records what *cannot* occur — there is no queue, no live NetFlow
+listener, and no code path that changes a route or firewall rule — so
+time is not spent looking for those.
 
 ### §16 — operational acceptance for real-time ingestion · `PARTIAL`
 
@@ -199,7 +211,6 @@ CSE-CIC-IDS2018 the learned models do not forecast attack onsets. See
 
 | Gap | Needs | Size |
 |---|---|---|
-| §15 troubleshooting guide | nothing — writing | small |
 | §11 Investigation view | nothing — frontend work | medium |
 | §11 dedicated Sources view | nothing — frontend work | small |
 | §10 calibration curve | nothing — the holdout is already kept | small |

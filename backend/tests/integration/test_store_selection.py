@@ -44,10 +44,42 @@ PG_URL = "postgresql://user:hunter2@dbhost:5432/prahari"
 def test_a_sqlite_url_identifies_as_its_resolved_path():
     config = AppConfig(database_url="sqlite:///./prahari.db")
     identity = config.store_identity()
+    resolved = config.get_database_path()
 
     assert config.store_scheme() == "sqlite"
-    assert identity.startswith("sqlite:/")
+    # The identity is the scheme followed by the RESOLVED ABSOLUTE path. It is
+    # deliberately NOT a URI, so the path is spelled the way the host spells
+    # it: POSIX absolute paths open with "/", Windows ones with a drive
+    # letter. Asserting a leading slash here asserted POSIX, not the contract
+    # (ADR-101).
+    assert resolved.is_absolute()
+    assert identity == f"sqlite:{resolved}"
     assert identity.endswith("prahari.db")
+
+
+def test_the_sqlite_identity_makes_no_posix_path_assumption():
+    """
+    Regression test for ADR-101.
+
+    `store_identity()` was pinned as `startswith("sqlite:/")`, which holds
+    only where an absolute path begins with a separator. On Windows the
+    resolved path opens with a drive letter, so the identity reads
+    `sqlite:C:` and then the path, and the assertion failed — the one
+    Windows failure in an otherwise green suite, on a store-selection suite
+    (ADR-097) that had only ever run on Linux.
+
+    The contract is "scheme plus resolved absolute path", which is what this
+    asserts on every platform.
+    """
+    config = AppConfig(database_url="sqlite:///./prahari.db")
+    identity = config.store_identity()
+    resolved = config.get_database_path()
+
+    assert identity == f"sqlite:{resolved}"
+    assert resolved.is_absolute()
+    # Still unambiguously a SQLite identity, and still credential-free.
+    assert identity.startswith("sqlite:")
+    assert identity.split("sqlite:", 1)[1] == str(resolved)
 
 
 def test_a_postgres_url_identifies_by_host_database_and_schema():
