@@ -641,10 +641,21 @@ _collector: Optional[WindowsTelemetryCollectorService] = None
 
 
 def get_collector(db: Database) -> WindowsTelemetryCollectorService:
-    """Get (or lazily create) the process-wide collector service."""
+    """
+    Get (or lazily create) the process-wide collector service.
+
+    The source id comes from configuration (ADR-099). Before this, it was
+    the `DEFAULT_SOURCE_ID` constant with no way to override it, so every
+    Windows host that ran PraHari filed its telemetry under the same
+    identity and two hosts could not be told apart once their data met.
+    """
     global _collector
     if _collector is None:
-        _collector = WindowsTelemetryCollectorService(db=db)
+        from app.core.config import get_config
+
+        _collector = WindowsTelemetryCollectorService(
+            db=db, source_id=get_config().resolved_collector_source_id()
+        )
     return _collector
 
 

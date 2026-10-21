@@ -8,6 +8,7 @@ variables, never committed to source control.
 from __future__ import annotations
 
 import os
+import re
 from enum import Enum
 from pathlib import Path
 from functools import lru_cache
@@ -23,6 +24,16 @@ class DeploymentMode(str, Enum):
 
 class UnsupportedDatabaseURL(ValueError):
     """A configured database URL that the application wiring cannot serve."""
+
+
+class InvalidCollectorSourceId(ValueError):
+    """A configured host-collector source id that must not be used (ADR-099)."""
+
+
+# A source id travels into event ids, URLs, audit records and the source
+# registry, so it is restricted to characters that are unambiguous in all
+# four rather than merely legal in one.
+_COLLECTOR_SOURCE_ID_RE = re.compile(r"[a-z][a-z0-9_-]*")
 
 
 class AppConfig(BaseSettings):
@@ -99,6 +110,20 @@ class AppConfig(BaseSettings):
     analysis_history_limit: int = 0
     raw_payload_storage: bool = False
 
+    # ── Host collector identity (ADR-099) ──
+    # The source id the local connection-table collector files its
+    # telemetry under. Empty means the historical default,
+    # `windows_local_host`, so an existing installation keeps its source
+    # and its stored events.
+    #
+    # It must be set to something distinct on each machine BEFORE two
+    # hosts' telemetry is ever brought together: event identity is a hash
+    # whose first component is this id (`WindowsConnectionAdapter.
+    # fingerprint`), so two hosts sharing it produce colliding event ids
+    # for a connection that matches on the rest of the tuple, and the
+    # surviving row is attributed to whichever host was stored first.
+    collector_source_id: str = ""
+
     # ── Security ──
     # Local (loopback) mode is unauthenticated by design. CENTRAL mode
     # requires credentials and refuses to start without them; see
@@ -136,6 +161,47 @@ class AppConfig(BaseSettings):
     # backend has no path, so they are expressed here as an IDENTITY that
     # both kinds of store can produce, rather than being dropped for one
     # of them.
+
+    def resolved_collector_source_id(self) -> str:
+        """
+        The source id the host collector must use (ADR-099).
+
+        Unset yields the historical default, so an upgrade changes nothing.
+        A configured value is validated here rather than at the point of
+        use: an id that reached the adapter would already be baked into
+        event identity, and a bad one could not be corrected without
+        orphaning every event already stored under it.
+        """
+        from app.services.collector import DEFAULT_SOURCE_ID
+
+        raw = (self.collector_source_id or "").strip()
+        if not raw:
+            return DEFAULT_SOURCE_ID
+
+        if len(raw) > 64:
+            raise InvalidCollectorSourceId(
+                f"collector_source_id is {len(raw)} characters; the limit is 64."
+            )
+        if not _COLLECTOR_SOURCE_ID_RE.fullmatch(raw):
+            raise InvalidCollectorSourceId(
+                f"collector_source_id {raw!r} must be lowercase letters, digits, "
+                "'-' or '_', and start with a letter. It becomes part of every "
+                "event id, so it cannot be changed later without orphaning the "
+                "events already stored under it."
+            )
+
+        # The UDP endpoint observer is a DIFFERENT in-process producer with
+        # its own reserved id (ADR-090). Letting the connection-table
+        # collector take it would put two producers on one source, and the
+        # reservation guard could no longer name which one owns it.
+        from app.api.v1.hostobs import UDP_SOURCE_ID
+
+        if raw == UDP_SOURCE_ID:
+            raise InvalidCollectorSourceId(
+                f"collector_source_id {raw!r} is reserved for the host "
+                "UDP-endpoint observer. Choose another id."
+            )
+        return raw
 
     def store_scheme(self) -> str:
         """`sqlite` or `postgresql`, from the configured URL."""

@@ -89,7 +89,22 @@ class SystemHealthReport(BaseModel):
 def _ingestion_block() -> Block:
     """Measured ingestion counters from the admission controller."""
     try:
-        return Block(available=True, data=get_admission_controller().snapshot())
+        data = get_admission_controller().snapshot()
+        # These count the HTTP ingestion API only. The host collector is an
+        # in-process producer: it writes through the storage layer directly
+        # and never calls this backend over the network, so it is counted in
+        # `adapters`, not here. Without this, an operator reading
+        # `events_stored: 0` beside a storage block holding hundreds of
+        # collected events has to guess which number is wrong — and neither
+        # is.
+        data["scope"] = "http_ingestion_api_only"
+        data["scope_note"] = (
+            "Counts requests to the ingestion API (POST /stream/ingest/*, "
+            "/imports/*). The in-process host collector writes directly to "
+            "storage and is reported under `adapters`; zero here does not "
+            "mean nothing was collected."
+        )
+        return Block(available=True, data=data)
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("Ingestion metrics unavailable")
         return Block(available=False, reason=f"metrics unavailable: {exc}")
