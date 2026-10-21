@@ -2487,3 +2487,65 @@ honoured now.
   in the opposite direction.
 - **A real-browser Linux session** — the dashboard is covered by 99
   component tests here, not by a browser.
+
+
+---
+
+## Session 34, continued — The First Real Corpus
+
+CSE-CIC-IDS2018 acquired with the operator's authorisation: all 10
+processed CSVs, 6.41 GB, hashed. `docs/DATASET_PROVENANCE_IDS2018.md` is
+the §8 record. This is the first time PraHari has seen real labelled data.
+
+### Four source defects found before importing
+1. **12-hour clock, no AM/PM.** Hours 01-12 present; 00 and 13-23 absent
+   in every file. The run at "01:14" is the publisher's 13:13 UDP flood.
+   Read naively the afternoon lands twelve hours before the morning.
+   `timestamp_format` does not catch this. Imports confined to 08:00-12:59.
+2. **Seven of ten files hold exactly 1,048,575 rows** (2^20-1): truncated.
+3. **Addresses absent from 9 of 10 files**, and no `Flow ID` either, so
+   unrecoverable. Checked, not assumed.
+4. **Tuesday's two scheduled attacks share one label.**
+
+### The result
+607,785 flows imported, 0 rejected, reconciles. Training ran and PraHari
+**refused to call it interpretable**: the attack begins at 10:13 and does
+not end inside the span, so test_positive 57 / test_negative 0. The
+persistence and rate-threshold baselines score F1 1.0000 by always saying
+"attack"; the four real models score 0.0000 by always saying "benign".
+Every model carries `metrics_interpretable: false`.
+
+The event-level report refused separately: the event starts at 10:13, the
+holdout at 10:15:15, so no window could have warned for it. The coverage
+rule excludes it rather than recording a miss the model could not avoid.
+
+**20 Feb has one attack onset, and one onset cannot support a split.** The
+day PraHari can read today is the one day that cannot answer the research
+question.
+
+### Defect found and fixed (ADR-095)
+Readiness judged dataset-level facts from `list_events(limit=50_000)`,
+which orders DESC. On a dense corpus that is 104 seconds of a 31-minute
+dataset, so the gate refused training on data that was fine. Span and
+count are now measured by the store via `event_time_range`. Training
+ceiling 100k -> 2M for the same reason.
+
+### Deliberately not changed
+The run also failed the quality check: 100% of records carry
+`timestamp_uncertainty` (undocumented publisher timezone). Reclassifying
+that flag immediately after it blocked a run would be result-driven
+tuning. A wrong measurement is wrong whatever it implies; a judgement
+about what counts as a defect may not be revised because of the verdict it
+produced. Reported, left to the operator.
+
+### Results
+| Check | Result |
+|---|---|
+| Backend + PostgreSQL 16.15 | **1432 passed, 22 skipped, 0 failed** |
+| Storage conformance | 47 passed (both backends) |
+
+### Next
+Thursday-15-02 has four separated onsets in one morning (~659k rows in the
+unambiguous span) and is the strongest candidate for an interpretable
+result. It is an 80-column file, so the address-less feature schema is the
+prerequisite - phase 2, not started.
