@@ -609,3 +609,98 @@ export interface RetentionPolicy {
   previous_retention_days?: number;
   note?: string;
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Event-level warning performance (ADR-091)
+//
+// The window-level metrics answer "how many windows were classified
+// correctly". These answer blueprint §10's question instead: how long
+// before a documented event the first qualifying warning arrived, how
+// many events got no warning, and how many alerts an analyst would read.
+// ──────────────────────────────────────────────────────────────────
+
+/** The matching protocol, frozen and fingerprinted before results are read. */
+export interface MatchingRules {
+  episode_gap_seconds: number;
+  min_lead_seconds: number;
+  max_lead_seconds: number;
+  suppression_seconds: number;
+  threshold: number;
+  attack_label_rule: string;
+  event_time_origin: string;
+  episode_rule: string;
+  warning_rule: string;
+  qualifying_rule: string;
+  reuse_rule: string;
+  coverage_rule: string;
+  late_rule: string;
+}
+
+export interface DocumentedEvent {
+  event_index: number;
+  started_at: string;
+  ended_at: string;
+  labelled_records: number;
+  labels: string[];
+  source_ids: string[];
+  in_coverage: boolean;
+  out_of_coverage_reason: string | null;
+  warned: boolean;
+  lead_time_seconds: number | null;
+  detecting_warning_index: number | null;
+  late_warning_indices: number[];
+}
+
+export interface IssuedWarning {
+  warning_index: number;
+  issued_at: string;
+  last_window_at: string;
+  windows: number;
+  peak_score: number;
+  outcome: "detection" | "late" | "false_alarm";
+  matched_event_index: number | null;
+  lead_time_seconds: number | null;
+}
+
+/** Quartiles are absent below four warned events, never computed from one. */
+export interface LeadTimeDistribution {
+  count: number;
+  min_seconds: number | null;
+  p25_seconds: number | null;
+  median_seconds: number | null;
+  p75_seconds: number | null;
+  max_seconds: number | null;
+  mean_seconds: number | null;
+  quartiles_available: boolean;
+  note: string;
+}
+
+export interface EventLevelReport {
+  available: boolean;
+  refusal_reason: string | null;
+  model_id: string | null;
+  rules: MatchingRules;
+  rules_fingerprint: string;
+  evaluated_windows: number;
+  first_prediction_at: string | null;
+  last_prediction_at: string | null;
+  evaluated_span_seconds: number;
+  events_out_of_coverage: number;
+  events_total: number;
+  events_warned: number;
+  events_missed: number;
+  missed_event_rate: number | null;
+  lead_time: LeadTimeDistribution;
+  positive_windows: number;
+  warnings_issued: number;
+  windows_per_warning: number | null;
+  alarm_duty_cycle: number | null;
+  detections: number;
+  late_warnings: number;
+  false_alarms: number;
+  false_alarms_per_hour: number | null;
+  label_provenance: string[];
+  events: DocumentedEvent[];
+  warnings_detail: IssuedWarning[];
+  limitations: string[];
+}

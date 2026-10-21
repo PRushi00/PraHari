@@ -150,29 +150,15 @@ def _sources_block(db: Database) -> Block:
 
 def _storage_block(db: Database, config: AppConfig) -> Block:
     try:
-        with db.get_connection() as conn:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
-            page_count = conn.execute("PRAGMA page_count").fetchone()[0]
-            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-            columns = [
-                r["name"] for r in conn.execute("PRAGMA table_info(normalized_events)")
-            ]
+        # The backend describes itself (ADR-093): the PRAGMAs this used to
+        # run are SQLite's, and a second backend reports what IS true of it
+        # rather than a plausible-looking stand-in. `received_at_column_present`
+        # is migration state, so an operator can see whether a schema
+        # addition has been applied without opening the store.
+        diagnostics = db.storage_diagnostics()
         return Block(
             available=True,
-            data={
-                "integrity_check": integrity,
-                "healthy": integrity == "ok",
-                "journal_mode": journal,
-                "size_bytes": page_count * page_size,
-                "event_count": db.count_events(),
-                "source_count": len(db.list_sources()),
-                # Migration state, so an operator can see whether a schema
-                # addition has been applied without opening the file.
-                "received_at_column_present": "received_at" in columns,
-                "normalized_events_columns": len(columns),
-                "retention_days": config.retention_days,
-            },
+            data={**diagnostics, "retention_days": config.retention_days},
         )
     except Exception as exc:
         return Block(available=False, reason=f"storage unreadable: {exc}")

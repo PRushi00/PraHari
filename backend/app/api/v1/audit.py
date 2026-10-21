@@ -68,41 +68,32 @@ class SystemConfigReport(BaseModel):
     security_boundaries: dict[str, Any]
 
 
-def _column(row, name: str):
-    """Read a column that may be absent on a pre-migration database."""
-    try:
-        return row[name]
-    except (IndexError, KeyError):
-        return None
-
-
 @router.get("/logs", response_model=list[AuditLogItem])
 def list_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    resource_type: Optional[str] = Query(default=None),
     db: Database = Depends(get_db),
     _: object = Depends(require_admin_in_central),
 ) -> list[AuditLogItem]:
-    """Retrieve chronologically ordered audit logs from the persistence store."""
-    with db.get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM audit_events ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [
-            AuditLogItem(
-                id=r["id"],
-                timestamp=r["timestamp"],
-                action=r["action"],
-                resource_type=r["resource_type"] or "",
-                resource_id=r["resource_id"] or "",
-                details=r["details"] or "",
-                user_identity=r["user_identity"] or "system",
-                # None on an entry written before the column existed, and
-                # on anything with no request behind it (ADR-063).
-                request_id=_column(r, "request_id"),
-            )
-            for r in rows
-        ]
+    """
+    Chronologically ordered audit entries, newest first.
+
+    Goes through the storage contract (ADR-093) rather than opening a
+    connection here, so the route does not depend on which backend is
+    configured. `request_id` is None on an entry written before the column
+    existed and on anything with no request behind it (ADR-063).
+
+    `offset` and `resource_type` were already being sent by the dashboard
+    and silently ignored; they are honoured now that the query has one
+    home.
+    """
+    return [
+        AuditLogItem(**row)
+        for row in db.list_audit_events(
+            limit=limit, offset=offset, resource_type=resource_type
+        )
+    ]
 
 
 @router.get("/config", response_model=SystemConfigReport)

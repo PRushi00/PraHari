@@ -10,13 +10,20 @@ this suite passes against a REAL server. Passing against a mock would not
 count: the properties tested here - atomic batches, idempotent identity,
 concurrent writers - are exactly what a mock cannot exhibit.
 
-Temporary databases only.
+PostgreSQL (ADR-092) is in BACKENDS, and runs when
+``PRAHARI_TEST_POSTGRES_DSN`` points at a real server. Without one it is
+SKIPPED, never silently passed: a machine with no server has no evidence
+about PostgreSQL, and a green run there must not be read as if it had.
+
+Temporary databases and throwaway schemas only.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,23 +48,65 @@ APP = Path(__file__).resolve().parents[2] / "app"
 T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
+POSTGRES_DSN = os.environ.get("PRAHARI_TEST_POSTGRES_DSN", "").strip()
+
+
 def _sqlite(tmp_path):
     db = Database(db_path=str(tmp_path / "contract.db"))
     db.initialize()
     return db
 
 
-# Each entry: (name, factory(tmp_path) -> an initialised TelemetryStore).
-BACKENDS = [("sqlite", _sqlite)]
+def _sqlite_reopen(store, tmp_path):
+    """A second handle on the same SQLite file."""
+    db = Database(db_path=str(tmp_path / "contract.db"))
+    db.initialize()
+    return db
 
 
-@pytest.fixture(params=BACKENDS, ids=[name for name, _ in BACKENDS])
+def _postgres(tmp_path):
+    if not POSTGRES_DSN:
+        pytest.skip(
+            "PRAHARI_TEST_POSTGRES_DSN is unset. The PostgreSQL backend is "
+            "only evidenced against a REAL server; it is skipped here rather "
+            "than passed against a mock."
+        )
+    from app.storage.postgres import PostgresStore
+
+    # One throwaway schema per test, so tests cannot see each other's rows
+    # and nothing outside the schema is touched.
+    schema = "prahari_contract_" + uuid.uuid4().hex[:12]
+    store = PostgresStore(POSTGRES_DSN, schema=schema)
+    store.initialize()
+    return store
+
+
+def _postgres_reopen(store, tmp_path):
+    """A second handle on the same PostgreSQL schema."""
+    from app.storage.postgres import PostgresStore
+
+    reopened = PostgresStore(store.dsn, schema=store.schema)
+    reopened.initialize()
+    return reopened
+
+
+# Each entry: (name, factory(tmp_path), reopen(store, tmp_path)).
+BACKENDS = [
+    ("sqlite", _sqlite, _sqlite_reopen),
+    ("postgres", _postgres, _postgres_reopen),
+]
+
+
+@pytest.fixture(params=BACKENDS, ids=[name for name, _, _ in BACKENDS])
 def store(request, tmp_path):
-    _, factory = request.param
+    _, factory, reopen = request.param
     backend = factory(tmp_path)
+    backend._contract_reopen = lambda: reopen(backend, tmp_path)
     for sid in ("src-a", "src-b"):
         backend.upsert_source(TelemetrySource(source_id=sid, name=sid, source_type="json_stream"))
     yield backend
+    if hasattr(backend, "drop_schema"):
+        backend.drop_schema()
     backend.close()
 
 
@@ -206,7 +255,10 @@ def test_audit_entries_keep_their_actor_and_request_id(store):
         row = conn.execute(
             "SELECT user_identity, request_id FROM audit_events WHERE action='contract_check'"
         ).fetchone()
-    assert tuple(row) == ("credential:abc source:src-a role:ingest", "req-123")
+    # By column name: a sqlite3.Row and a psycopg dict row both support it,
+    # whereas tuple() over the latter would yield its KEYS.
+    assert row["user_identity"] == "credential:abc source:src-a role:ingest"
+    assert row["request_id"] == "req-123"
 
 
 def test_settings_round_trip_and_clear(store):
@@ -218,12 +270,206 @@ def test_settings_round_trip_and_clear(store):
 
 
 def test_data_survives_close_and_reopen(store, tmp_path):
+    """Reopens the SAME backend; it previously reopened SQLite regardless."""
     store.insert_events([_ev("src-a", i) for i in range(4)])
     store.close()
 
-    reopened = Database(db_path=str(tmp_path / "contract.db"))
-    reopened.initialize()
+    reopened = store._contract_reopen()
     try:
         assert reopened.count_events(source_id="src-a") == 4
     finally:
         reopened.close()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Audit listing, retention queries and diagnostics (ADR-093)
+#
+# These moved out of three modules that had been issuing SQLite SQL
+# directly. Both backends must now exhibit them identically, which is
+# what makes the second backend substitutable rather than merely
+# conforming on paper.
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_audit_entries_come_back_newest_first(store):
+    for i in range(5):
+        store.log_audit(action=f"act-{i}", resource_type="alpha")
+
+    entries = store.list_audit_events(limit=10)
+    assert [e["action"] for e in entries] == [f"act-{i}" for i in reversed(range(5))]
+    assert all(e["user_identity"] for e in entries), "actor must never be blank"
+
+
+def test_audit_listing_honours_limit_offset_and_resource_type(store):
+    for i in range(4):
+        store.log_audit(action=f"alpha-{i}", resource_type="alpha")
+    for i in range(3):
+        store.log_audit(action=f"beta-{i}", resource_type="beta")
+
+    assert len(store.list_audit_events(limit=2)) == 2
+
+    page1 = store.list_audit_events(limit=3, offset=0)
+    page2 = store.list_audit_events(limit=3, offset=3)
+    assert {e["id"] for e in page1}.isdisjoint({e["id"] for e in page2})
+
+    betas = store.list_audit_events(limit=50, resource_type="beta")
+    assert len(betas) == 3
+    assert {e["resource_type"] for e in betas} == {"beta"}
+
+
+def test_an_entry_with_no_request_behind_it_reports_none_not_a_placeholder(store):
+    store.log_audit(action="no-request")
+    entry = store.list_audit_events(limit=1)[0]
+    assert entry["request_id"] is None
+
+
+def test_retention_counts_split_at_the_cutoff(store):
+    store.insert_events([_ev("src-a", i) for i in range(10)])
+    cutoff = (T0 + timedelta(seconds=4)).isoformat()
+    categories = [DataCategory.LIVE_TELEMETRY.value]
+
+    before = store.count_events_before(cutoff, categories)
+    at_or_after = store.count_events_at_or_after(cutoff, categories)
+
+    assert before == 4          # seconds 0..3
+    assert at_or_after == 6     # seconds 4..9
+    assert before + at_or_after == 10, "the cutoff must partition, not overlap"
+
+
+def test_retention_queries_respect_category_and_source(store):
+    store.insert_events([_ev("src-a", i) for i in range(5)])
+    store.insert_events([_ev("src-b", i) for i in range(3)])
+    cutoff = (T0 + timedelta(seconds=100)).isoformat()
+
+    assert store.count_events_before(
+        cutoff, [DataCategory.LIVE_TELEMETRY.value], "src-a"
+    ) == 5
+    # A category nothing was stored under protects every row.
+    assert store.count_events_before(
+        cutoff, [DataCategory.SYNTHETIC_DEMO.value]
+    ) == 0
+
+
+def test_an_empty_category_list_is_refused_not_read_as_everything(store):
+    """'Nothing' and 'everything' must never be the same argument."""
+    cutoff = (T0 + timedelta(seconds=100)).isoformat()
+    with pytest.raises(ValueError, match="at least one category"):
+        store.count_events_before(cutoff, [])
+    with pytest.raises(ValueError, match="at least one category"):
+        store.oldest_event_ids_before(cutoff, [], limit=10)
+
+
+def test_deletion_takes_the_oldest_first_and_only_what_was_named(store):
+    store.insert_events([_ev("src-a", i) for i in range(10)])
+    store.insert_events([_ev("src-b", i) for i in range(4)])
+    cutoff = (T0 + timedelta(seconds=100)).isoformat()
+    categories = [DataCategory.LIVE_TELEMETRY.value]
+
+    doomed = store.oldest_event_ids_before(cutoff, categories, "src-a", limit=3)
+    assert doomed == ["src-a-0", "src-a-1", "src-a-2"]
+
+    assert store.delete_events_by_id(doomed) == 3
+    assert store.count_events(source_id="src-a") == 7
+    assert store.count_events(source_id="src-b") == 4, "another source was touched"
+    assert store.get_event("src-a-0") is None
+    assert store.get_event("src-a-3") is not None
+
+    assert store.delete_events_by_id([]) == 0
+
+
+def test_diagnostics_describe_the_backend_without_inventing_a_check(store):
+    """
+    A store may not report a check it did not run.
+
+    Where a backend has no equivalent of another's check, the key is
+    present and None - never filled with a plausible-looking value.
+    """
+    diagnostics = store.storage_diagnostics()
+
+    for required in (
+        "backend", "healthy", "health_basis", "size_bytes", "event_count",
+        "source_count", "received_at_column_present",
+        "normalized_events_columns", "integrity_check", "journal_mode",
+    ):
+        assert required in diagnostics, f"missing {required}"
+
+    assert diagnostics["healthy"] is True
+    assert diagnostics["health_basis"], "healthy must say what it rests on"
+    assert diagnostics["size_bytes"] > 0
+    assert diagnostics["received_at_column_present"] is True
+    assert diagnostics["normalized_events_columns"] >= 26
+
+    # Anything reported as not measured must say why, in the same payload.
+    for field in ("integrity_check", "journal_mode"):
+        if diagnostics[field] is None:
+            assert diagnostics.get(f"{field}_note"), (
+                f"{field} is None but carries no note explaining why"
+            )
+
+
+def test_diagnostics_event_count_tracks_what_is_stored(store):
+    before = store.storage_diagnostics()["event_count"]
+    store.insert_events([_ev("src-a", i) for i in range(6)])
+    assert store.storage_diagnostics()["event_count"] == before + 6
+
+
+def test_deletion_reports_rows_actually_removed_not_ids_supplied(store):
+    """
+    The count is what an operator is told was destroyed.
+
+    Selecting ids and deleting them are two statements, so an id that is
+    already gone must not be counted as this call's deletion.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(4)])
+
+    assert store.delete_events_by_id(["src-a-0", "src-a-1"]) == 2
+    # Re-deleting the same ids removes nothing, and says so.
+    assert store.delete_events_by_id(["src-a-0", "src-a-1"]) == 0
+    # A mix of present and absent counts only the present one.
+    assert store.delete_events_by_id(["src-a-2", "never-existed"]) == 1
+    assert store.count_events(source_id="src-a") == 1
+
+
+def test_event_time_range_is_measured_over_the_whole_selection(store):
+    """
+    The span of a dataset is a property of the dataset, not of whatever
+    sample a caller happened to read (ADR-095). Measuring it from the
+    most-recent N rows is how a 31-minute corpus got reported as spanning
+    104 seconds, which failed the readiness gate on a dataset that was
+    actually fine.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(60)])      # T0 .. T0+59s
+    store.insert_events([_ev("src-b", i) for i in range(5)])
+
+    lo, hi = store.event_time_range()
+    assert lo == T0
+    assert hi == T0 + timedelta(seconds=59)
+
+    # Scoped to one source.
+    lo_b, hi_b = store.event_time_range(source_id="src-b")
+    assert hi_b == T0 + timedelta(seconds=4)
+
+    # Empty selection reports nothing rather than a zero-width span.
+    assert store.event_time_range(source_id="src-never-used") is None
+
+
+def test_event_time_range_honours_plausibility_bounds(store):
+    """
+    One record stamped in 1601 would otherwise stretch the span across
+    centuries and satisfy a duration requirement on nonsense. The bounds
+    are supplied by the caller so the plausibility rule lives in one place.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(10)])
+    implausible = _ev("src-a", 99)
+    implausible.observed_at = datetime(1601, 1, 1, tzinfo=timezone.utc)
+    implausible.event_id = "src-a-ancient"
+    store.insert_events([implausible])
+
+    unbounded = store.event_time_range(source_id="src-a")
+    assert unbounded[0].year == 1601, "precondition: the old record is stored"
+
+    bounded = store.event_time_range(
+        source_id="src-a", not_before="2000-01-01T00:00:00+00:00"
+    )
+    assert bounded[0] == T0
+    assert bounded[1] == T0 + timedelta(seconds=9)

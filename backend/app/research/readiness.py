@@ -146,6 +146,8 @@ def assess_readiness(
     has_trained_model: bool = False,
     model_metrics_interpretable: bool = False,
     model_performance_adequate: Optional[bool] = None,
+    dataset_event_count: Optional[int] = None,
+    dataset_span_seconds: Optional[float] = None,
 ) -> ReadinessReport:
     """
     Assess whether the supplied telemetry can support honest forecasting.
@@ -154,6 +156,15 @@ def assess_readiness(
     local connections carry no ground truth: treating them as confirmed
     negatives would manufacture a class balance that the evidence does not
     support and produce a model evaluated against an invented target.
+
+    `events` may be a SAMPLE of a larger store. When it is, the caller
+    passes `dataset_event_count` and `dataset_span_seconds` measured over
+    the whole selection, and the sufficiency requirements use those rather
+    than the sample's own extent (ADR-095). Without that, a dense corpus
+    is judged on whatever slice the sample happened to cover: 50,000 events
+    of CSE-CIC-IDS2018 span 104 seconds, so a 30-minute dataset was
+    reported as "insufficient time span". Label and quality ratios are
+    still read from the sample, which is what a sample can honestly give.
     """
     total = len(events)
     labelled = [e for e in events if e.label and e.label.strip()]
@@ -168,11 +179,15 @@ def assess_readiness(
         e.observed_at for e in events if is_plausible_timestamp(e.observed_at, now)
     )
     implausible_count = total - len(plausible_times)
-    span = (
+    sample_span = (
         (plausible_times[-1] - plausible_times[0]).total_seconds()
         if len(plausible_times) >= 2
         else 0.0
     )
+    # Measured over the whole selection when the caller supplied it; the
+    # sample's own extent otherwise.
+    span = sample_span if dataset_span_seconds is None else float(dataset_span_seconds)
+    counted = total if dataset_event_count is None else int(dataset_event_count)
 
     categories: dict[str, int] = {}
     provenances: dict[str, int] = {}
@@ -183,9 +198,13 @@ def assess_readiness(
     requirements = [
         Requirement(
             name="sufficient_events",
-            satisfied=total >= MIN_EVENTS_FOR_TRAINING,
+            satisfied=counted >= MIN_EVENTS_FOR_TRAINING,
             required=f">= {MIN_EVENTS_FOR_TRAINING} stored events",
-            observed=f"{total} events",
+            observed=(
+                f"{counted} events"
+                + (f" (label/quality read from a {total}-event sample)"
+                   if counted != total else "")
+            ),
             detail="Needed to produce enough temporal windows to train and evaluate separately.",
         ),
         Requirement(
@@ -267,7 +286,7 @@ def assess_readiness(
     if not requirements[0].satisfied or not requirements[1].satisfied:
         state = ReadinessState.INSUFFICIENT_DATA
         summary = (
-            f"Insufficient data: {total} events spanning {int(span)}s. "
+            f"Insufficient data: {counted} events spanning {int(span)}s. "
             f"At least {MIN_EVENTS_FOR_TRAINING} events over "
             f"{int(MIN_TIME_SPAN_SECONDS)}s are required."
         )

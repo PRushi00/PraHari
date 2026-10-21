@@ -379,13 +379,37 @@ class HoldoutPredictions:
     def __init__(self) -> None:
         self.scores: dict[str, np.ndarray] = {}
         self._truth: dict[str, np.ndarray] = {}
+        self._times: dict[str, list[datetime]] = {}
 
-    def record(self, model_id: str, y_true: np.ndarray, scores: np.ndarray) -> None:
-        self._truth[model_id] = np.asarray(y_true).astype(int)
-        self.scores[model_id] = np.asarray(scores).astype(float)
+    def record(
+        self,
+        model_id: str,
+        y_true: np.ndarray,
+        scores: np.ndarray,
+        times: Optional[list[datetime]] = None,
+    ) -> None:
+        y_true = np.asarray(y_true).astype(int)
+        scores = np.asarray(scores).astype(float)
+        self._truth[model_id] = y_true
+        self.scores[model_id] = scores
+        if times is not None:
+            # Event-level evaluation matches warnings to events by time, so a
+            # misalignment here would silently attribute one window's score to
+            # another window's moment. Refused rather than trimmed.
+            if len(times) != len(scores):
+                raise ValueError(
+                    f"{model_id}: {len(times)} prediction time(s) for "
+                    f"{len(scores)} score(s). The holdout's times must align "
+                    "row for row with its scores."
+                )
+            self._times[model_id] = list(times)
 
     def y_true_for(self, model_id: str) -> np.ndarray:
         return self._truth[model_id]
+
+    def times_for(self, model_id: str) -> Optional[list[datetime]]:
+        """Window end times for this model's holdout, when they were kept."""
+        return self._times.get(model_id)
 
 
 def evaluate_model_on_split(
@@ -662,6 +686,9 @@ class ThreatForecastingPipeline:
 
         X_train, y_train = X[:train_end], y[:train_end]
         X_test, y_test = X[test_start:], y[test_start:]
+        # Prediction times for the holdout rows, in the same order. Carried so
+        # warnings can be matched to events in time (ADR-091).
+        ts_test: list[datetime] = list(ts[test_start:]) if ts else []
 
         purged = int(test_start - train_end)
 
@@ -795,6 +822,7 @@ class ThreatForecastingPipeline:
             holdout.record(
                 "baseline_persistence", y_test,
                 score_positive_class(m0, obs_mask[test_start:]),
+                ts_test,
             )
         else:
             logger.info(
@@ -808,28 +836,28 @@ class ThreatForecastingPipeline:
         met1, m1 = evaluate_model_on_split(m1, "Majority Class Baseline", "baseline_constant", X_train, y_train, X_test, y_test)
         self.trained_models["baseline_constant"] = m1
         self.model_metrics["baseline_constant"] = met1
-        holdout.record("baseline_constant", y_test, score_positive_class(m1, X_test))
+        holdout.record("baseline_constant", y_test, score_positive_class(m1, X_test), ts_test)
 
         # 2. Baseline Threshold
         m2 = BaselineThresholdModel()
         met2, m2 = evaluate_model_on_split(m2, "Rate Threshold Baseline", "baseline_threshold", X_train, y_train, X_test, y_test)
         self.trained_models["baseline_threshold"] = m2
         self.model_metrics["baseline_threshold"] = met2
-        holdout.record("baseline_threshold", y_test, score_positive_class(m2, X_test))
+        holdout.record("baseline_threshold", y_test, score_positive_class(m2, X_test), ts_test)
 
         # 3. Logistic Regression
         m3 = LogisticRegression(max_iter=1000, random_state=42)
         met3, m3 = evaluate_model_on_split(m3, "Logistic Regression", "logistic_regression", X_train, y_train, X_test, y_test)
         self.trained_models["logistic_regression"] = m3
         self.model_metrics["logistic_regression"] = met3
-        holdout.record("logistic_regression", y_test, score_positive_class(m3, X_test))
+        holdout.record("logistic_regression", y_test, score_positive_class(m3, X_test), ts_test)
 
         # 4. Random Forest / Tree Ensemble
         m4 = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=42)
         met4, m4 = evaluate_model_on_split(m4, "Random Forest Forecaster", "random_forest", X_train, y_train, X_test, y_test)
         self.trained_models["random_forest_forecaster"] = m4
         self.model_metrics["random_forest_forecaster"] = met4
-        holdout.record("random_forest_forecaster", y_test, score_positive_class(m4, X_test))
+        holdout.record("random_forest_forecaster", y_test, score_positive_class(m4, X_test), ts_test)
 
         # 5. Temporal window-sequence model.
         #
@@ -854,7 +882,10 @@ class ThreatForecastingPipeline:
             self.trained_models["temporal_window_stack"] = m5
             self.model_metrics["temporal_window_stack"] = met5
             # Its holdout is shorter than the others by TEMPORAL_LAGS.
-            holdout.record("temporal_window_stack", yte_seq, score_positive_class(m5, Xte_seq))
+            holdout.record(
+                "temporal_window_stack", yte_seq,
+                score_positive_class(m5, Xte_seq), ts_test[TEMPORAL_LAGS:],
+            )
         else:
             logger.info(
                 "Temporal window-sequence model skipped: lag stacking left "
@@ -891,7 +922,9 @@ class ThreatForecastingPipeline:
                 self.trained_models["lstm_forecaster"] = m6
                 self.model_metrics["lstm_forecaster"] = met6
                 holdout.record(
-                    "lstm_forecaster", yte_lstm, score_positive_class(m6, Xte_lstm)
+                    "lstm_forecaster", yte_lstm,
+                    score_positive_class(m6, Xte_lstm),
+                    ts_test[LSTM_TIMESTEPS - 1:],
                 )
             except Exception:  # noqa: BLE001
                 # A failed LSTM must not take the whole evaluation with it;

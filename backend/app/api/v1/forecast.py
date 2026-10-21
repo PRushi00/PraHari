@@ -8,12 +8,14 @@ dashboard click — a disabled button is not a control.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_db
+from app.schemas.events import MAX_CLOCK_SKEW_SECONDS, MIN_PLAUSIBLE_YEAR
 from app.models.forecaster import (
     InsufficientEvaluationDataError,
     ModelMetrics,
@@ -35,6 +37,13 @@ from app.research.evaluation import (
     bootstrap_interval,
     generalization_evaluation,
     lead_time_curve,
+)
+from app.research.event_level import (
+    DEFAULT_EPISODE_GAP_SECONDS,
+    DEFAULT_SUPPRESSION_SECONDS,
+    DEFAULT_THRESHOLD,
+    EventLevelReport,
+    evaluate_event_level,
 )
 from app.research.readiness import (
     OP_PREDICT,
@@ -66,7 +75,15 @@ class TrainModelsRequest(BaseModel):
             "set. Refused by default; the composition is recorded when allowed."
         ),
     )
-    max_events: int = Field(default=20_000, ge=10, le=100_000)
+    # The ceiling was 100_000, set when only synthetic fixtures existed.
+    # A real corpus is denser than that by orders of magnitude: one hour of
+    # CSE-CIC-IDS2018 is ~900k flows, so a 100k cap silently reduced any
+    # real dataset to a few minutes of it. Selection is most-recent-first,
+    # so those few minutes were the END of the span - routinely one class,
+    # which the gate then refused. The cap is a resource bound, not a
+    # research decision, and `SelectionCoverage` already reports truncation
+    # honestly when it bites (ADR-095).
+    max_events: int = Field(default=20_000, ge=10, le=2_000_000)
     train_ratio: float = Field(default=0.7, ge=0.5, le=0.9)
 
 
@@ -80,7 +97,19 @@ class PredictRequest(BaseModel):
 def _current_readiness(db: Database, source_id: Optional[str] = None) -> ReadinessReport:
     """Assess readiness from stored telemetry plus the pipeline's own state."""
     pipeline = get_forecasting_pipeline()
+    # A SAMPLE, used for label and quality ratios. The dataset's own count
+    # and span are measured by the store, because the sample's extent is
+    # not the dataset's: on a dense corpus 50,000 events can cover under
+    # two minutes of a half-hour capture (ADR-095).
     events = db.list_events(source_id=source_id, limit=50_000)
+    dataset_count = db.count_events(source_id=source_id)
+    now = datetime.now(timezone.utc)
+    bounds = db.event_time_range(
+        source_id=source_id,
+        not_before=f"{MIN_PLAUSIBLE_YEAR:04d}-01-01T00:00:00+00:00",
+        not_after=(now + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS)).isoformat(),
+    )
+    dataset_span = (bounds[1] - bounds[0]).total_seconds() if bounds else None
 
     has_model = bool(pipeline.trained_models)
     interpretable = any(
@@ -94,6 +123,8 @@ def _current_readiness(db: Database, source_id: Optional[str] = None) -> Readine
         prediction_horizon_seconds=pipeline.extractor.prediction_horizon_seconds,
         has_trained_model=has_model,
         model_metrics_interpretable=interpretable,
+        dataset_event_count=dataset_count,
+        dataset_span_seconds=dataset_span,
     )
 
 
@@ -527,6 +558,148 @@ def evaluate_generalization(
             f"Evaluated {result.evaluated_groups} group(s), refused "
             f"{result.refused_groups}; mean transfer gap "
             f"{result.mean_transfer_gap}"
+        ),
+    )
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────
+# Event-level warning performance (ADR-091)
+# ──────────────────────────────────────────────────────────────────
+
+
+class EventLevelRequest(BaseModel):
+    """
+    Matching parameters. The qualifying interval is NOT among them: it comes
+    from the lead and horizon the evaluation was actually run with, so it
+    cannot be widened after the numbers are seen.
+    """
+
+    model_id: Optional[str] = Field(
+        default=None, description="Defaults to the active model."
+    )
+    source_id: Optional[str] = None
+    max_events: int = Field(default=20_000, ge=100, le=2_000_000)
+    episode_gap_seconds: float = Field(
+        default=DEFAULT_EPISODE_GAP_SECONDS, gt=0, le=86_400,
+        description="Attack-labelled records closer than this are one event.",
+    )
+    suppression_seconds: float = Field(
+        default=DEFAULT_SUPPRESSION_SECONDS, ge=0, le=86_400,
+        description="A positive window within this of the last extends the open warning.",
+    )
+    threshold: float = Field(
+        default=DEFAULT_THRESHOLD, gt=0, lt=1,
+        description="Operating point. Changing it changes the trade-off, not the truth.",
+    )
+
+
+@router.post("/event-level", response_model=EventLevelReport)
+def evaluate_event_level_performance(
+    req: EventLevelRequest,
+    db: Database = Depends(get_db),
+) -> EventLevelReport:
+    """
+    Event-level lead time, missed events, late warnings and false alarms.
+
+    The window-level metrics answer "how many windows were classified
+    correctly". Blueprint §10 asks something else: how long before a
+    documented event the first qualifying warning arrived, how many events
+    got no warning at all, and how many alerts an analyst would have read.
+    One attack spanning forty windows is one event and one alert here, not
+    forty of each.
+
+    Uses the holdout of the evaluation already in memory — the same split,
+    the same target and the same fixed operating point. It never retrains,
+    so nothing about the test period can influence the model.
+
+    The matching rules are returned and fingerprinted with the result,
+    because a lead time is only meaningful beside the rules that produced
+    it.
+    """
+    pipeline = get_forecasting_pipeline()
+    held = pipeline.last_holdout
+    if held is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_evaluation_in_memory",
+                "message": (
+                    "No evaluation has been performed in this process, so "
+                    "there is no holdout to match warnings against. Train first."
+                ),
+            },
+        )
+
+    target = req.model_id or pipeline.active_model_id
+    scores = held.scores.get(target)
+    if scores is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "unknown_model",
+                "message": f"No held-out predictions for model {target!r}.",
+                "available": sorted(held.scores),
+            },
+        )
+
+    times = held.times_for(target)
+    if not times:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_prediction_times",
+                "message": (
+                    f"The holdout for {target!r} carries no window times, so a "
+                    "warning cannot be placed in time. Re-run training to "
+                    "record them."
+                ),
+            },
+        )
+
+    # The same lead and horizon the evaluation ran with, not a fresh guess.
+    extractor = pipeline.extractor
+    report_windowing = getattr(extractor, "last_windowing_report", None)
+    lead = (
+        report_windowing.effective_lead_seconds
+        if report_windowing else extractor.lead_time_seconds
+    )
+    horizon = (
+        report_windowing.effective_horizon_seconds
+        if report_windowing else extractor.prediction_horizon_seconds
+    )
+
+    events = db.list_events(source_id=req.source_id, limit=req.max_events)
+    result = evaluate_event_level(
+        events, times, scores,
+        lead_seconds=lead,
+        horizon_seconds=horizon,
+        model_id=target,
+        episode_gap_seconds=req.episode_gap_seconds,
+        suppression_seconds=req.suppression_seconds,
+        threshold=req.threshold,
+    )
+
+    if not result.available:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "no_event_level_evaluation",
+                "message": result.refusal_reason,
+                "rules": result.rules.model_dump(mode="json"),
+                "events_out_of_coverage": result.events_out_of_coverage,
+                "evaluated_windows": result.evaluated_windows,
+            },
+        )
+
+    db.log_audit(
+        action="evaluate_event_level",
+        resource_type="forecasting",
+        resource_id=target,
+        details=(
+            f"{result.events_warned}/{result.events_total} event(s) warned, "
+            f"{result.false_alarms} false alarm(s), "
+            f"{result.late_warnings} late, rules {result.rules_fingerprint[:12]}"
         ),
     )
     return result

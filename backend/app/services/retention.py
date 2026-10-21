@@ -153,29 +153,14 @@ class RetentionService:
             protected_categories=protected,
         )
 
-        placeholders = ",".join("?" * len(eligible))
-        where = (
-            f"observed_at < ? AND data_category IN ({placeholders})"
+        # The queries live behind the storage contract (ADR-093); the
+        # policy - eligibility, budget, batching, confirmation - stays here.
+        result.candidates = self.db.count_events_before(
+            cutoff_iso, eligible, policy.source_id
         )
-        params: list = [cutoff_iso, *eligible]
-        if policy.source_id:
-            where += " AND source_id = ?"
-            params.append(policy.source_id)
-
-        with self.db.get_connection() as conn:
-            result.candidates = conn.execute(
-                f"SELECT COUNT(*) FROM normalized_events WHERE {where}", params
-            ).fetchone()[0]
-
-            newer_where = f"observed_at >= ? AND data_category IN ({placeholders})"
-            newer_params: list = [cutoff_iso, *eligible]
-            if policy.source_id:
-                newer_where += " AND source_id = ?"
-                newer_params.append(policy.source_id)
-            result.retained_newer_than_cutoff = conn.execute(
-                f"SELECT COUNT(*) FROM normalized_events WHERE {newer_where}",
-                newer_params,
-            ).fetchone()[0]
+        result.retained_newer_than_cutoff = self.db.count_events_at_or_after(
+            cutoff_iso, eligible, policy.source_id
+        )
 
         if not confirm:
             result.notes.append(
@@ -205,21 +190,19 @@ class RetentionService:
                 break
 
             # Each batch is its own transaction: an interruption leaves the
-            # database consistent, with completed batches durable.
-            with self.db.get_connection() as conn:
-                rows = conn.execute(
-                    f"SELECT event_id FROM normalized_events WHERE {where} "
-                    f"ORDER BY observed_at ASC LIMIT ?",
-                    [*params, limit],
-                ).fetchall()
-                if not rows:
-                    break
-                ids = [r["event_id"] for r in rows]
-                conn.executemany(
-                    "DELETE FROM normalized_events WHERE event_id = ?",
-                    [(i,) for i in ids],
-                )
-            deleted_total += len(ids)
+            # store consistent, with completed batches durable.
+            ids = self.db.oldest_event_ids_before(
+                cutoff_iso, eligible, policy.source_id, limit
+            )
+            if not ids:
+                break
+            # Count what was actually removed: selecting and deleting are
+            # two statements, so a row another writer removed in between is
+            # not this run's deletion to report.
+            removed = self.db.delete_events_by_id(ids)
+            if removed == 0:
+                break
+            deleted_total += removed
             batches += 1
             logger.info(
                 "Retention: deleted batch of %d (total %d)", len(ids), deleted_total

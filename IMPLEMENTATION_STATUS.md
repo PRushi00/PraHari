@@ -2363,3 +2363,189 @@ whether or not the collector has been created. All six external write
 paths are guarded. 13 regression tests; with the guard neutralised the 10
 defect tests fail. The sensor agent treats the refusal as permanent, without
 counting it as an identity conflict.
+
+---
+
+## Session 34 — Linux Parity, Event-Level Measurement, PostgreSQL
+
+On branch `ccr-58caddbd-1gv7jn` from the merged `windows-closure` work
+(`5c66a8a`). Linux, kernel 6.18.44, Python 3.13.16, Node 22.22.0,
+PostgreSQL 16.15. Three of the acceptance matrix's open rows were
+reachable here; the rest still need a corpus, an exporter or a remote
+host, and were not touched.
+
+### Linux parity, before changing anything
+The inherited revision ran clean on Linux: backend **1335 passed, 22
+skipped, 0 failed**; frontend `tsc` 0, **91 passed**; production build
+succeeded. All 22 skips are Windows-only or explicitly non-Linux.
+
+That closes the gap Sessions 31–33 left open. ADR-080 (verifier SIGTERM
+branch), ADR-083 (registry `replace`) and ADR-089 (binding report) had
+Windows evidence only; they now have Linux evidence too. Matrix rows 12,
+"Linux, current revision" and "Cross-platform parity" move accordingly.
+
+### Event-level warning measurement (ADR-091)
+Blueprint §10's event-level lead time was the one **required metric with
+no implementation** — and, unlike the other PARTIAL rows, it was blocked
+by missing rules rather than missing data. `app/research/event_level.py`
+now measures first-qualifying-warning lead time with its distribution,
+missed-event rate, late warnings, false alarms per hour and alarm duty
+cycle, under rules that are fingerprinted and frozen before the result is
+read (§15).
+
+**What running it found.** The rate-threshold baseline scores a
+window-level recall of **1.000** while warning **0 of 3 events**. It
+flags every window, so suppression collapses its permanent alarm into one
+warning, which would read as "1 false alarm" — a quiet model. The
+detection verdict is right; the burden was understated, so
+`alarm_duty_cycle` is reported beside the warning count and leads the
+limitations above 50%. This gap between window recall and event-level
+warning is exactly what the module exists to expose.
+
+Target specification 1.1.0 → **1.2.0**: three limitations that declared
+event-level measurement absent now say which scope they apply to and
+where the event-level numbers are read from.
+
+### PostgreSQL backend (ADR-092)
+ADR-071 had said plainly: "No PostgreSQL backend exists, no driver is
+installed, and no server was available to test against", and wrote down
+the condition for closing it — the conformance suite passing against a
+**real** server, because "a mock does not count". A PostgreSQL 16.15
+server was available here, so that half no longer held.
+
+`app/storage/postgres.py` satisfies the contract and passes the
+conformance suite against the real server, every parametrized test on
+both backends, plus a 15-test PostgreSQL suite and cross-backend
+equivalence tests.
+
+The batch ordering that prevents deadlock was **verified, not assumed**:
+shuffled insertion fails 3 runs of 3 with `DeadlockDetected`; sorted
+passes 3 of 3. An in-process write lock was written first and removed —
+it made the concurrency test pass without testing anything, and would
+have done nothing across processes.
+
+Two defects the shared suite never reached, found by the PostgreSQL
+tests: `AmbiguousParameter` from an uncast CASE parameter, and a
+foreign-key violation that had to be raised rather than absorbed as a
+duplicate. Two conformance tests were themselves SQLite-specific and are
+now backend-neutral.
+
+### Abstraction leaks closed (ADR-093)
+ADR-071 named three modules outside `storage/` that opened a raw
+connection and issued SQLite SQL — audit listing, the storage health
+PRAGMAs, and retention's counting and deletion — and recorded what they
+cost: "A second backend cannot be substituted until each moves behind a
+method of this contract." ADR-092 had to carry the same caveat.
+
+They are now behind the contract. `KNOWN_ABSTRACTION_LEAKS` is empty and
+the ratchet asserts no module outside `storage/` opens a connection at
+all. **The real FastAPI application is served from PostgreSQL** through
+audit, system health, retention, ingestion, event query, sources and
+analysis — if any SQLite dialect remained in the request path those tests
+would fail.
+
+The health PRAGMAs were the interesting case: not a dialect to translate,
+but a check PostgreSQL does not have. Rather than dropping the fields or
+mapping them to something plausible, `integrity_check` and
+`journal_mode` are present and **None** with notes, and `healthy` now
+carries `health_basis` saying what it rests on in each backend. The
+dashboard renders a null integrity check as "not measured" instead of
+borrowing the green tick.
+
+Incidental: the audit route accepted only `limit` while the dashboard had
+been sending `offset` and `resource_type`, silently ignored. Both are
+honoured now.
+
+### Results
+| Check | Result |
+|---|---|
+| Backend, inherited revision | 1335 passed, 22 skipped, 0 failed |
+| Backend, with this work + PostgreSQL | **1428 passed, 22 skipped, 0 failed** |
+| Backend, without a PostgreSQL DSN | 1389 passed, 61 skipped, 0 failed |
+| Conformance suite | 43 passed (both backends) |
+| Application served from PostgreSQL | 6 passed |
+| Frontend | `tsc` 0, **100 passed**; production build succeeded |
+
+### Not done, and why
+- **Real-data forecasting** — still no approved corpus. The gate refuses,
+  correctly. Unchanged.
+- **Live NetFlow/IPFIX** — no exporter or observation point (ADR-072).
+- **Remote TLS** — no remote host.
+- **A PostgreSQL deployment** — the application runs on PostgreSQL in
+  tests, but it is not selectable from configuration (ADR-094). Two
+  protections are defined in terms of a database FILE PATH: research-store
+  isolation and the protected-database guard. A backend swap that silently
+  dropped research isolation would be worse than not offering the choice,
+  so a non-SQLite URL now REFUSES rather than falling back to the local
+  SQLite file as it used to. Restating those two protections in terms of a
+  store identity is the next piece of work. There is also no migration
+  path from an existing SQLite database, and nothing about production
+  deployment, TLS, pooling, backups or a tuned server is tested.
+- **Windows re-run of this session's changes** — the new code is
+  platform-neutral and the Windows-only suites still skip here by design,
+  but it has not been run on Windows. Same class of gap as Session 33's,
+  in the opposite direction.
+- **A real-browser Linux session** — the dashboard is covered by 99
+  component tests here, not by a browser.
+
+
+---
+
+## Session 34, continued — The First Real Corpus
+
+CSE-CIC-IDS2018 acquired with the operator's authorisation: all 10
+processed CSVs, 6.41 GB, hashed. `docs/DATASET_PROVENANCE_IDS2018.md` is
+the §8 record. This is the first time PraHari has seen real labelled data.
+
+### Four source defects found before importing
+1. **12-hour clock, no AM/PM.** Hours 01-12 present; 00 and 13-23 absent
+   in every file. The run at "01:14" is the publisher's 13:13 UDP flood.
+   Read naively the afternoon lands twelve hours before the morning.
+   `timestamp_format` does not catch this. Imports confined to 08:00-12:59.
+2. **Seven of ten files hold exactly 1,048,575 rows** (2^20-1): truncated.
+3. **Addresses absent from 9 of 10 files**, and no `Flow ID` either, so
+   unrecoverable. Checked, not assumed.
+4. **Tuesday's two scheduled attacks share one label.**
+
+### The result
+607,785 flows imported, 0 rejected, reconciles. Training ran and PraHari
+**refused to call it interpretable**: the attack begins at 10:13 and does
+not end inside the span, so test_positive 57 / test_negative 0. The
+persistence and rate-threshold baselines score F1 1.0000 by always saying
+"attack"; the four real models score 0.0000 by always saying "benign".
+Every model carries `metrics_interpretable: false`.
+
+The event-level report refused separately: the event starts at 10:13, the
+holdout at 10:15:15, so no window could have warned for it. The coverage
+rule excludes it rather than recording a miss the model could not avoid.
+
+**20 Feb has one attack onset, and one onset cannot support a split.** The
+day PraHari can read today is the one day that cannot answer the research
+question.
+
+### Defect found and fixed (ADR-095)
+Readiness judged dataset-level facts from `list_events(limit=50_000)`,
+which orders DESC. On a dense corpus that is 104 seconds of a 31-minute
+dataset, so the gate refused training on data that was fine. Span and
+count are now measured by the store via `event_time_range`. Training
+ceiling 100k -> 2M for the same reason.
+
+### Deliberately not changed
+The run also failed the quality check: 100% of records carry
+`timestamp_uncertainty` (undocumented publisher timezone). Reclassifying
+that flag immediately after it blocked a run would be result-driven
+tuning. A wrong measurement is wrong whatever it implies; a judgement
+about what counts as a defect may not be revised because of the verdict it
+produced. Reported, left to the operator.
+
+### Results
+| Check | Result |
+|---|---|
+| Backend + PostgreSQL 16.15 | **1432 passed, 22 skipped, 0 failed** |
+| Storage conformance | 47 passed (both backends) |
+
+### Next
+Thursday-15-02 has four separated onsets in one morning (~659k rows in the
+unambiguous span) and is the strongest candidate for an interpretable
+result. It is an 80-column file, so the address-less feature schema is the
+prerequisite - phase 2, not started.
