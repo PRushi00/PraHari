@@ -66,11 +66,12 @@ Implementation/
 │   │   │                      #   research, forecast, audit, collector (live telemetry)
 │   │   ├── core/              # Config, profile settings, and loopback defaults
 │   │   ├── models/            # Feature extractor, forecaster pipeline, model registry
-│   │   ├── research/          # Feasibility audit engine and scientific gating
+│   │   ├── research/          # Feasibility audit, scientific gating, target spec,
+│   │   │                      #   evaluation.py, event_level.py (event-level metrics)
 │   │   ├── schemas/           # Pydantic canonical models (events.py)
 │   │   ├── services/          # analysis.py (descriptive engine),
 │   │   │                      #   collector.py (live telemetry polling service)
-│   │   ├── storage/           # SQLite database layer with WAL mode,
+│   │   ├── storage/           # Storage contract, SQLite (WAL) and PostgreSQL backends,
 │   │   │                      #   protected-database guard
 │   │   ├── agents/            # sensor_agent.py (optional forwarding agent)
 │   │   └── main.py            # FastAPI application & SPA static server
@@ -562,22 +563,35 @@ The governing specification is the *Complete Cross-Platform Architecture
 Blueprint* (`../Implementation.docx` / `.pdf`). Section 18 defines the
 acceptance criteria.
 
-**[docs/REQUIREMENTS_MATRIX.md](docs/REQUIREMENTS_MATRIX.md)** maps every
-criterion to its code, tests and evidence, with an explicit status.
+**[docs/ACCEPTANCE_MATRIX.md](docs/ACCEPTANCE_MATRIX.md)** maps every §18
+criterion to its code, tests and evidence, with an explicit status and a
+command to reproduce it. It supersedes the status column of
+[docs/REQUIREMENTS_MATRIX.md](docs/REQUIREMENTS_MATRIX.md), which used a
+looser vocabulary and has gone stale in places.
 
-Current position, stated plainly:
+Current position, stated plainly — the matrix is authoritative and carries
+the evidence:
 
-- **MET**: canonical contracts shared by live and replay ingestion; adapter
-  capability and health reporting; target and negative-label semantics;
-  dashboard fidelity; the full test matrix including security tests; no
+- **VERIFIED**: canonical contracts shared by live and replay ingestion;
+  adapter capability and health reporting; target, horizon and
+  negative-label semantics; dashboard fidelity; central deployment
+  accepting authenticated telemetry from distinct identities over real
+  HTTPS, with authorization, isolation, payload limits, audit and
+  retention tested (loopback); reproducibility manifests; the full test
+  matrix including security tests, passing on Windows and Linux; no
   disruptive response; documented limitations and negative results.
-- **PARTIAL**: Windows verified on earlier revisions, Linux (Arch) verified
-  for the current revision's test suite and loopback startup, neither on
-  both at once; host sensor tested / network sensor not; manifest covers the local store but no external dataset;
-  no sequence model (deliberately — see the blueprint's advanced-feature
-  rule); lead time and generalization not measured; retention reported but
-  not enforced.
-- **NOT MET**: central deployment with authenticated multi-source identities.
+- **PARTIAL**: one host integration tested, no live network-level
+  collector (no authorized exporter — ADR-072); dataset tooling complete
+  but no real corpus audited; baselines and a temporal model evaluated on
+  synthetic data only; metrics computed at window level and, since
+  ADR-091, at event level — but no real-data numbers exist for either.
+- **BLOCKED on an external resource**: real-data forecasting (no approved
+  corpus), live NetFlow/IPFIX (no exporter or observation point), remote
+  TLS (no host).
+
+PostgreSQL has a conforming backend tested against a real server
+(ADR-092), but the application still runs on SQLite — three modules
+outside `storage/` issue SQLite-dialect SQL directly.
 
 **No forecasting effectiveness is claimed.** Every metric produced so far
 comes from synthetic data; locally collected telemetry has no incident
@@ -783,6 +797,39 @@ stated reason, when the holdout has fewer than 20 instances or 5 positives,
 or only one class.
 
 Both are subject to the same research gate as training.
+
+**How long before the event did the first warning arrive?**
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/forecast/event-level -H "Content-Type: application/json" -d "{}"
+```
+
+The two calls above count **windows**. This one counts **events** (ADR-091),
+which is what blueprint §10 asks for: one attack spanning forty windows is
+one event an analyst must catch, and forty consecutive positive windows are
+one alert they must read.
+
+It reports the lead-time distribution to the **first qualifying warning**,
+the missed-event rate, late warnings, false alarms per hour, and the alarm
+duty cycle. It re-reads the holdout already in memory and never retrains,
+so nothing about the test period can influence the model.
+
+The matching rules — episode gap, suppression interval, threshold, and the
+qualifying interval taken from the target's own lead and horizon — are
+returned with every result and SHA-256 fingerprinted. A lead time without
+its rules is not comparable, and the fingerprint makes two results visibly
+comparable or visibly not.
+
+It **refuses**, with a reason, rather than scoring nothing: when no
+attack-labelled record exists, or when every documented event falls outside
+the reach of the evaluated windows. An event no window could have warned
+about is excluded from the denominator and counted, not recorded as a miss
+the model had no opportunity to avoid.
+
+Read `alarm_duty_cycle` beside the warning count. A model that flags every
+window has its permanent alarm collapsed by suppression into a single
+warning, which would otherwise read as a quiet model — this is not
+hypothetical, it is what the rate-threshold baseline does.
 
 ---
 
@@ -1098,10 +1145,16 @@ Read this before drawing conclusions from anything above.
   **BLOCKED**, not met.
 - **No live network-sensor integration.** The Zeek/Suricata adapters are
   verified against fixtures; no real sensor has fed this system.
-- **No sustained Linux host-collection run.** The current revision's
-  suite passes on Arch, including a live `/proc` read, but the collector
-  was not started and run over time on Linux. Windows has not been re-run
-  for the current revision.
+- **No sustained Linux host-collection run.** The suite passes on Linux,
+  including a live `/proc` read, but the collector was not started and run
+  over time there. The live host collector is Windows-only.
+- **No Windows run of the Session 34 changes.** Event-level measurement
+  and the PostgreSQL backend are platform-neutral and pass on Linux; they
+  have not been re-run on Windows.
+- **No PostgreSQL deployment.** The backend conforms and is tested
+  against a real server, but the application still runs on SQLite: three
+  modules outside `storage/` issue SQLite-dialect SQL directly. Nothing
+  about production deployment, TLS, backups or migrations is tested.
 - **No cryptographic source authenticity.** Credentials are bearer tokens.
   PraHari does not terminate TLS, so central mode must sit behind HTTPS —
   a deployment prerequisite, not a property of this code.
@@ -1120,10 +1173,12 @@ evidence and a command to reproduce it, is in
 [`docs/ACCEPTANCE_MATRIX.md`](docs/ACCEPTANCE_MATRIX.md). It distinguishes
 what is verified, what is partial, what is missing and what is blocked by
 an external resource. PraHari is **not** fully verified: real-data
-forecasting, live NetFlow, PostgreSQL and a remote TLS deployment are not.
-The Linux evidence is for revision `4360ca3` (Arch: test suite and loopback
-startup). The Windows evidence below is for the `windows-closure` changes
-built on it, which have **not yet been re-run on Linux**.
+forecasting, live NetFlow and a remote TLS deployment are not.
+
+The `windows-closure` changes have since been run on Linux (21 Oct 2026),
+so the shared code has evidence on both platforms. PostgreSQL now has a
+conforming backend tested against a real server, though the application
+itself still runs on SQLite.
 
 ### Windows validation (17 Oct 2026, `windows-closure`)
 
@@ -1137,6 +1192,23 @@ Windows runs were on 3.12.0), Node 24.20.0:
 | `scripts/verify_live_launcher.py` | 23/23 under `python` and `python -O`, graceful stop |
 | Frontend | `tsc` 0 errors, 91 tests passed, production build OK |
 | Real launcher + browser | `start_prahari.ps1` on a temporary database served the current `frontend/dist`, deep links, refresh, back/forward and the binding card, and stopped gracefully |
+
+### Linux validation (21 Oct 2026)
+
+Measured on Linux (kernel 6.18.44), Python 3.13.16, Node 22.22.0,
+PostgreSQL 16.15:
+
+| Check | Result |
+|---|---|
+| Backend, inherited `windows-closure` revision | 1335 passed, 22 skipped (Windows-only and explicitly non-Linux), 0 failed |
+| Backend, with Session 34 work and a PostgreSQL server | 1400 passed, 22 skipped, 0 failed |
+| Backend, without a PostgreSQL DSN | 1377 passed, 45 skipped, 0 failed — the 23 PostgreSQL tests skip rather than pass |
+| Storage conformance suite | 23 passed, every parametrized test against both SQLite and PostgreSQL 16.15 |
+| Frontend | `tsc` 0 errors, 99 tests passed, production build OK |
+
+The launcher is Windows PowerShell and the live host collector is
+Windows-only; both skip on Linux by design. No real-browser session was
+run on Linux.
 
 Fixed on Windows: a dashboard card that claimed "LOOPBACK ENFORCED"
 unconditionally (ADR-078, ADR-089), UTC-headed tables showing local time

@@ -4077,3 +4077,194 @@ Thirteen tests cover the stream, replay, CSV raw and file, app-layer
 ingest, before-and-after collector creation, custom ids, central-mode
 admin and the agent. With the guard neutralised, the ten defect tests fail
 and the three non-regression tests pass.
+
+---
+
+## ADR-091: Event-Level Warning Measurement
+
+### Context
+Blueprint §10 requires an **event-level lead time**: "time between first
+qualifying warning and documented event; report late warnings and events
+with no warning." It also asks for a missed-event rate with its matching
+rules defined, and false alarms per unit time rather than per window.
+
+Every metric PraHari reported counted **windows**. The target
+specification said so itself, in three limitations:
+
+- `detected_events`, `missed_events` and `false_alarms` count windows, so
+  one attack spanning forty windows is counted forty times;
+- event-level lead time is NOT measured;
+- warning suppression is not modelled, so every positive window is a
+  separate warning.
+
+Window counting cannot answer §10's question even in principle. A window
+has no "first warning", and an analyst catching one attack is not
+performing forty catches. The acceptance matrix carried row 9 as PARTIAL
+with "event-level matching" named as the prerequisite — a code gap, not a
+data gap: it does not need a labelled corpus, only rules.
+
+### Decision
+`app/research/event_level.py` converts a window-level holdout into the
+event-level view. §15 requires the rules be defined *before* test
+evaluation, so `MatchingRules` is a Pydantic model, returned with every
+result and SHA-256 fingerprinted: a lead time is only meaningful beside
+the rules that produced it, and a fingerprint makes two results
+comparable or visibly not.
+
+- **Documented event**: a run of attack-labelled records no more than
+  `episode_gap_seconds` apart. Its time origin is the first such record —
+  explicitly *not* scenario start, first malicious action, or compromise,
+  per the target's `NOT_EQUIVALENT_TO`. A lead time inherits whatever
+  delay the labelling rule carries, and the limitations say so.
+- **Warning**: a run of positive windows collapsed by
+  `suppression_seconds`, so a sustained alarm counts once.
+- **Qualifying**: a warning issued between L and L+H before the event.
+  These bounds come from the target's own lead and horizon, not from new
+  parameters — a window predicting at *t* claims [t+L, t+L+H). Matching
+  therefore cannot be widened until the numbers improve.
+
+Four properties that cost more code than ignoring them would have:
+
+1. An event no evaluated window could have warned about is **excluded and
+   counted**, not scored as a miss. Scoring it would blame the model for
+   windows it was never given — an event in the training period would
+   otherwise count against the holdout.
+2. A warning is consumed by **at most one** event: the earliest it
+   qualifies for. Two close events cannot both be credited to one alarm.
+3. Quartiles are **refused** below four warned events.
+4. With no documented event in reach, the report **refuses** rather than
+   returning a perfect score over nothing.
+
+### What running it found
+On a trained holdout, the rate-threshold baseline scores a window-level
+recall of **1.000** while warning **0 of 3 events**. It flags every
+window, so suppression collapses its permanent alarm into a single
+warning — which reads as "1 false alarm", i.e. as a quiet model.
+
+The detection verdict is correct: an alarm that never stops says nothing
+new at the moment it matters, which is precisely what suppression
+encodes. But the burden was understated. `alarm_duty_cycle` is therefore
+reported beside the warning count, and leads the limitations above 50%,
+so a low warning count cannot be misread as precision. The discrepancy
+between window recall and event-level warning is the finding this module
+exists to surface, not a defect in it.
+
+### Scope
+`HoldoutPredictions` now carries each row's prediction time, refusing a
+misaligned list rather than trimming it; the stacked and LSTM models'
+times are sliced exactly as their rows are. `POST /forecast/event-level`
+re-reads the holdout in memory and never retrains, so nothing about the
+test period can influence the model. The dashboard panel shows the
+distribution rather than a bare median, and prints the matching rules and
+fingerprint beneath it.
+
+The target specification moves 1.1.0 → **1.2.0**: the three limitations
+now say which scope they apply to and where the event-level numbers are
+read from, instead of declaring the capability absent. The window-level
+metrics still count windows, and still say so.
+
+### Evidence
+24 unit tests fixing the arithmetic by hand, mutation-checked: reversing
+the first-qualifying scan, disabling suppression, scoring out-of-coverage
+events and allowing warning reuse each break tests. 11 integration tests
+through the real pipeline and API, no skips. 8 frontend tests.
+
+### Not established
+Nothing here makes a forecasting claim. On synthetic labels every number
+describes invented data, and the report says so before any metric.
+
+---
+
+## ADR-092: A PostgreSQL Backend, Proven Against a Real Server
+
+### Context
+The blueprint proposes "SQLite local; PostgreSQL central" (§4.3, §9).
+ADR-071 wrote the storage contract and corrected an earlier status report
+that had claimed "repository abstractions already exist" — they did not.
+It then stated what still did not exist: "It does not make PostgreSQL
+work. No PostgreSQL backend exists, no driver is installed, and no server
+was available to test against."
+
+The condition for closing it was written down at the same time: a backend
+satisfying the Protocol, a driver, and the conformance suite passing
+against a REAL server — "A mock does not count: the properties tested
+here - atomic batches, idempotent identity, concurrent writers - are
+exactly what a mock cannot exhibit."
+
+A PostgreSQL 16.15 server was available in this environment, so the
+runtime half of that blocker no longer held.
+
+### Decision
+`app/storage/postgres.py` implements `TelemetryStore` over psycopg 3.
+
+**Timestamps are ISO-8601 TEXT, as on SQLite, not `timestamptz`.** Native
+timestamps are the more idiomatic DDL, but they would make this backend
+return subtly different objects from the same logical row: different
+resolution, normalised offset, and a dependence on the server's timezone
+setting. Identical semantics across backends is worth more here than
+idiomatic columns, and ISO-8601 UTC text orders lexicographically, so
+`ORDER BY observed_at` and `MAX(received_at)` behave as before. The cost
+— no server-side date arithmetic — is paid by nothing in the contract.
+Booleans stay INTEGER 0/1 for the same reason.
+
+**A batch inserts in `event_id` order.** PostgreSQL makes a transaction
+wait on a row another uncommitted transaction has inserted, so two
+overlapping batches acquiring ids in opposite orders deadlock and one is
+aborted. SQLite cannot fail this way because it serialises writers. One
+global acquisition order removes the cycle.
+
+This was verified, not assumed: shuffling the order makes the
+eight-writer contract test fail **3 runs out of 3** with
+`DeadlockDetected` ("Process 6988 waits for ShareLock on transaction
+1032 ... while inserting index tuple in relation normalized_events"), and
+the sorted version passes 3 of 3.
+
+**An in-process write lock was written and then removed.** It made the
+concurrency test pass without testing anything — eight threads serialised
+by a lock never exercise concurrent transactions — and it would do
+nothing for a second process against the same database, which is exactly
+the central-mode case the blueprint describes. The ordering carries the
+guarantee; the lock would only have hidden whether it worked.
+
+**Both backends share one set of row converters**, promoted to module
+level in `database.py`. Two backends restating the same mapping is how
+they drift into returning different objects from one row. Cross-backend
+equivalence tests assert `model_dump()` equality for events (including an
+all-null one), analyses (including the `-1` "not recorded" sentinel) and
+import summaries.
+
+**psycopg is optional.** Local mode runs on SQLite and must not be made
+to depend on a driver it never loads. `PostgresStore` refuses to
+construct without it rather than falling back to SQLite: silently writing
+central telemetry to a database other than the configured one would be
+worse than failing.
+
+### Defects this found
+Two that the shared conformance suite never reached, caught by the
+PostgreSQL-specific tests: `AmbiguousParameter` from an uncast parameter
+in `refresh_source_activity`'s CASE predicate, and a foreign-key
+violation that had to be raised rather than absorbed as a duplicate —
+absorbing it would have discarded the event and reported success.
+
+Two conformance tests were themselves SQLite-specific and are now
+backend-neutral: one compared `tuple(row)`, which yields the KEYS of a
+psycopg dict row, and one reopened SQLite regardless of the parametrized
+backend.
+
+### Evidence
+Backend suite with the server: **1400 passed, 22 skipped, 0 failed**.
+Conformance suite: 23 passed, every parametrized test running against
+both backends. PostgreSQL-specific suite: 15 tests.
+
+Without `PRAHARI_TEST_POSTGRES_DSN` the 23 PostgreSQL tests **skip**
+(1377 passed, 45 skipped). A machine with no server has no evidence about
+PostgreSQL, and a green run there must not read as if it had.
+
+### Not established
+The application still runs on SQLite. The three leaks in
+`KNOWN_ABSTRACTION_LEAKS` still issue SQLite-dialect SQL directly, so
+this backend cannot yet be substituted under the running application —
+that, not the backend, is now what stands between a conforming store and
+a PostgreSQL deployment. A conformance run says nothing about production
+deployment, TLS termination, backups, migrations or a tuned server, and
+the server used here was a loopback instance with trust authentication.

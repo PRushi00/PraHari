@@ -2363,3 +2363,94 @@ whether or not the collector has been created. All six external write
 paths are guarded. 13 regression tests; with the guard neutralised the 10
 defect tests fail. The sensor agent treats the refusal as permanent, without
 counting it as an identity conflict.
+
+---
+
+## Session 34 — Linux Parity, Event-Level Measurement, PostgreSQL
+
+On branch `ccr-58caddbd-1gv7jn` from the merged `windows-closure` work
+(`5c66a8a`). Linux, kernel 6.18.44, Python 3.13.16, Node 22.22.0,
+PostgreSQL 16.15. Three of the acceptance matrix's open rows were
+reachable here; the rest still need a corpus, an exporter or a remote
+host, and were not touched.
+
+### Linux parity, before changing anything
+The inherited revision ran clean on Linux: backend **1335 passed, 22
+skipped, 0 failed**; frontend `tsc` 0, **91 passed**; production build
+succeeded. All 22 skips are Windows-only or explicitly non-Linux.
+
+That closes the gap Sessions 31–33 left open. ADR-080 (verifier SIGTERM
+branch), ADR-083 (registry `replace`) and ADR-089 (binding report) had
+Windows evidence only; they now have Linux evidence too. Matrix rows 12,
+"Linux, current revision" and "Cross-platform parity" move accordingly.
+
+### Event-level warning measurement (ADR-091)
+Blueprint §10's event-level lead time was the one **required metric with
+no implementation** — and, unlike the other PARTIAL rows, it was blocked
+by missing rules rather than missing data. `app/research/event_level.py`
+now measures first-qualifying-warning lead time with its distribution,
+missed-event rate, late warnings, false alarms per hour and alarm duty
+cycle, under rules that are fingerprinted and frozen before the result is
+read (§15).
+
+**What running it found.** The rate-threshold baseline scores a
+window-level recall of **1.000** while warning **0 of 3 events**. It
+flags every window, so suppression collapses its permanent alarm into one
+warning, which would read as "1 false alarm" — a quiet model. The
+detection verdict is right; the burden was understated, so
+`alarm_duty_cycle` is reported beside the warning count and leads the
+limitations above 50%. This gap between window recall and event-level
+warning is exactly what the module exists to expose.
+
+Target specification 1.1.0 → **1.2.0**: three limitations that declared
+event-level measurement absent now say which scope they apply to and
+where the event-level numbers are read from.
+
+### PostgreSQL backend (ADR-092)
+ADR-071 had said plainly: "No PostgreSQL backend exists, no driver is
+installed, and no server was available to test against", and wrote down
+the condition for closing it — the conformance suite passing against a
+**real** server, because "a mock does not count". A PostgreSQL 16.15
+server was available here, so that half no longer held.
+
+`app/storage/postgres.py` satisfies the contract and passes the
+conformance suite against the real server, every parametrized test on
+both backends, plus a 15-test PostgreSQL suite and cross-backend
+equivalence tests.
+
+The batch ordering that prevents deadlock was **verified, not assumed**:
+shuffled insertion fails 3 runs of 3 with `DeadlockDetected`; sorted
+passes 3 of 3. An in-process write lock was written first and removed —
+it made the concurrency test pass without testing anything, and would
+have done nothing across processes.
+
+Two defects the shared suite never reached, found by the PostgreSQL
+tests: `AmbiguousParameter` from an uncast CASE parameter, and a
+foreign-key violation that had to be raised rather than absorbed as a
+duplicate. Two conformance tests were themselves SQLite-specific and are
+now backend-neutral.
+
+### Results
+| Check | Result |
+|---|---|
+| Backend, inherited revision | 1335 passed, 22 skipped, 0 failed |
+| Backend, with this work + PostgreSQL | **1400 passed, 22 skipped, 0 failed** |
+| Backend, without a PostgreSQL DSN | 1377 passed, 45 skipped, 0 failed |
+| Conformance suite | 23 passed (both backends) |
+| Frontend | `tsc` 0, **99 passed**; production build succeeded |
+
+### Not done, and why
+- **Real-data forecasting** — still no approved corpus. The gate refuses,
+  correctly. Unchanged.
+- **Live NetFlow/IPFIX** — no exporter or observation point (ADR-072).
+- **Remote TLS** — no remote host.
+- **PostgreSQL under the running application** — the three
+  `KNOWN_ABSTRACTION_LEAKS` still issue SQLite-dialect SQL. That, not the
+  backend, is now what stands between a conforming store and a PostgreSQL
+  deployment.
+- **Windows re-run of this session's changes** — the new code is
+  platform-neutral and the Windows-only suites still skip here by design,
+  but it has not been run on Windows. Same class of gap as Session 33's,
+  in the opposite direction.
+- **A real-browser Linux session** — the dashboard is covered by 99
+  component tests here, not by a browser.
