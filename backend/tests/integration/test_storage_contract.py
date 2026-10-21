@@ -497,3 +497,47 @@ def test_label_counts_are_measured_over_the_whole_selection(store):
     assert sum(counts.values()) == 25
 
     assert store.label_counts(source_id="src-never-used") == {}
+
+
+def test_event_breakdown_is_measured_over_the_whole_selection(store):
+    """
+    ADR-100's method, pinned on BOTH backends.
+
+    `event_breakdown` was added to the contract and implemented twice, but
+    only the SQLite path had a caller: the endpoint test drives `Database`
+    directly, so the PostgreSQL implementation shipped unexercised and the
+    ADR had to say so. A second GROUP BY written against the wrong
+    placeholder style, or returning the raw column name instead of the
+    aliased one, would have passed everything and failed in a deployment.
+
+    The three dimensions must each account for every event, which is the
+    property the old `list_events(limit=1000)` sample broke.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(20)])
+    attacks = []
+    for i in range(20, 25):
+        e = _ev("src-a", i)
+        e.label = "DoS attacks-GoldenEye"
+        attacks.append(e)
+    store.insert_events(attacks)
+
+    breakdown = store.event_breakdown(source_id="src-a")
+
+    assert set(breakdown) == {"labels", "event_types", "data_categories"}
+    # Agrees with the single-dimension count already trusted elsewhere.
+    assert breakdown["labels"] == store.label_counts(source_id="src-a")
+    assert breakdown["labels"].get("DoS attacks-GoldenEye") == 5
+    assert breakdown["labels"].get("") == 20
+
+    for key in ("labels", "event_types", "data_categories"):
+        assert sum(breakdown[key].values()) == 25, (
+            f"{key} does not account for every event"
+        )
+        # Keys are the values themselves, never a column name or an enum
+        # repr — the shape a dashboard renders directly.
+        for name in breakdown[key]:
+            assert isinstance(name, str)
+            assert "(" not in name and "." not in name
+
+    empty = store.event_breakdown(source_id="src-never-used")
+    assert all(empty[k] == {} for k in empty)

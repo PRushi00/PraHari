@@ -6,6 +6,7 @@ import { ImportPage } from "./pages/ImportPage";
 import { LiveTelemetryPage } from "./pages/LiveTelemetryPage";
 import { StreamReplayPage } from "./pages/StreamReplayPage";
 import { EventsPage } from "./pages/EventsPage";
+import { SourcesPage } from "./pages/SourcesPage";
 import { AnalysisPage } from "./pages/AnalysisPage";
 import { ResearchPage } from "./pages/ResearchPage";
 import { ForecastPage } from "./pages/ForecastPage";
@@ -23,6 +24,7 @@ const PAGE_LABELS: Record<string, string> = {
   import: "CSV Import",
   stream: "Stream & Replay",
   events: "Events Explorer",
+  sources: "Sources",
   analysis: "Analytics",
   research: "Feasibility",
   forecast: "Threat Forecasting",
@@ -122,6 +124,7 @@ export const App: React.FC = () => {
           <StreamReplayPage onReplayComplete={fetchHealth} />
         )}
         {activeTab === "events" && <EventsPage />}
+        {activeTab === "sources" && <SourcesPage />}
         {activeTab === "analysis" && <AnalysisPage />}
         {activeTab === "research" && <ResearchPage />}
         {activeTab === "forecast" && <ForecastPage />}

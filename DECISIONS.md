@@ -4948,3 +4948,306 @@ PostgreSQL branch of `store_identity()` is covered by tests that run
 without a server, but `event_breakdown()` and the ADR-099 reservation
 guard on PostgreSQL remain unexercised — no server was available, and
 those tests skip rather than pass against a mock.
+
+---
+
+## ADR-104: The PostgreSQL Backend Is Now Exercised, Including a Path That Never Ran
+
+### Context
+ADR-092 built `PostgresStore`, ADR-097 made it selectable, and ADR-100
+added `event_breakdown()` to the storage contract and implemented it in
+both backends. Every one of those closed with the same caveat: the
+PostgreSQL tests **skip** without a server, and skipping is not passing.
+
+The container running this work was recycled between sessions, so the
+server ADR-092 and ADR-097 used was gone and 44 tests were skipping.
+
+### Decision
+Run a real server here and close the caveat rather than carry it
+forward. PostgreSQL 16.15, initialised in a throwaway cluster owned by
+the `postgres` user, trust auth, loopback socket only.
+
+Full suite **with** the server: **1474 passed, 22 skipped, 0 failed**.
+Without it: 1428 passed, 66 skipped. The 22 remaining skips are
+Windows-only.
+
+### What this found
+`event_breakdown()` was in the contract Protocol and implemented twice,
+but **nothing called the PostgreSQL implementation.** ADR-100's own
+endpoint test drives `Database` directly, so the second implementation
+shipped having never executed. The 60 passing storage tests did not
+touch it; the method simply had no caller on that side.
+
+A cross-backend conformance test now covers it, and the gap it closes is
+real rather than theoretical: with the PostgreSQL implementation mutated
+to use SQLite's `?` placeholder instead of `%s`, the `[postgres]`
+parametrization fails with `ProgrammingError` while `[sqlite]` passes.
+That is exactly the class of defect an unexercised second implementation
+hides — correct-looking code that cannot run.
+
+### The general lesson, recorded because it recurs
+Adding a method to `contract.py` does not make the conformance suite
+test it. The suite tests what it has a test for. ADR-093 emptied
+`KNOWN_ABSTRACTION_LEAKS` and a test asserts both backends *implement*
+every contract member, but implementing and exercising are different
+claims. A new contract member needs a parametrized test in the same
+change, or the second backend's version is decoration.
+
+### Not established
+Still no PostgreSQL **deployment**: no migration path from an existing
+SQLite database, and TLS, connection pooling, backups, failover and a
+tuned server remain untested. This was a loopback cluster with trust
+auth, created and discarded for the test run. The acceptance matrix's
+PostgreSQL row says the same.
+
+---
+
+## ADR-105: No Security-Platform Adapter Will Be Built Without a Format
+
+### Context
+Blueprint §5 lists six adapter categories. Five exist: host telemetry,
+network flows (parsing), network sensor (Zeek/Suricata-shaped),
+file/replay and synthetic. The sixth — IDS/IPS, firewall, EDR or SIEM
+exports and APIs — has none, and `BLUEPRINT_COVERAGE.md` has carried §5
+as `PARTIAL` for that reason.
+
+Asked which export format was available to target, the operator's answer
+was that none is: nothing available, and no way to find out.
+
+### Decision: not built, and the reason recorded
+This is ADR-072's reasoning applied to a second adapter category. There,
+a NetFlow collector fed packets this project constructs was refused
+because it "would prove the decoder agrees with its author, and a UDP
+listener is attack surface". The same holds here with nothing to listen
+to: an adapter written against an imagined Splunk, Wazuh or Defender
+export would encode this project's guess at a schema, pass tests built
+from the same guess, and mis-map silently against the real thing.
+
+§5.3 requires rejecting incompatible required fields "with a useful
+error rather than silently mis-mapping them". A mapping invented without
+a real export cannot honour that, because there is no ground truth for
+what the required fields are.
+
+So §5 stays `PARTIAL` **by decision, not by omission**, and this is the
+entry that says so. It is a missing input, not missing work.
+
+### What would change it
+One real export file — a Wazuh `alerts.json`, a Suricata-fed SIEM
+export, a Windows Defender or Sysmon EVTX export, a pfSense or OPNsense
+firewall log. The `json_stream.py` adapter already handles
+Zeek/Suricata-shaped JSON, so a JSON-lines security export is the
+shortest path and may need field aliases rather than a new adapter.
+
+Until then no fabricated adapter is better than a plausible one, which
+is the §12 honesty rule applied to code instead of to numbers.
+
+---
+
+## ADR-106: Inference Latency Is Measured
+
+### Context
+Blueprint §10 lists "inference latency and throughput" among the
+measurements an evaluation reports. Nothing measured it. The System
+Health models block returned a hardcoded `inference_latency: None` with a
+comment saying no instrument existed — honest, and a gap
+`BLUEPRINT_COVERAGE.md` carried as `ABSENT — never measured`.
+
+### Decision
+`services/inference_metrics.py`, deliberately the same shape as
+`services/admission.py`'s latency summary so a reader comparing
+ingestion and inference compares like with like.
+
+**What is measured is the decision that matters.** The instrument times
+`ThreatForecastingPipeline.predict_recent_window` — feature extraction
+plus model scoring — and nothing else. It excludes:
+
+* the readiness gate, which refuses before any model runs;
+* the database read that fetches the window, which measures storage;
+* automatic training, which is not inference and is thousands of times
+  slower, so a single autotrain would dominate every percentile.
+
+A figure that mixed those in would describe the endpoint, not the model.
+§16 keeps ingestion delay and processing delay separate for the same
+reason, and the response carries a `measures` string saying so, because a
+latency number without its boundary invites exactly that misreading.
+
+Recorded per **resolved** model id: a random forest and a NumPy LSTM are
+different measurements, and averaging them answers no question anyone
+asked. Samples are bounded at 256, as admission control's are, so a
+long-running process cannot grow the list without limit — and the
+events-per-window list is trimmed in step with the latencies, or
+throughput would be quoted against a window size never measured with it.
+
+Throughput is windows per second derived from those same samples and
+reported beside the events-per-window range, rather than as an
+independent claim: a rate without its window size is not reproducible.
+
+Nothing measured yields `None`, not a structure full of nulls. An empty
+shape reads as a measurement of zero, which would claim instantaneous
+inference.
+
+### A pre-existing test that pinned a literal
+`test_unmeasured_inference_latency_is_null_not_zero` asserted
+`inference_latency is None` unconditionally. That held only because the
+field was a constant; it tested a literal, not a behaviour. With a real
+instrument, whether samples exist depends on whether anything in the
+process ran a prediction first.
+
+It now asserts the invariant its own name claims — absent, or carrying
+real samples, never a populated shape of nulls or zeros — following the
+precedent its neighbour already documents for the model registry:
+"asserting an empty registry would only test the suite's ordering."
+
+### Verification
+11 regression tests. Mutation-checked: an empty summary returning a
+zero-filled shape, unbounded samples, and System Health reverting to a
+hardcoded `None` each break a test; a phantom zero-filled model entry
+breaks four, including the rewritten one.
+
+Full suite with a real PostgreSQL 16.15 server: **1485 passed, 22
+skipped, 0 failed** (Linux).
+
+### Not established
+No latency figure is published anywhere as a service target. §16 is
+explicit that numerical targets are agreed only after measurement, and
+these are per-process samples from a development container — not a
+benchmark of any deployment. §10's **throughput under load** is still
+unmeasured; that needs the §16 ingestion benchmark, which does not exist
+yet.
+
+---
+
+## ADR-107: Calibration Is a Reliability Curve, Not One Number
+
+### Context
+Blueprint §10 requires calibration among the reported measurements. Only
+a Brier score existed, and `BLUEPRINT_COVERAGE.md` carried §10's
+calibration row as `PARTIAL — Brier score is computed; no reliability
+curve`.
+
+A Brier score mixes calibration with discrimination. A model can improve
+it by growing sharper while staying badly calibrated, and it cannot
+answer the question an operator actually has: *when this model says 0.8,
+does the thing happen about 80 % of the time?*
+
+### Decision
+`research/calibration.py` builds a reliability curve — predicted
+probability against observed frequency, per bin, with the count each bin
+rests on — reached by `POST /forecast/calibration`. It uses the holdout
+already in memory, the same split and labels every other metric was
+computed on, and never retrains.
+
+**What it refuses**, which is the part that matters:
+
+* **A single-class holdout.** Observed frequency would be 0 or 1 in
+  every populated bin whatever the model predicted, so the curve would
+  describe the holdout rather than the model. This is ADR-091's refusal
+  applied to calibration.
+* **Fewer than 20 scored windows.** Ten bins over a handful of windows
+  is a list of individual predictions wearing a histogram's name.
+* **Values outside [0, 1]**, which mean the caller passed decision
+  scores. A frequency cannot be compared with one.
+
+**Why counts travel with every bin.** An observed frequency computed
+from three windows is noise with a decimal point. This project has twice
+been misled by a statistic whose sample size was not in view — window
+recall 1.000 on a single-class holdout (ADR-091) and PR-AUC 0.9925
+measuring attack continuation (ADR-096). So every bin carries `count`,
+bins below four samples are marked `frequency_reliable: false`, and the
+summary error is reported **twice**: over all bins and over reliable
+bins only. Those disagree whenever a thin bin is badly calibrated, and
+one number would hide which population it described.
+
+Nothing is smoothed, interpolated or dropped to make the curve look
+continuous. An empty bin is reported as empty: "the model never
+predicted in this range" is a finding about the model, not a hole to
+fill. The gap is signed, so over- and under-confidence stay
+distinguishable rather than collapsing into a magnitude.
+
+Expected calibration error is count-weighted — the usual definition, and
+stated in the report rather than assumed, because an unweighted mean
+over bins lets a three-sample bin outvote a three-hundred-sample one.
+
+### Verification
+15 regression tests. Mutation-checked: scoring a single-class holdout
+instead of refusing, treating every bin as reliable, an unweighted mean
+over bins, and a top-edge off-by-one that silently drops predictions of
+exactly 1.0 — each breaks the test that names it.
+
+Two of those tests initially failed because **my own fixtures** were
+single-class, which the implementation correctly refused. The fixtures
+were wrong, not the code.
+
+Full suite with a real PostgreSQL 16.15 server: **1500 passed, 22
+skipped, 0 failed** (Linux).
+
+### Not established
+Calibration is measured on the holdout the model was evaluated on, so it
+says nothing about calibration on another period, deployment or dataset.
+Equal-width binning means a model whose predictions cluster in one range
+leaves most bins empty — visible in the counts, and a fact about the
+model rather than a defect in the measurement. And a well-calibrated
+model can still be useless: calibration is independent of
+discrimination, so it must be read beside PR-AUC and the event-level
+report, never instead of them.
+
+---
+
+## ADR-108: A Sources View, Because Four Facts Lived in Three Places
+
+### Context
+Blueprint §11 lists a **Sources** view carrying "source identity,
+capability, last event and adapter errors". `BLUEPRINT_COVERAGE.md`
+recorded it as `PARTIAL`: those facts existed, spread across
+Administration (identity and the enable toggle), Live Telemetry (the
+local collector's own counters) and `GET /events/capabilities` (reachable
+only by hand). Nothing showed one source whole, and a remote sensor —
+now that one exists — had no page at all.
+
+### Decision
+`SourcesPage.tsx` at `/sources`, joining `GET /sources/health`,
+`GET /stream/adapters` and `GET /events/capabilities`.
+
+No new endpoint: every fact was already served, which is why this is a
+view and not a feature. The join is the work.
+
+### The three places it would have lied
+**A source with no adapter row.** The adapter registry lists only
+adapters *exercised in this process*. Rendering nothing would read as
+"fine"; rendering a green dot would be false. It says the adapter has
+not run since startup and that this is not an adapter failure — two
+different states that a single indicator collapses.
+
+**Freshness.** It is derived from event time *reported by the source*, so
+a host with a slow clock looks staler than it is. The basis is printed
+beside the figures rather than hidden, and the no-heartbeat note travels
+with them: silence means "no events recorded", never "the host is down".
+
+**A source that never reported.** It says so, instead of a blank cell or
+an epoch date.
+
+Adapter health and capability are fetched with `.catch(() => [])`: a
+secondary endpoint failing must not blank the identity and freshness the
+page exists for.
+
+### Verification
+9 regression tests, pinning the honesty properties rather than the
+layout. Mutation-checked: replacing the no-adapter explanation with
+"Adapter healthy", and dropping `error_message` from the render, each
+break the test that names them.
+
+Frontend: `tsc` 0 errors, **109 passed** (100 before), production build
+succeeds. Backend unchanged: **1500 passed, 22 skipped, 0 failed**.
+
+The routing test iterates `ROUTES`, so the new path and its
+`/telemetry-sources` alias are covered without touching that test.
+
+### Not established
+`scripts/verify_browser_session.py` has a hardcoded `ROUTES` list that
+does **not** include `/sources`, so the new page has not been driven by a
+real browser. That file is being rewritten concurrently by the Windows
+verification session (ADR-102), and adding a line to a file under
+rewrite buys a conflict for no benefit. The route must be added to the
+verifier, and the verifier re-run, once that work merges. Until then
+this page has jsdom coverage only — which is exactly the gap ADR-098 was
+written about.

@@ -32,7 +32,7 @@ source and against a running instance.
 | 2 | Goals and non-goals | 15 | `MET` |
 | 3 | Architecture and invariants | 6 | `MET` |
 | 4 | Local and central deployment | 20 | `MET` (central loopback-only) |
-| 5 | Pluggable adapter architecture | 27 | `PARTIAL` — no security-platform adapter |
+| 5 | Pluggable adapter architecture | 27 | `PARTIAL` — no security-platform adapter, by decision (ADR-105) |
 | 6 | Ingestion and data quality | 7 | `MET` |
 | 7 | Forecasting task and label semantics | 7 | `MET` |
 | 8 | Dataset strategy and leakage controls | 13 | `MET` |
@@ -120,7 +120,7 @@ selectable (ADR-097).
 
 ## Where it is short
 
-### §5 — no security-platform adapter · `PARTIAL`
+### §5 — no security-platform adapter · `PARTIAL` by decision (ADR-105)
 
 Five of six adapter categories exist: host telemetry, network flows
 (parsing), network sensor (Zeek-shaped), file/replay, synthetic. The
@@ -128,6 +128,17 @@ sixth — **IDS/IPS, firewall, EDR, SIEM exports or APIs** — has no adapter.
 
 The §5.1 lifecycle contract, the §5.2 canonical envelope (all nine fields)
 and the §5.3 compatibility rules are fully met for the five that exist.
+
+**This is now a recorded decision rather than an open task (ADR-105).**
+Asked which export format was available to target, the answer was that
+none is. An adapter written against an imagined export would encode a
+guess at a schema and pass tests built from the same guess — ADR-072's
+reasoning, applied to a second category. §5.3 requires refusing
+incompatible required fields with a useful error, which a mapping
+invented without a real export cannot honour. One real export file
+changes this; `json_stream.py` already handles Zeek/Suricata-shaped
+JSON, so a JSON-lines security export may need field aliases rather
+than a new adapter.
 
 ### §10 — two metrics and two rules short · `PARTIAL`
 
@@ -215,7 +226,7 @@ CSE-CIC-IDS2018 the learned models do not forecast attack onsets. See
 | §11 dedicated Sources view | nothing — frontend work | small |
 | §10 calibration curve | nothing — the holdout is already kept | small |
 | §10 inference latency | nothing — instrument the predict path | small |
-| §5 security-platform adapter | an export format to target | medium |
+| §5 security-platform adapter | an export format to target — none available (ADR-105) | blocked |
 | §16 ingestion benchmark | a load generator and a declared environment | medium |
 | §10 cross-dataset generalization | a second corpus (CIC-IDS2017) | medium |
 | §18-1 Windows | the operator's Windows machine | — |
