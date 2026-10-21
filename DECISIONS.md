@@ -4606,3 +4606,124 @@ A 10-feature schema is not comparable with the 12-feature one; no
 controlled ablation between them has been run. The address-less days are
 also truncated at the spreadsheet row limit (ADR-095), so they are
 partial captures.
+
+---
+
+## ADR-097: Store Identity — PostgreSQL Becomes Selectable
+
+### Context
+ADR-092 built a conforming PostgreSQL backend. ADR-093 closed the three
+abstraction leaks so the application could be served from it. ADR-094
+then refused a PostgreSQL `database_url` outright, and said why it was
+not simply wired up:
+
+> Two protections are currently defined in terms of a database **file
+> path**: research-store isolation ... and the protected-database guard
+> ... Under PostgreSQL neither comparison means anything, and a backend
+> swap that silently dropped research isolation would be a worse outcome
+> than not offering the choice.
+
+It named restating both in terms of a store identity as the next piece of
+work. This is that work.
+
+### Decision
+**A store identity** both kinds of store can produce:
+
+- SQLite → `sqlite:/abs/path/prahari.db`
+- PostgreSQL → `postgresql:<host>/<database>#<schema>`
+
+It is **credential-free by construction**, because it is compared, logged
+and reported — a DSN password must never travel with it, and a test
+asserts that. Scoping by schema is what lets one server hold several
+distinct stores.
+
+**Research-store isolation** no longer demands a path. When the
+operational store has none, it contributes none, and a SQLite research
+store then cannot collide with it at all — the guarantee holds trivially
+rather than being dropped. The well-known operational filenames stay
+protected regardless of what the live store happens to be, so a stray
+import still cannot land in one.
+
+**The protected-store guard** gains `assert_safe_schema_to_initialize`.
+`path_is_temporary` cannot see a PostgreSQL store, and the equivalent
+question is whether the schema is a throwaway one. Without it, a test
+against a configured server would run DDL in `public` — the schema a
+deployment would use. `PostgresStore.initialize()` calls it, under the
+same explicit opt-out as the file guard.
+
+**`get_db` selects the backend from the scheme.** Both satisfy
+`TelemetryStore`, so nothing downstream branches on which is in use, and
+the dependency's return type is deliberately the contract rather than
+`Database`. The three callers that only *displayed* the path now use
+`store_descriptor()`.
+
+### Evidence
+The application was started with
+`PRAHARI_DATABASE_URL=postgresql://...` and nothing else changed:
+
+| Check | Result |
+|---|---|
+| `/api/v1/health` | `connected: true`, store `postgresql:/prahari_live/prahari_live#prahari_live_run` |
+| `/api/v1/system/health` | `backend: postgresql`, server 16.15, `integrity_check: null` with its note |
+| Ingest 600 synthetic flows | 600 accepted, 0 rejected |
+| Query back | 600 total |
+| `POST /analysis/run` | 600 events analysed |
+| **Real Chromium against it** | **27/27** |
+
+10 tests, mutation-checked: ignoring the scheme (restoring the ADR-094
+defect) and a guard that always allows each break one. Backend 1452
+passed, 22 skipped, 0 failed; frontend `tsc` 0, 100 passed.
+
+### Not established
+A deployment, still. There is no migration path from an existing SQLite
+database, and nothing about TLS termination, connection pooling, backups,
+failover or a tuned server is tested — the evidence is a loopback server
+with trust authentication. The research store remains SQLite-only, which
+is deliberate: it holds a local research artefact, not operational
+telemetry.
+
+---
+
+## ADR-098: A Real Browser, Because jsdom Is Not One
+
+### Context
+Every frontend check ran in jsdom. jsdom does not execute a real History
+API, does not round-trip a reload, and does not fetch from a real server.
+Three recorded defects were only visible once something actually
+rendered: ADR-084 (the page lived in React state, so every refresh
+returned to Overview), ADR-089 (the binding card), and the blank-page
+`undefined.toFixed` that unmounted the whole tree.
+
+The acceptance matrix carried "a real-browser session" as an outstanding
+prerequisite on row 1. It needed a browser, not the operator's machine —
+and this container ships Chromium.
+
+### Decision
+`scripts/verify_browser_session.py` drives **real Chromium** against the
+**real backend** serving the **real `frontend/dist` bundle**, asserting
+what jsdom cannot: every canonical route and alias as a typed deep link,
+a reload that stays put, back and forward, an unknown path rendering Not
+Found, a React root that is never empty, and no uncaught error.
+
+**One assertion was corrected rather than kept.** "No console errors"
+failed on a 404 from `GET /api/v1/sources/windows_local_host` — the
+dashboard probing for the Windows collector's source, which legitimately
+does not exist on Linux and which the page handles. A browser logs a
+console error for **every** 4xx, including handled ones, so console text
+cannot tell a defect from a probe. The check now classifies *responses*:
+a 404 under `/api/v1/sources/` is an expected absence, anything else is a
+failure. The same shape of false positive as the `src_ip` substring in
+the manifest privacy test — a loose proxy colliding with legitimate
+behaviour, fixed by testing the intent.
+
+### Evidence
+27 checks, 0 failures, against both a SQLite-backed and a
+PostgreSQL-backed instance. Mutation-checked: a wrong expected heading
+and a wrong expected alias target each produce a failure, so the checks
+are not vacuous.
+
+### Not established
+One browser engine on one platform. No screenshot or visual-regression
+comparison, no interaction beyond navigation — no form is filled, no
+training is started from the UI — and no mobile or reduced-viewport
+check.

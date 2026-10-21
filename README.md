@@ -442,6 +442,19 @@ ADR-076 it ran against the default, operational database.
 .\backend\.venv\Scripts\python.exe scripts\verify_forecasting_pipeline.py
 ```
 
+### Verify the dashboard in a real browser (ADR-098)
+
+jsdom is not a browser: it has no real History API, does not round-trip a
+reload and does not fetch from a server. With the backend running:
+
+```bash
+python scripts/verify_browser_session.py --url http://127.0.0.1:8000
+```
+
+Drives real Chromium through every route and alias as a typed deep link,
+a reload, back/forward, an unknown path, and asserts the React root is
+never empty and nothing throws. 27 checks.
+
 ### Recompile Frontend Production Bundle
 ```powershell
 cd frontend
@@ -590,11 +603,17 @@ the evidence:
   TLS (no host).
 
 PostgreSQL has a conforming backend tested against a real server
-(ADR-092), and since ADR-093 the application **runs on it end-to-end** —
-the three modules that issued SQLite-dialect SQL directly now go through
-the storage contract. It is not *deployed* on PostgreSQL: configuration
-still selects SQLite and there is no migration path from an existing
-SQLite database.
+(ADR-092); since ADR-093 the application runs on it end-to-end, and since
+ADR-097 it is **selectable from configuration**:
+
+```bash
+export PRAHARI_DATABASE_URL="postgresql://user@host:5432/prahari"
+export PRAHARI_POSTGRES_SCHEMA="central"
+```
+
+It is not *deployed* on PostgreSQL: there is no migration path from an
+existing SQLite database, and TLS termination, pooling, backups and
+failover are untested.
 
 **No forecasting effectiveness is claimed.** Every metric produced so far
 comes from synthetic data; locally collected telemetry has no incident
@@ -1154,12 +1173,14 @@ Read this before drawing conclusions from anything above.
 - **No Windows run of the Session 34 changes.** Event-level measurement
   and the PostgreSQL backend are platform-neutral and pass on Linux; they
   have not been re-run on Windows.
-- **No PostgreSQL deployment.** The application runs on PostgreSQL
-  end-to-end in tests against a real server, but configuration still
-  selects SQLite, there is no migration path from an existing SQLite
-  database, and nothing about production deployment, TLS termination,
-  pooling, backups or a tuned server is tested. The evidence is a
-  loopback server with trust authentication.
+- **No PostgreSQL deployment.** The application is selectable onto
+  PostgreSQL and runs on it (ADR-097), but there is no migration path
+  from an existing SQLite database, and nothing about TLS termination,
+  pooling, backups, failover or a tuned server is tested. The evidence is
+  a loopback server with trust authentication.
+- **One browser engine.** The real-browser session covers Chromium on
+  Linux, navigation only — no screenshots, no visual regression, no form
+  interaction, no reduced viewport.
 - **No cryptographic source authenticity.** Credentials are bearer tokens.
   PraHari does not terminate TLS, so central mode must sit behind HTTPS —
   a deployment prerequisite, not a property of this code.

@@ -2600,3 +2600,50 @@ moving it made every figure worse. Both runs are recorded.
 ### Still needs the operator's machine
 Windows re-run; a real-browser session; a sustained collector run; a live
 exporter for row 3.
+
+
+---
+
+## Session 36 — The Two Container-Only Items, Finished
+
+Both remaining items that needed no operator machine are done.
+
+### PostgreSQL is selectable (ADR-097)
+ADR-094 refused a PostgreSQL URL and named the blocker: research-store
+isolation and the protected-store guard were defined in terms of a FILE
+PATH. Both are now expressed as a **store identity** - credential-free,
+because it is compared, logged and reported. Isolation holds trivially
+when the operational store has no path; the guard gains a schema check,
+which the path guard could not see.
+
+`PRAHARI_DATABASE_URL=postgresql://...` now starts the real application
+on PostgreSQL: health reports `backend: postgresql`, 600 flows ingested
+and queried back, analysis run, and **real Chromium drove the dashboard
+against it, 27/27**.
+
+### A real browser (ADR-098)
+`scripts/verify_browser_session.py` drives real Chromium against the real
+bundle: every route and alias as a typed deep link, reload, back/forward,
+unknown path, React root never empty, nothing throws. 27 checks, 0
+failures, on both a SQLite- and a PostgreSQL-backed instance.
+
+One assertion was corrected, not kept: "no console errors" failed on a
+404 from `/api/v1/sources/windows_local_host` - the dashboard probing for
+a Windows-only source that legitimately does not exist on Linux. Browsers
+log a console error for every 4xx including handled ones, so responses
+are classified instead. The same shape of false positive as the `src_ip`
+substring in the manifest privacy test.
+
+### Results
+| Check | Result |
+|---|---|
+| Backend + PostgreSQL 16.15 | **1452 passed, 22 skipped, 0 failed** |
+| Frontend | `tsc` 0, 100 passed |
+| Real browser | 27/27, twice (SQLite and PostgreSQL backed) |
+
+### What is left, and all of it needs the operator
+- Windows run of Sessions 34-36.
+- A sustained Linux collector run.
+- A live flow exporter for row 3.
+- A second corpus, for cross-dataset generalization.
+- The `timestamp_uncertainty` judgement call.

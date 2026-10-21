@@ -173,13 +173,13 @@ def research_store_status(config: AppConfig = Depends(get_config)) -> dict:
         return {
             "configured": False,
             "reason": str(exc),
-            "operational_database": str(config.get_database_path()),
+            "operational_database": config.store_descriptor(),
             "fail_closed": True,
         }
     return {
         "configured": True,
         "research_database": str(path),
-        "operational_database": str(config.get_database_path()),
+        "operational_database": config.store_descriptor(),
         "exists": path.exists(),
         "fail_closed": True,
     }

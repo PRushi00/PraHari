@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Initializing PraHari backend (mode: %s)...", config.deployment_mode.value)
     db = get_db(config)
     db.initialize()
-    logger.info("PraHari database ready at %s", config.get_database_path())
+    logger.info("PraHari database ready at %s", config.store_descriptor())
     yield
     logger.info("PraHari backend shutting down...")
 

@@ -58,6 +58,10 @@ class AppConfig(BaseSettings):
     # import with no dedicated store configured is refused, not redirected.
     # See app/core/research_store.py.
     research_database_url: str = ""
+    # The schema a PostgreSQL operational store uses (ADR-097). Ignored
+    # for SQLite. Scoping to a schema is what lets a test run, a tenant or
+    # a trial migration share one server without colliding.
+    postgres_schema: str = "public"
 
     # Paths
     data_dir: str = "./data"
@@ -124,6 +128,41 @@ class AppConfig(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    # ──────────────── store identity (ADR-097) ────────────────
+    #
+    # Two protections were written against a database FILE PATH:
+    # research-store isolation and the protected-database guard. A second
+    # backend has no path, so they are expressed here as an IDENTITY that
+    # both kinds of store can produce, rather than being dropped for one
+    # of them.
+
+    def store_scheme(self) -> str:
+        """`sqlite` or `postgresql`, from the configured URL."""
+        raw = (self.database_url or "").strip().lower()
+        if raw.startswith("postgresql://") or raw.startswith("postgres://"):
+            return "postgresql"
+        return "sqlite"
+
+    def store_identity(self) -> str:
+        """
+        A canonical, comparable name for the configured store.
+
+        Credential-free on purpose: it is compared, logged and reported,
+        and a DSN password must never travel with it.
+        """
+        if self.store_scheme() == "postgresql":
+            from urllib.parse import urlparse
+
+            parsed = urlparse(self.database_url)
+            where = parsed.hostname or parsed.path or "local"
+            database = (parsed.path or "").lstrip("/") or "?"
+            return f"postgresql:{where}/{database}#{self.postgres_schema}"
+        return f"sqlite:{self.get_database_path()}"
+
+    def store_descriptor(self) -> str:
+        """The identity, for display. Never contains a credential."""
+        return self.store_identity()
 
     def get_database_path(self) -> Path:
         """

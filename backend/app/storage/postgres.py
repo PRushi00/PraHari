@@ -291,6 +291,11 @@ class PostgresStore:
 
     def initialize(self) -> None:
         """Create the schema and its tables if absent."""
+        # The file-path guard cannot see a PostgreSQL store; the schema is
+        # the equivalent thing to protect under pytest (ADR-097).
+        from app.storage.guard import assert_safe_schema_to_initialize
+
+        assert_safe_schema_to_initialize(self.schema, self.dsn.split("@")[-1])
         conn = psycopg.connect(self.dsn, row_factory=dict_row)
         try:
             conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
