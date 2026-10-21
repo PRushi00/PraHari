@@ -428,3 +428,48 @@ def test_deletion_reports_rows_actually_removed_not_ids_supplied(store):
     # A mix of present and absent counts only the present one.
     assert store.delete_events_by_id(["src-a-2", "never-existed"]) == 1
     assert store.count_events(source_id="src-a") == 1
+
+
+def test_event_time_range_is_measured_over_the_whole_selection(store):
+    """
+    The span of a dataset is a property of the dataset, not of whatever
+    sample a caller happened to read (ADR-095). Measuring it from the
+    most-recent N rows is how a 31-minute corpus got reported as spanning
+    104 seconds, which failed the readiness gate on a dataset that was
+    actually fine.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(60)])      # T0 .. T0+59s
+    store.insert_events([_ev("src-b", i) for i in range(5)])
+
+    lo, hi = store.event_time_range()
+    assert lo == T0
+    assert hi == T0 + timedelta(seconds=59)
+
+    # Scoped to one source.
+    lo_b, hi_b = store.event_time_range(source_id="src-b")
+    assert hi_b == T0 + timedelta(seconds=4)
+
+    # Empty selection reports nothing rather than a zero-width span.
+    assert store.event_time_range(source_id="src-never-used") is None
+
+
+def test_event_time_range_honours_plausibility_bounds(store):
+    """
+    One record stamped in 1601 would otherwise stretch the span across
+    centuries and satisfy a duration requirement on nonsense. The bounds
+    are supplied by the caller so the plausibility rule lives in one place.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(10)])
+    implausible = _ev("src-a", 99)
+    implausible.observed_at = datetime(1601, 1, 1, tzinfo=timezone.utc)
+    implausible.event_id = "src-a-ancient"
+    store.insert_events([implausible])
+
+    unbounded = store.event_time_range(source_id="src-a")
+    assert unbounded[0].year == 1601, "precondition: the old record is stored"
+
+    bounded = store.event_time_range(
+        source_id="src-a", not_before="2000-01-01T00:00:00+00:00"
+    )
+    assert bounded[0] == T0
+    assert bounded[1] == T0 + timedelta(seconds=9)

@@ -4417,3 +4417,82 @@ half-done.
 `postgres://` and `mysql://`, asserting the message says what is
 supported, and covers that a SQLite URL still resolves against the
 project root. Backend 1428 passed, 22 skipped, 0 failed with a server; 1389 passed, 61 skipped without one.
+
+---
+
+## ADR-095: Dataset Facts Are Measured, Not Inferred From a Sample
+
+### Context
+Found by running PraHari on its first real corpus (CSE-CIC-IDS2018,
+607,785 imported flows spanning 31 minutes). The readiness gate refused
+to allow training:
+
+> Insufficient data: 50000 events spanning 104s. At least 200 events over
+> 1800s are required.
+
+The dataset spans **1,859 seconds**, not 104. Three call sites — the
+readiness assessment and the two research-audit endpoints — read
+`db.list_events(limit=50_000)` and then judged *dataset-level* properties
+from that slice.
+
+`list_events` orders by `observed_at DESC`, so the slice is the **most
+recent** 50,000 rows. On synthetic fixtures, which are sparse, 50,000
+events cover hours and the slice resembles the dataset. On a real corpus
+they cover **104 seconds**, and the gate concluded that a perfectly
+adequate dataset was too short to train on.
+
+The same shape of error had already been recorded once, for the training
+selector, and `SelectionCoverage` exists because of it. It had not been
+applied to the gate that decides whether training may happen at all.
+
+### Decision
+A dataset's **count** and **span** are measured by the store:
+
+- `event_time_range(source_id, not_before, not_after)` joins the storage
+  contract, implemented on both backends as a `MIN`/`MAX` aggregate.
+  Timestamps are stored as ISO-8601 UTC text, which orders
+  lexicographically, so the extremes are exact. The plausibility bounds
+  are passed in by the caller, so the rule that a 1601 timestamp is not
+  evidence of a four-century span stays in one place rather than being
+  restated in SQL.
+- `assess_readiness` takes optional `dataset_event_count` and
+  `dataset_span_seconds`. When supplied, the sufficiency requirements use
+  them. Label and quality ratios still come from the sample, which is what
+  a sample can honestly give, and the report now says so:
+  `607785 events (label/quality read from a 50000-event sample)`.
+
+The training selection ceiling moves from 100,000 to 2,000,000 for the
+same reason: it was a resource bound chosen when only synthetic fixtures
+existed, and on a real corpus it silently reduced the dataset to its last
+few minutes — routinely one class, which the gate then refused. It is not
+a research decision, and `SelectionCoverage` already reports truncation
+honestly when it bites.
+
+### What was deliberately NOT changed
+The same run failed the data-quality check: 100 % of records carry
+`timestamp_uncertainty`, because the publisher documents no timezone, and
+only `SOURCE_LIMITED` and `SYNTHETIC_SAMPLE` are excluded from the defect
+count.
+
+There is a real argument that an undocumented source timezone is a
+source-level limitation rather than a per-record defect — the importer's
+own warning says relative ordering within a file is unaffected. **It was
+left alone.** Reclassifying a quality flag immediately after it blocked a
+run is result-driven tuning, which this project forbids: thresholds are
+set before results are seen, not after.
+
+The distinction that decided it: the span was a **measurement error** —
+the code reported 104s for something that is 1,859s — and a wrong
+measurement is wrong whatever it implies. The quality classification is a
+**judgement** about what counts as a defect, and a judgement may not be
+revised because of the verdict it produced. The first was fixed; the
+second was reported and left to the operator.
+
+### Evidence
+Two conformance tests on both backends: the span is measured over the
+whole selection and is scoped per source; an empty selection reports
+`None` rather than a zero-width span; and plausibility bounds keep a 1601
+record from stretching the span across centuries.
+
+After the fix the same corpus reports `607785 events`, `1859s`,
+`can_train: true`. Backend 1432 passed, 22 skipped, 0 failed.

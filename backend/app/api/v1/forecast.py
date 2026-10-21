@@ -8,12 +8,14 @@ dashboard click — a disabled button is not a control.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_db
+from app.schemas.events import MAX_CLOCK_SKEW_SECONDS, MIN_PLAUSIBLE_YEAR
 from app.models.forecaster import (
     InsufficientEvaluationDataError,
     ModelMetrics,
@@ -73,7 +75,15 @@ class TrainModelsRequest(BaseModel):
             "set. Refused by default; the composition is recorded when allowed."
         ),
     )
-    max_events: int = Field(default=20_000, ge=10, le=100_000)
+    # The ceiling was 100_000, set when only synthetic fixtures existed.
+    # A real corpus is denser than that by orders of magnitude: one hour of
+    # CSE-CIC-IDS2018 is ~900k flows, so a 100k cap silently reduced any
+    # real dataset to a few minutes of it. Selection is most-recent-first,
+    # so those few minutes were the END of the span - routinely one class,
+    # which the gate then refused. The cap is a resource bound, not a
+    # research decision, and `SelectionCoverage` already reports truncation
+    # honestly when it bites (ADR-095).
+    max_events: int = Field(default=20_000, ge=10, le=2_000_000)
     train_ratio: float = Field(default=0.7, ge=0.5, le=0.9)
 
 
@@ -87,7 +97,19 @@ class PredictRequest(BaseModel):
 def _current_readiness(db: Database, source_id: Optional[str] = None) -> ReadinessReport:
     """Assess readiness from stored telemetry plus the pipeline's own state."""
     pipeline = get_forecasting_pipeline()
+    # A SAMPLE, used for label and quality ratios. The dataset's own count
+    # and span are measured by the store, because the sample's extent is
+    # not the dataset's: on a dense corpus 50,000 events can cover under
+    # two minutes of a half-hour capture (ADR-095).
     events = db.list_events(source_id=source_id, limit=50_000)
+    dataset_count = db.count_events(source_id=source_id)
+    now = datetime.now(timezone.utc)
+    bounds = db.event_time_range(
+        source_id=source_id,
+        not_before=f"{MIN_PLAUSIBLE_YEAR:04d}-01-01T00:00:00+00:00",
+        not_after=(now + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS)).isoformat(),
+    )
+    dataset_span = (bounds[1] - bounds[0]).total_seconds() if bounds else None
 
     has_model = bool(pipeline.trained_models)
     interpretable = any(
@@ -101,6 +123,8 @@ def _current_readiness(db: Database, source_id: Optional[str] = None) -> Readine
         prediction_horizon_seconds=pipeline.extractor.prediction_horizon_seconds,
         has_trained_model=has_model,
         model_metrics_interpretable=interpretable,
+        dataset_event_count=dataset_count,
+        dataset_span_seconds=dataset_span,
     )
 
 
@@ -555,7 +579,7 @@ class EventLevelRequest(BaseModel):
         default=None, description="Defaults to the active model."
     )
     source_id: Optional[str] = None
-    max_events: int = Field(default=20_000, ge=100, le=200_000)
+    max_events: int = Field(default=20_000, ge=100, le=2_000_000)
     episode_gap_seconds: float = Field(
         default=DEFAULT_EPISODE_GAP_SECONDS, gt=0, le=86_400,
         description="Attack-labelled records closer than this are one event.",

@@ -641,6 +641,41 @@ class Database:
                 )
 
 
+    def event_time_range(
+        self,
+        source_id: Optional[str] = None,
+        not_before: Optional[str] = None,
+        not_after: Optional[str] = None,
+    ) -> Optional[tuple[datetime, datetime]]:
+        """
+        Earliest and latest observed_at, measured over the whole selection.
+
+        Timestamps are stored as ISO-8601 UTC text, which orders
+        lexicographically, so MIN/MAX are the true extremes. This exists so
+        a dataset's SPAN is never inferred from a sample of its rows: on a
+        dense corpus the most-recent 50,000 events can span under two
+        minutes while the dataset spans half an hour (ADR-095).
+        """
+        query = "SELECT MIN(observed_at) AS lo, MAX(observed_at) AS hi FROM normalized_events WHERE 1=1"
+        params: list = []
+        if source_id:
+            query += " AND source_id = ?"
+            params.append(source_id)
+        if not_before:
+            query += " AND observed_at >= ?"
+            params.append(not_before)
+        if not_after:
+            query += " AND observed_at <= ?"
+            params.append(not_after)
+        with self.get_connection() as conn:
+            row = conn.execute(query, params).fetchone()
+        if not row or not row["lo"] or not row["hi"]:
+            return None
+        try:
+            return (datetime.fromisoformat(row["lo"]), datetime.fromisoformat(row["hi"]))
+        except ValueError:
+            return None
+
     # ──────────────── audit listing (ADR-093) ────────────────
 
     def list_audit_events(

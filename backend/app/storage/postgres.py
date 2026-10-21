@@ -372,6 +372,33 @@ class PostgresStore:
             )
 
 
+    def event_time_range(
+        self,
+        source_id: Optional[str] = None,
+        not_before: Optional[str] = None,
+        not_after: Optional[str] = None,
+    ) -> Optional[tuple[datetime, datetime]]:
+        """Earliest and latest observed_at; see the SQLite backend's note."""
+        query = "SELECT MIN(observed_at) AS lo, MAX(observed_at) AS hi FROM normalized_events WHERE 1=1"
+        params: list = []
+        if source_id:
+            query += " AND source_id = %s"
+            params.append(source_id)
+        if not_before:
+            query += " AND observed_at >= %s"
+            params.append(not_before)
+        if not_after:
+            query += " AND observed_at <= %s"
+            params.append(not_after)
+        with self.get_connection() as conn:
+            row = conn.execute(query, params).fetchone()
+        if not row or not row["lo"] or not row["hi"]:
+            return None
+        try:
+            return (datetime.fromisoformat(row["lo"]), datetime.fromisoformat(row["hi"]))
+        except ValueError:
+            return None
+
     # ──────────────── audit listing (ADR-093) ────────────────
 
     def list_audit_events(
