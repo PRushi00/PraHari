@@ -10,21 +10,32 @@ abstraction at all, only the concrete SQLite `Database` class.
 This module is that abstraction, stated as what the application actually
 calls - derived from every `db.<method>(` call site in `app/`, not from a
 wish list. `tests/integration/test_storage_contract.py` is the executable
-half: behaviour every backend must exhibit, run today against SQLite. A
-PostgreSQL backend is done when it satisfies this Protocol AND passes that
-suite against a real server - not before, and not against a mock.
+half: behaviour every backend must exhibit, run against SQLite and against
+PostgreSQL. A PostgreSQL backend is done when it satisfies this Protocol
+AND passes that suite against a real server - not before, and not against
+a mock.
+
+That backend now exists: `app/storage/postgres.py` (ADR-092). It satisfies
+this Protocol and passes the conformance suite against PostgreSQL 16.15,
+alongside a PostgreSQL-specific suite and cross-backend equivalence tests
+asserting both stores return equal objects from the same rows.
 
 What this does NOT do
 ---------------------
-It does not make PostgreSQL work. No PostgreSQL backend exists, no driver
-is installed, and no server was available to test against.
+It does not make PostgreSQL the store the application runs on. The three
+leaks below still issue SQLite-dialect SQL directly, so the backend cannot
+yet be substituted under the running application, and nothing about a
+production deployment - TLS, backups, migrations, a tuned server - is
+claimed by a conformance run.
 
 Known abstraction leaks
 -----------------------
 Three modules outside `storage/` open a raw connection and issue
 SQLite-dialect SQL themselves. A second backend cannot be substituted
-until each moves behind a method of this contract. They are listed so the
-leak is visible, and a test fails if a FOURTH appears.
+until each moves behind a method of this contract - this is what still
+stands between a conforming PostgreSQL store and a PostgreSQL deployment.
+They are listed so the leak is visible, and a test fails if a FOURTH
+appears.
 """
 
 from __future__ import annotations

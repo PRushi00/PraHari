@@ -10,13 +10,20 @@ this suite passes against a REAL server. Passing against a mock would not
 count: the properties tested here - atomic batches, idempotent identity,
 concurrent writers - are exactly what a mock cannot exhibit.
 
-Temporary databases only.
+PostgreSQL (ADR-092) is in BACKENDS, and runs when
+``PRAHARI_TEST_POSTGRES_DSN`` points at a real server. Without one it is
+SKIPPED, never silently passed: a machine with no server has no evidence
+about PostgreSQL, and a green run there must not be read as if it had.
+
+Temporary databases and throwaway schemas only.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,23 +48,65 @@ APP = Path(__file__).resolve().parents[2] / "app"
 T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
+POSTGRES_DSN = os.environ.get("PRAHARI_TEST_POSTGRES_DSN", "").strip()
+
+
 def _sqlite(tmp_path):
     db = Database(db_path=str(tmp_path / "contract.db"))
     db.initialize()
     return db
 
 
-# Each entry: (name, factory(tmp_path) -> an initialised TelemetryStore).
-BACKENDS = [("sqlite", _sqlite)]
+def _sqlite_reopen(store, tmp_path):
+    """A second handle on the same SQLite file."""
+    db = Database(db_path=str(tmp_path / "contract.db"))
+    db.initialize()
+    return db
 
 
-@pytest.fixture(params=BACKENDS, ids=[name for name, _ in BACKENDS])
+def _postgres(tmp_path):
+    if not POSTGRES_DSN:
+        pytest.skip(
+            "PRAHARI_TEST_POSTGRES_DSN is unset. The PostgreSQL backend is "
+            "only evidenced against a REAL server; it is skipped here rather "
+            "than passed against a mock."
+        )
+    from app.storage.postgres import PostgresStore
+
+    # One throwaway schema per test, so tests cannot see each other's rows
+    # and nothing outside the schema is touched.
+    schema = "prahari_contract_" + uuid.uuid4().hex[:12]
+    store = PostgresStore(POSTGRES_DSN, schema=schema)
+    store.initialize()
+    return store
+
+
+def _postgres_reopen(store, tmp_path):
+    """A second handle on the same PostgreSQL schema."""
+    from app.storage.postgres import PostgresStore
+
+    reopened = PostgresStore(store.dsn, schema=store.schema)
+    reopened.initialize()
+    return reopened
+
+
+# Each entry: (name, factory(tmp_path), reopen(store, tmp_path)).
+BACKENDS = [
+    ("sqlite", _sqlite, _sqlite_reopen),
+    ("postgres", _postgres, _postgres_reopen),
+]
+
+
+@pytest.fixture(params=BACKENDS, ids=[name for name, _, _ in BACKENDS])
 def store(request, tmp_path):
-    _, factory = request.param
+    _, factory, reopen = request.param
     backend = factory(tmp_path)
+    backend._contract_reopen = lambda: reopen(backend, tmp_path)
     for sid in ("src-a", "src-b"):
         backend.upsert_source(TelemetrySource(source_id=sid, name=sid, source_type="json_stream"))
     yield backend
+    if hasattr(backend, "drop_schema"):
+        backend.drop_schema()
     backend.close()
 
 
@@ -206,7 +255,10 @@ def test_audit_entries_keep_their_actor_and_request_id(store):
         row = conn.execute(
             "SELECT user_identity, request_id FROM audit_events WHERE action='contract_check'"
         ).fetchone()
-    assert tuple(row) == ("credential:abc source:src-a role:ingest", "req-123")
+    # By column name: a sqlite3.Row and a psycopg dict row both support it,
+    # whereas tuple() over the latter would yield its KEYS.
+    assert row["user_identity"] == "credential:abc source:src-a role:ingest"
+    assert row["request_id"] == "req-123"
 
 
 def test_settings_round_trip_and_clear(store):
@@ -218,11 +270,11 @@ def test_settings_round_trip_and_clear(store):
 
 
 def test_data_survives_close_and_reopen(store, tmp_path):
+    """Reopens the SAME backend; it previously reopened SQLite regardless."""
     store.insert_events([_ev("src-a", i) for i in range(4)])
     store.close()
 
-    reopened = Database(db_path=str(tmp_path / "contract.db"))
-    reopened.initialize()
+    reopened = store._contract_reopen()
     try:
         assert reopened.count_events(source_id="src-a") == 4
     finally:

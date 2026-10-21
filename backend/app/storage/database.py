@@ -300,6 +300,146 @@ CONFLICT_FIELDS_EXCLUDED = (
 )
 
 
+# ──────────────────────────────────────────────────────────────────
+# Row -> model conversion
+#
+# Module-level, and written against mapping access rather than
+# sqlite3.Row, so a second backend (app/storage/postgres.py) reuses these
+# verbatim. Restating the mapping per backend is how two stores drift into
+# returning subtly different objects from the same row.
+# ──────────────────────────────────────────────────────────────────
+
+
+def _opt(row, column: str):
+    """Read a column that may be absent in an un-migrated database."""
+    try:
+        return row[column]
+    except (IndexError, KeyError):
+        return None
+
+
+def _json_opt(row, column: str, default):
+    """Read and decode a JSON column that may be absent or empty."""
+    raw = _opt(row, column)
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def row_to_source(row) -> TelemetrySource:
+    return TelemetrySource(
+        source_id=row["source_id"],
+        name=row["name"],
+        source_type=row["source_type"],
+        description=row["description"],
+        enabled=bool(row["enabled"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        last_event_at=datetime.fromisoformat(row["last_event_at"]) if row["last_event_at"] else None,
+        event_count=row["event_count"],
+        status=row["status"],
+    )
+
+# ──────────────── Normalized Events ────────────────
+
+
+
+def row_to_event(row) -> NormalizedEvent:
+    flags_raw = json.loads(row["quality_flags"]) if row["quality_flags"] else []
+    flags = [QualityFlag(f) for f in flags_raw if f in QualityFlag.__members__.values()]
+
+    return NormalizedEvent(
+        event_id=row["event_id"],
+        schema_version=row["schema_version"],
+        source_id=row["source_id"],
+        data_category=DataCategory(row["data_category"]),
+        observed_at=datetime.fromisoformat(row["observed_at"]),
+        ingested_at=datetime.fromisoformat(row["ingested_at"]),
+        received_at=(
+            datetime.fromisoformat(row["received_at"])
+            if _column_present(row, "received_at") and row["received_at"]
+            else None
+        ),
+        event_type=EventType(row["event_type"]),
+        src_ip=row["src_ip"],
+        dst_ip=row["dst_ip"],
+        src_port=row["src_port"],
+        dst_port=row["dst_port"],
+        protocol=row["protocol"],
+        duration=row["duration"],
+        packets=row["packets"],
+        bytes_total=row["bytes_total"],
+        label=row["label"],
+        label_provenance=LabelProvenance(row["label_provenance"]),
+        quality_flags=flags,
+        raw_reference=row["raw_reference"],
+        app_protocol=_opt(row, "app_protocol"),
+        http_method=_opt(row, "http_method"),
+        http_path=_opt(row, "http_path"),
+        http_status_code=_opt(row, "http_status_code"),
+        http_duration_ms=_opt(row, "http_duration_ms"),
+        dst_hostname=_opt(row, "dst_hostname"),
+    )
+
+
+
+def row_to_analysis(row) -> DescriptiveAnalysis:
+    return DescriptiveAnalysis(
+        analysis_id=row["analysis_id"],
+        analysis_type=row["analysis_type"],
+        source_id=row["source_id"],
+        computed_at=datetime.fromisoformat(row["computed_at"]),
+        schema_version=row["schema_version"],
+        data_category=DataCategory(row["data_category"]),
+        total_events=row["total_events"],
+        events_by_type=json.loads(row["events_by_type"]),
+        events_by_label=json.loads(row["events_by_label"]),
+        events_by_protocol=json.loads(row["events_by_protocol"]),
+        time_range_start=datetime.fromisoformat(row["time_range_start"]) if row["time_range_start"] else None,
+        time_range_end=datetime.fromisoformat(row["time_range_end"]) if row["time_range_end"] else None,
+        missing_field_counts=json.loads(row["missing_field_counts"]),
+        quality_flag_counts=json.loads(row["quality_flag_counts"]),
+        records_with_warnings=row["records_with_warnings"],
+        unique_src_ips=row["unique_src_ips"],
+        unique_dst_ips=row["unique_dst_ips"],
+        unique_src_ports=row["unique_src_ports"],
+        unique_dst_ports=row["unique_dst_ports"],
+        top_src_ips=json.loads(row["top_src_ips"]),
+        top_dst_ips=json.loads(row["top_dst_ips"]),
+        top_dst_ports=json.loads(row["top_dst_ports"]),
+        avg_duration=row["avg_duration"],
+        avg_packets=row["avg_packets"],
+        avg_bytes=row["avg_bytes"],
+        total_bytes=row["total_bytes"],
+        unsupported_field_counts=_json_opt(row, "unsupported_field_counts", {}),
+        source_limitations=_json_opt(row, "source_limitations", []),
+        data_categories=_json_opt(row, "data_categories", {}),
+        source_breakdown=_json_opt(row, "source_breakdown", {}),
+        is_mixed_provenance=bool(_opt(row, "is_mixed_provenance") or 0),
+        events_by_connection_state=_json_opt(row, "events_by_connection_state", {}),
+        events_by_process=_json_opt(row, "events_by_process", {}),
+        top_dst_hostnames=_json_opt(row, "top_dst_hostnames", []),
+        hostname_attributed_count=_opt(row, "hostname_attributed_count") or 0,
+        events_per_hour=_json_opt(row, "events_per_hour", {}),
+        # A pre-column analysis stores -1. It is surfaced as None —
+        # "not recorded" — rather than 0, which would claim a
+        # measurement of nothing.
+        bytes_measured_count=_measured(_opt(row, "bytes_measured_count")),
+        packets_measured_count=_measured(_opt(row, "packets_measured_count")),
+        duration_measured_count=_measured(_opt(row, "duration_measured_count")),
+        implausible_timestamp_events=_measured(
+            _opt(row, "implausible_timestamp_events")
+        ),
+        # It came out of the database, so it is by definition stored.
+        # Whether it is still CURRENT is a question about live counts
+        # and is answered by the route, not here.
+        persisted=True,
+    )
+
+
+
 class Database:
     """
     SQLite database manager for PraHari.
@@ -627,20 +767,8 @@ class Database:
             ).fetchall()
             return [self._row_to_source(r) for r in rows]
 
-    def _row_to_source(self, row: sqlite3.Row) -> TelemetrySource:
-        return TelemetrySource(
-            source_id=row["source_id"],
-            name=row["name"],
-            source_type=row["source_type"],
-            description=row["description"],
-            enabled=bool(row["enabled"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            last_event_at=datetime.fromisoformat(row["last_event_at"]) if row["last_event_at"] else None,
-            event_count=row["event_count"],
-            status=row["status"],
-        )
-
-    # ──────────────── Normalized Events ────────────────
+    def _row_to_source(self, row) -> TelemetrySource:
+        return row_to_source(row)
 
     def insert_events(self, events: list[NormalizedEvent]) -> int:
         """Insert normalized events. Returns count of inserted records."""
@@ -832,50 +960,12 @@ class Database:
             row = conn.execute(query, params).fetchone()
             return row[0] if row else 0
 
-    def _row_to_event(self, row: sqlite3.Row) -> NormalizedEvent:
-        flags_raw = json.loads(row["quality_flags"]) if row["quality_flags"] else []
-        flags = [QualityFlag(f) for f in flags_raw if f in QualityFlag.__members__.values()]
-
-        return NormalizedEvent(
-            event_id=row["event_id"],
-            schema_version=row["schema_version"],
-            source_id=row["source_id"],
-            data_category=DataCategory(row["data_category"]),
-            observed_at=datetime.fromisoformat(row["observed_at"]),
-            ingested_at=datetime.fromisoformat(row["ingested_at"]),
-            received_at=(
-                datetime.fromisoformat(row["received_at"])
-                if _column_present(row, "received_at") and row["received_at"]
-                else None
-            ),
-            event_type=EventType(row["event_type"]),
-            src_ip=row["src_ip"],
-            dst_ip=row["dst_ip"],
-            src_port=row["src_port"],
-            dst_port=row["dst_port"],
-            protocol=row["protocol"],
-            duration=row["duration"],
-            packets=row["packets"],
-            bytes_total=row["bytes_total"],
-            label=row["label"],
-            label_provenance=LabelProvenance(row["label_provenance"]),
-            quality_flags=flags,
-            raw_reference=row["raw_reference"],
-            app_protocol=self._opt(row, "app_protocol"),
-            http_method=self._opt(row, "http_method"),
-            http_path=self._opt(row, "http_path"),
-            http_status_code=self._opt(row, "http_status_code"),
-            http_duration_ms=self._opt(row, "http_duration_ms"),
-            dst_hostname=self._opt(row, "dst_hostname"),
-        )
+    def _row_to_event(self, row) -> NormalizedEvent:
+        return row_to_event(row)
 
     @staticmethod
-    def _opt(row: sqlite3.Row, column: str):
-        """Read a column that may be absent in an un-migrated database."""
-        try:
-            return row[column]
-        except (IndexError, KeyError):
-            return None
+    def _opt(row, column):
+        return _opt(row, column)
 
     # ──────────────── DNS Observations (enrichment evidence) ────────────────
 
@@ -1211,65 +1301,8 @@ class Database:
             ).fetchall()
             return [self._row_to_analysis(r) for r in rows]
 
-    def _row_to_analysis(self, row: sqlite3.Row) -> DescriptiveAnalysis:
-        return DescriptiveAnalysis(
-            analysis_id=row["analysis_id"],
-            analysis_type=row["analysis_type"],
-            source_id=row["source_id"],
-            computed_at=datetime.fromisoformat(row["computed_at"]),
-            schema_version=row["schema_version"],
-            data_category=DataCategory(row["data_category"]),
-            total_events=row["total_events"],
-            events_by_type=json.loads(row["events_by_type"]),
-            events_by_label=json.loads(row["events_by_label"]),
-            events_by_protocol=json.loads(row["events_by_protocol"]),
-            time_range_start=datetime.fromisoformat(row["time_range_start"]) if row["time_range_start"] else None,
-            time_range_end=datetime.fromisoformat(row["time_range_end"]) if row["time_range_end"] else None,
-            missing_field_counts=json.loads(row["missing_field_counts"]),
-            quality_flag_counts=json.loads(row["quality_flag_counts"]),
-            records_with_warnings=row["records_with_warnings"],
-            unique_src_ips=row["unique_src_ips"],
-            unique_dst_ips=row["unique_dst_ips"],
-            unique_src_ports=row["unique_src_ports"],
-            unique_dst_ports=row["unique_dst_ports"],
-            top_src_ips=json.loads(row["top_src_ips"]),
-            top_dst_ips=json.loads(row["top_dst_ips"]),
-            top_dst_ports=json.loads(row["top_dst_ports"]),
-            avg_duration=row["avg_duration"],
-            avg_packets=row["avg_packets"],
-            avg_bytes=row["avg_bytes"],
-            total_bytes=row["total_bytes"],
-            unsupported_field_counts=self._json_opt(row, "unsupported_field_counts", {}),
-            source_limitations=self._json_opt(row, "source_limitations", []),
-            data_categories=self._json_opt(row, "data_categories", {}),
-            source_breakdown=self._json_opt(row, "source_breakdown", {}),
-            is_mixed_provenance=bool(self._opt(row, "is_mixed_provenance") or 0),
-            events_by_connection_state=self._json_opt(row, "events_by_connection_state", {}),
-            events_by_process=self._json_opt(row, "events_by_process", {}),
-            top_dst_hostnames=self._json_opt(row, "top_dst_hostnames", []),
-            hostname_attributed_count=self._opt(row, "hostname_attributed_count") or 0,
-            events_per_hour=self._json_opt(row, "events_per_hour", {}),
-            # A pre-column analysis stores -1. It is surfaced as None —
-            # "not recorded" — rather than 0, which would claim a
-            # measurement of nothing.
-            bytes_measured_count=_measured(self._opt(row, "bytes_measured_count")),
-            packets_measured_count=_measured(self._opt(row, "packets_measured_count")),
-            duration_measured_count=_measured(self._opt(row, "duration_measured_count")),
-            implausible_timestamp_events=_measured(
-                self._opt(row, "implausible_timestamp_events")
-            ),
-            # It came out of the database, so it is by definition stored.
-            # Whether it is still CURRENT is a question about live counts
-            # and is answered by the route, not here.
-            persisted=True,
-        )
+    def _row_to_analysis(self, row) -> DescriptiveAnalysis:
+        return row_to_analysis(row)
 
-    def _json_opt(self, row: sqlite3.Row, column: str, default):
-        """Read and decode a JSON column that may be absent or empty."""
-        raw = self._opt(row, column)
-        if not raw:
-            return default
-        try:
-            return json.loads(raw)
-        except (TypeError, ValueError):
-            return default
+    def _json_opt(self, row, column, default):
+        return _json_opt(row, column, default)

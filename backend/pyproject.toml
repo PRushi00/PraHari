@@ -20,6 +20,13 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+# The central-mode store (ADR-092). Optional on purpose: local mode runs on
+# SQLite, and a local install must not be made to depend on a driver it
+# never loads. `PostgresStore` refuses to construct without it rather than
+# falling back to SQLite.
+postgres = [
+    "psycopg[binary]>=3.2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
