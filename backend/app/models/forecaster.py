@@ -380,6 +380,14 @@ class HoldoutPredictions:
         self.scores: dict[str, np.ndarray] = {}
         self._truth: dict[str, np.ndarray] = {}
         self._times: dict[str, list[datetime]] = {}
+        # The window feature rows behind the scores, kept ONLY for models
+        # whose input is one window's canonical feature vector (ADR-109).
+        # Persistence takes an indicator, the temporal stack is lag-stacked
+        # and the LSTM is three-dimensional: for those a row here would not
+        # line up with FEATURE_NAMES, so none is stored and the
+        # investigation says contributions are unavailable rather than
+        # attributing a score to the wrong names.
+        self._features: dict[str, np.ndarray] = {}
 
     def record(
         self,
@@ -387,6 +395,7 @@ class HoldoutPredictions:
         y_true: np.ndarray,
         scores: np.ndarray,
         times: Optional[list[datetime]] = None,
+        features: Optional[np.ndarray] = None,
     ) -> None:
         y_true = np.asarray(y_true).astype(int)
         scores = np.asarray(scores).astype(float)
@@ -404,8 +413,25 @@ class HoldoutPredictions:
                 )
             self._times[model_id] = list(times)
 
+        if features is not None:
+            features = np.asarray(features, dtype=float)
+            # Same reasoning as the times check above: a misalignment here
+            # would explain one window's score with another window's
+            # features, which is worse than having no explanation.
+            if len(features) != len(scores):
+                raise ValueError(
+                    f"{model_id}: {len(features)} feature row(s) for "
+                    f"{len(scores)} score(s). The holdout's features must "
+                    "align row for row with its scores."
+                )
+            self._features[model_id] = features
+
     def y_true_for(self, model_id: str) -> np.ndarray:
         return self._truth[model_id]
+
+    def features_for(self, model_id: str) -> Optional[np.ndarray]:
+        """Window feature rows, or None when this model has no comparable ones."""
+        return self._features.get(model_id)
 
     def times_for(self, model_id: str) -> Optional[list[datetime]]:
         """Window end times for this model's holdout, when they were kept."""
@@ -836,28 +862,28 @@ class ThreatForecastingPipeline:
         met1, m1 = evaluate_model_on_split(m1, "Majority Class Baseline", "baseline_constant", X_train, y_train, X_test, y_test)
         self.trained_models["baseline_constant"] = m1
         self.model_metrics["baseline_constant"] = met1
-        holdout.record("baseline_constant", y_test, score_positive_class(m1, X_test), ts_test)
+        holdout.record("baseline_constant", y_test, score_positive_class(m1, X_test), ts_test, features=X_test)
 
         # 2. Baseline Threshold
         m2 = BaselineThresholdModel()
         met2, m2 = evaluate_model_on_split(m2, "Rate Threshold Baseline", "baseline_threshold", X_train, y_train, X_test, y_test)
         self.trained_models["baseline_threshold"] = m2
         self.model_metrics["baseline_threshold"] = met2
-        holdout.record("baseline_threshold", y_test, score_positive_class(m2, X_test), ts_test)
+        holdout.record("baseline_threshold", y_test, score_positive_class(m2, X_test), ts_test, features=X_test)
 
         # 3. Logistic Regression
         m3 = LogisticRegression(max_iter=1000, random_state=42)
         met3, m3 = evaluate_model_on_split(m3, "Logistic Regression", "logistic_regression", X_train, y_train, X_test, y_test)
         self.trained_models["logistic_regression"] = m3
         self.model_metrics["logistic_regression"] = met3
-        holdout.record("logistic_regression", y_test, score_positive_class(m3, X_test), ts_test)
+        holdout.record("logistic_regression", y_test, score_positive_class(m3, X_test), ts_test, features=X_test)
 
         # 4. Random Forest / Tree Ensemble
         m4 = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=42)
         met4, m4 = evaluate_model_on_split(m4, "Random Forest Forecaster", "random_forest", X_train, y_train, X_test, y_test)
         self.trained_models["random_forest_forecaster"] = m4
         self.model_metrics["random_forest_forecaster"] = met4
-        holdout.record("random_forest_forecaster", y_test, score_positive_class(m4, X_test), ts_test)
+        holdout.record("random_forest_forecaster", y_test, score_positive_class(m4, X_test), ts_test, features=X_test)
 
         # 5. Temporal window-sequence model.
         #
