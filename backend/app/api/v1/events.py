@@ -273,15 +273,17 @@ def get_event_stats(db: Database = Depends(get_db)) -> EventSummaryStats:
     """Aggregated counts across stored events."""
     total = db.count_events()
     sources = db.list_sources()
-    sample = db.list_events(limit=1000)
 
-    labels: dict[str, int] = {}
-    event_types: dict[str, int] = {}
-    categories: dict[str, int] = {}
-    for ev in sample:
-        labels[ev.label or "unlabeled"] = labels.get(ev.label or "unlabeled", 0) + 1
-        event_types[ev.event_type.value] = event_types.get(ev.event_type.value, 0) + 1
-        categories[ev.data_category.value] = categories.get(ev.data_category.value, 0) + 1
+    # Measured over every stored event, by GROUP BY. This was previously
+    # counted from `list_events(limit=1000)`, so past 1000 events the
+    # breakdowns described only the newest 1000 while `total_events` beside
+    # them described all of them — with nothing in the response saying so.
+    # A corpus whose attacks were older than that window reported none.
+    # ADR-095 is the same defect, found in readiness and fixed there only.
+    breakdown = db.event_breakdown()
+    labels = {(k or "unlabeled"): v for k, v in breakdown["labels"].items()}
+    event_types = breakdown["event_types"]
+    categories = breakdown["data_categories"]
 
     return EventSummaryStats(
         total_events=total,

@@ -33,6 +33,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle."""
     config = get_config()
     logger.info("Initializing PraHari backend (mode: %s)...", config.deployment_mode.value)
+    # Fail closed on a bad host-collector identity (ADR-099) before anything
+    # is served. Deferring it to the first status poll would mean a server
+    # that looks healthy and only reveals the misconfiguration once an
+    # operator opens the dashboard.
+    collector_source_id = config.resolved_collector_source_id()
+    logger.info("Host collector will file telemetry as %s", collector_source_id)
     db = get_db(config)
     db.initialize()
     logger.info("PraHari database ready at %s", config.store_descriptor())

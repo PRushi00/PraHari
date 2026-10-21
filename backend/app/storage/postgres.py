@@ -427,6 +427,37 @@ class PostgresStore:
             rows = conn.execute(query, params).fetchall()
         return {r["label"]: int(r["n"]) for r in rows}
 
+    def event_breakdown(
+        self, source_id: Optional[str] = None
+    ) -> dict[str, dict[str, int]]:
+        """
+        Label, event-type and data-category counts over the WHOLE selection.
+
+        Three GROUP BYs, for the reason `label_counts` gives: a breakdown
+        taken from a capped sample describes only the rows that fitted,
+        while the total beside it describes everything, and nothing in the
+        response says so. ADR-095 recorded that failure once already.
+        """
+        out: dict[str, dict[str, int]] = {}
+        for key, column in (
+            ("labels", "COALESCE(label, '')"),
+            ("event_types", "event_type"),
+            ("data_categories", "data_category"),
+        ):
+            query = (
+                f"SELECT {column} AS k, COUNT(*) AS n "
+                "FROM normalized_events WHERE 1=1"
+            )
+            params: list = []
+            if source_id:
+                query += " AND source_id = %s"
+                params.append(source_id)
+            query += f" GROUP BY {column}"
+            with self.get_connection() as conn:
+                rows = conn.execute(query, params).fetchall()
+            out[key] = {str(r["k"]): int(r["n"]) for r in rows}
+        return out
+
     # ──────────────── audit listing (ADR-093) ────────────────
 
     def list_audit_events(

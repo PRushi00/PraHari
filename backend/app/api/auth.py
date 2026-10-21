@@ -209,12 +209,27 @@ def local_producer_owning(source_id: str) -> Optional[str]:
     from app.adapters.base import get_adapter_registry
     from app.adapters.windows_telemetry import WindowsConnectionAdapter
     from app.api.v1.hostobs import UDP_SOURCE_ID
+    from app.core.config import InvalidCollectorSourceId, get_config
     from app.services.collector import DEFAULT_SOURCE_ID
 
     reserved = {
         DEFAULT_SOURCE_ID: "the host connection-table collector",
         UDP_SOURCE_ID: "the host UDP-endpoint observer",
     }
+    # The collector's CONFIGURED id is reserved for the same reason the
+    # default is (ADR-099): the collector is built lazily, so between a
+    # restart and the first status poll the registry is empty and the
+    # registry layer alone would accept external telemetry into the live
+    # host source. A misconfigured id must not open that window either, so
+    # a rejected value falls back to protecting the default rather than
+    # protecting nothing.
+    try:
+        reserved.setdefault(
+            get_config().resolved_collector_source_id(),
+            "the host connection-table collector",
+        )
+    except InvalidCollectorSourceId:
+        pass
     if source_id in reserved:
         return reserved[source_id]
     if isinstance(get_adapter_registry().get(source_id), WindowsConnectionAdapter):

@@ -872,6 +872,42 @@ class Database:
                 ),
             )
 
+    def event_breakdown(
+        self, source_id: Optional[str] = None
+    ) -> dict[str, dict[str, int]]:
+        """
+        Label, event-type and data-category counts over the WHOLE selection.
+
+        Three GROUP BYs, for the reason `label_counts` gives: a breakdown
+        taken from a capped sample describes only the rows that fitted,
+        while the total beside it describes everything, and nothing in the
+        response says so. ADR-095 recorded that failure once already, when
+        a 50,000-row sample reported "0 positive" for a corpus holding
+        52,498 attack-labelled events.
+
+        Unlabelled events are reported under "" here, as in `label_counts`,
+        so a caller can tell unlabelled from benign without guessing.
+        """
+        out: dict[str, dict[str, int]] = {}
+        for key, column in (
+            ("labels", "COALESCE(label, '')"),
+            ("event_types", "event_type"),
+            ("data_categories", "data_category"),
+        ):
+            query = (
+                f"SELECT {column} AS k, COUNT(*) AS n "
+                "FROM normalized_events WHERE 1=1"
+            )
+            params: list = []
+            if source_id:
+                query += " AND source_id = ?"
+                params.append(source_id)
+            query += f" GROUP BY {column}"
+            with self.get_connection() as conn:
+                rows = conn.execute(query, params).fetchall()
+            out[key] = {str(r["k"]): int(r["n"]) for r in rows}
+        return out
+
     def refresh_source_activity(
         self,
         source_id: str,

@@ -4727,3 +4727,224 @@ One browser engine on one platform. No screenshot or visual-regression
 comparison, no interaction beyond navigation — no form is filled, no
 training is started from the UI — and no mobile or reduced-viewport
 check.
+
+---
+
+## ADR-099: The Host Collector's Source Identity Is Configurable
+
+### Context
+`MULTI_SYSTEM_CAPABILITY.md` records "Multiple endpoint identities" as
+PARTIAL and offers two resolutions: a per-source collector registry, or
+"accept that each endpoint runs its own agent". The second was already
+the deployment story for Windows — and it did not work.
+
+`DEFAULT_SOURCE_ID = "windows_local_host"` was a constant.
+`StartCollectorRequest` carried only `interval_seconds`, and no
+configuration field or environment variable reached the collector. Every
+Windows host that ran PraHari therefore filed telemetry under the same
+source id.
+
+That is not only ambiguous labelling.
+`WindowsConnectionAdapter.fingerprint` hashes the adapter id as its
+**first** component, so two hosts sharing the id produce the same
+`event_id` for a connection matching on protocol, addresses, ports, pid
+and creation time. Storage is `INSERT OR IGNORE`, so the second host's
+observation is silently discarded and the row is attributed to the
+first. Verified directly: two adapters on the default id return
+`d6ffcb93-…` for the same record; with distinct ids they diverge.
+
+The surrounding machinery already anticipated this. The service and the
+adapter both take the id as a parameter, and `local_producer_owning`
+documents "a collector started with a custom source id". Only the
+configuration path was missing.
+
+### Decision
+Add `collector_source_id`, resolved by
+`AppConfig.resolved_collector_source_id()`.
+
+* **Unset means the historical default.** An existing installation keeps
+  its source and its stored events; this is not a migration.
+* **A configured id is validated once, at resolution.** Lowercase
+  `[a-z][a-z0-9_-]*`, at most 64 characters. An id reaching the adapter
+  is already baked into event identity, and a bad one could not be
+  corrected later without orphaning everything stored under it.
+* **The UDP-endpoint observer's id is refused.** Two in-process
+  producers on one source would leave the reservation guard unable to
+  name which owns it.
+* **It fails closed at startup**, not at the first status poll, so a
+  misconfiguration cannot present as a healthy server that breaks when
+  an operator opens the dashboard.
+* **The reservation guard covers the configured id** (ADR-090). The
+  collector is built lazily, so between a restart and the first status
+  poll the adapter registry is empty; the reserved layer must name the
+  configured id or external telemetry could be filed into the live
+  host's own source during that window. A rejected id falls back to
+  protecting the default rather than protecting nothing.
+
+### What this does not do
+It does not make one backend process collect for several hosts — the
+collector is still a process-global singleton, and
+`MULTI_SYSTEM_CAPABILITY.md` still records that correctly. It makes the
+one-agent-per-host deployment work, which is what that document already
+proposed as acceptable.
+
+It also **cannot repair data already collected**. Two hosts that have
+already run under the default id hold events that cannot be told apart
+afterwards; the id must be set before their data is brought together.
+
+### Verification
+15 regression tests. Mutation-checked: a factory ignoring the
+configuration, a guard not covering the configured id, and a validator
+accepting anything each break a test. The guard test initially passed
+under mutation because an earlier test had left that adapter in the
+process-wide registry — it was reaching the registry layer, not the
+reserved layer. It now empties the registry first, which is the
+post-restart state it claims to be testing.
+
+---
+
+## ADR-100: Event Statistics Are Measured, Not Sampled
+
+### Context
+`GET /events/stats/summary` reported `total_events` from a full
+`COUNT(*)`, then built its label, event-type and data-category
+breakdowns from `db.list_events(limit=1000)`.
+
+Below a thousand stored events the two agree, so the endpoint looks
+correct in every small test and in a fresh installation. Past that, one
+response carries a total describing every event beside breakdowns
+describing only the newest thousand, and nothing in the response says
+which is which.
+
+**This is ADR-095's defect in a second place.** There, readiness
+reported "0 positive" for a corpus holding 52,498 attack-labelled events
+because its 50,000-row sample was the day's tail. The fix added
+`label_counts()`, a GROUP BY, with a docstring arguing against "reading
+a sample that may be drawn entirely from one end of the capture" — and
+changed readiness only. This endpoint kept sampling.
+
+It is not hypothetical. A Windows collector under observation reached
+699 events in 22 minutes of 15-second polling, so a working afternoon
+crosses the cap. Reproduced on a throwaway store: 1,200 events whose
+oldest 150 are attack-labelled report `total_events: 1200` with a
+breakdown summing to 1,000 — and **zero attacks**.
+
+### Decision
+Add `event_breakdown()` to the storage contract, implemented by both
+backends as three GROUP BYs, and have the endpoint use it.
+
+The response shape is unchanged — same three dictionaries, same
+`"unlabeled"` key for events with no label — so no caller changes. Only
+the values become complete.
+
+`sources_count` was already a full `list_sources()` and is untouched.
+
+### Alternatives rejected
+*Raise the sample cap.* It moves the threshold without removing it, and
+leaves a response that is correct until it quietly is not.
+
+*Label the breakdowns "sampled" in the response.* Honest, and cheaper,
+but the question the endpoint exists to answer is how many events of
+each kind are stored. A sampled answer to that is not worth returning
+when a GROUP BY costs one query.
+
+### Verification
+4 regression tests, at 1,200 and 1,100 events so the shortfall is
+produced by the old cap rather than by fixture size. Mutation-checked:
+restoring the 1000-row sample breaks the sum assertion and the
+oldest-label assertion. A third test pins that the breakdown agrees with
+`count_events(label=…)` and with `label_counts()`, so the new path
+cannot disagree with the counts already trusted elsewhere.
+
+Full suite: 1427 passed, 66 skipped, 0 failed (Linux).
+PostgreSQL's implementation is **not** covered: no server is available
+in this container and those tests skip rather than pass against a mock.
+
+---
+
+## ADR-101: A Store Identity Pinned to a POSIX Path
+
+### Context
+ADR-099 and ADR-100 close with the same caveat: "everything here ran on
+Linux. The 24 `live_windows` tests skip in this environment, so no
+Windows claim rests on these runs." Running the full suite on Windows 11
+is what that caveat asks for, and it surfaced one failure out of 1,441 —
+unrelated to either fix:
+
+```
+tests/integration/test_store_selection.py::test_a_sqlite_url_identifies_as_its_resolved_path
+AssertionError: assert False
+  where False = 'sqlite:C:\Users\...\prahari.db'.startswith('sqlite:/')
+```
+
+`AppConfig.store_identity()` returns `f"sqlite:{self.get_database_path()}"`,
+and `get_database_path()` resolves to an **absolute** path. On Linux that
+opens with a separator, so `sqlite:/home/...` satisfies
+`startswith("sqlite:/")`. On Windows it opens with a drive letter, so the
+identity reads `sqlite:C:` and then the path, and the assertion fails.
+
+ADR-097's store-selection suite had only ever run on Linux. The
+acceptance matrix carried `1336 passed, 8 skipped, 0 failed` for Windows
+from a revision predating it, so nothing had contradicted the claim.
+
+### Decision: fix the test, not the identity
+The assertion was the thing encoding a platform assumption, not the
+product.
+
+`store_identity()` is documented as "a canonical, comparable name for the
+configured store", and that is all its consumers want: it is logged
+(`main.py`), displayed (`/health`, `/research/import`), and compared for
+inequality (`research_store.py`). Nothing parses it as a URI, and it is
+deliberately not one — a URI would need escaping rules that a comparison
+does not benefit from. A host spelling its own absolute paths its own way
+is correct behaviour.
+
+Rewriting the identity as `sqlite:///C:/Users/...` to satisfy a leading
+slash would change a value that the protected-store guard and the
+research-isolation check both compare, to buy nothing.
+
+So the test now asserts the actual contract — scheme plus resolved
+absolute path — on any platform:
+
+```python
+assert resolved.is_absolute()
+assert identity == f"sqlite:{resolved}"
+```
+
+### Regression test
+`test_the_sqlite_identity_makes_no_posix_path_assumption` pins it
+separately and names the defect, so a future rewrite back to a
+separator-prefixed form fails on Linux as well as on Windows rather than
+silently passing on one of them.
+
+### Evidence
+`tests/integration/test_store_selection.py`: 10 passed, 1 skipped
+(PostgreSQL, no `psycopg`).
+
+Full backend suite on Windows 11, Python 3.12.10, on this branch:
+
+| Run | Result |
+|---|---|
+| 7ad866e as inherited | **1 failed, 1440 passed, 52 skipped** in 149.5 s |
+| with this fix | **1442 passed, 52 skipped, 0 failed** in 150.2 s |
+
+All **15** `live_windows` tests pass against real connection-table
+collection. ADR-099 and ADR-100 both refer to "the 24 `live_windows`
+tests"; `pytest -m live_windows --collect-only` collects **15** on this
+revision, so that figure is wrong in both ADRs. The marker count, not the
+Windows result, is what was misstated.
+
+The Linux runs recorded in ADR-099 and ADR-100 report 66 skips against
+52 here. The difference is platform, in both directions: Linux skips the
+15 `live_windows` tests and Windows skips the Linux `/proc` and symlink
+tests. A working copy with no `.git` skips a further 19
+(`test_ignore_rules.py` needs `git check-ignore`), which is why a figure
+measured outside a checkout is not comparable.
+
+### Not established
+Whether `store_identity()` should be a URI at all. It is compared and
+displayed, never parsed, so the question was not forced here. The
+PostgreSQL branch of `store_identity()` is covered by tests that run
+without a server, but `event_breakdown()` and the ADR-099 reservation
+guard on PostgreSQL remain unexercised — no server was available, and
+those tests skip rather than pass against a mock.
