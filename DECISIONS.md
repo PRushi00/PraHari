@@ -5114,3 +5114,79 @@ these are per-process samples from a development container — not a
 benchmark of any deployment. §10's **throughput under load** is still
 unmeasured; that needs the §16 ingestion benchmark, which does not exist
 yet.
+
+---
+
+## ADR-107: Calibration Is a Reliability Curve, Not One Number
+
+### Context
+Blueprint §10 requires calibration among the reported measurements. Only
+a Brier score existed, and `BLUEPRINT_COVERAGE.md` carried §10's
+calibration row as `PARTIAL — Brier score is computed; no reliability
+curve`.
+
+A Brier score mixes calibration with discrimination. A model can improve
+it by growing sharper while staying badly calibrated, and it cannot
+answer the question an operator actually has: *when this model says 0.8,
+does the thing happen about 80 % of the time?*
+
+### Decision
+`research/calibration.py` builds a reliability curve — predicted
+probability against observed frequency, per bin, with the count each bin
+rests on — reached by `POST /forecast/calibration`. It uses the holdout
+already in memory, the same split and labels every other metric was
+computed on, and never retrains.
+
+**What it refuses**, which is the part that matters:
+
+* **A single-class holdout.** Observed frequency would be 0 or 1 in
+  every populated bin whatever the model predicted, so the curve would
+  describe the holdout rather than the model. This is ADR-091's refusal
+  applied to calibration.
+* **Fewer than 20 scored windows.** Ten bins over a handful of windows
+  is a list of individual predictions wearing a histogram's name.
+* **Values outside [0, 1]**, which mean the caller passed decision
+  scores. A frequency cannot be compared with one.
+
+**Why counts travel with every bin.** An observed frequency computed
+from three windows is noise with a decimal point. This project has twice
+been misled by a statistic whose sample size was not in view — window
+recall 1.000 on a single-class holdout (ADR-091) and PR-AUC 0.9925
+measuring attack continuation (ADR-096). So every bin carries `count`,
+bins below four samples are marked `frequency_reliable: false`, and the
+summary error is reported **twice**: over all bins and over reliable
+bins only. Those disagree whenever a thin bin is badly calibrated, and
+one number would hide which population it described.
+
+Nothing is smoothed, interpolated or dropped to make the curve look
+continuous. An empty bin is reported as empty: "the model never
+predicted in this range" is a finding about the model, not a hole to
+fill. The gap is signed, so over- and under-confidence stay
+distinguishable rather than collapsing into a magnitude.
+
+Expected calibration error is count-weighted — the usual definition, and
+stated in the report rather than assumed, because an unweighted mean
+over bins lets a three-sample bin outvote a three-hundred-sample one.
+
+### Verification
+15 regression tests. Mutation-checked: scoring a single-class holdout
+instead of refusing, treating every bin as reliable, an unweighted mean
+over bins, and a top-edge off-by-one that silently drops predictions of
+exactly 1.0 — each breaks the test that names it.
+
+Two of those tests initially failed because **my own fixtures** were
+single-class, which the implementation correctly refused. The fixtures
+were wrong, not the code.
+
+Full suite with a real PostgreSQL 16.15 server: **1500 passed, 22
+skipped, 0 failed** (Linux).
+
+### Not established
+Calibration is measured on the holdout the model was evaluated on, so it
+says nothing about calibration on another period, deployment or dataset.
+Equal-width binning means a model whose predictions cluster in one range
+leaves most bins empty — visible in the counts, and a fact about the
+model rather than a defect in the measurement. And a well-calibrated
+model can still be useless: calibration is independent of
+discrimination, so it must be read beside PR-AUC and the event-level
+report, never instead of them.

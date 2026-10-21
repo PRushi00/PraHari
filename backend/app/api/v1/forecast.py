@@ -24,6 +24,11 @@ from app.models.forecaster import (
     SplitIntegrityReport,
 )
 from app.models.registry import get_forecasting_pipeline
+from app.research.calibration import (
+    DEFAULT_BINS as DEFAULT_CALIBRATION_BINS,
+    CalibrationReport,
+    measure_calibration,
+)
 from app.services.inference_metrics import get_inference_metrics
 from app.research.selection import (
     MixedProvenanceRefused,
@@ -718,3 +723,76 @@ def evaluate_event_level_performance(
         ),
     )
     return result
+
+
+# ──────────────────────────────────────────────────────────────────
+# Calibration (§10, ADR-107)
+# ──────────────────────────────────────────────────────────────────
+
+
+class CalibrationRequest(BaseModel):
+    model_id: Optional[str] = Field(
+        default=None,
+        description="Model to measure. Defaults to the active model.",
+    )
+    n_bins: int = Field(
+        default=DEFAULT_CALIBRATION_BINS, ge=2, le=50,
+        description="Equal-width bins over [0, 1]. More bins means thinner bins.",
+    )
+
+
+@router.post("/calibration", response_model=CalibrationReport)
+def measure_probability_calibration(
+    req: CalibrationRequest,
+) -> CalibrationReport:
+    """
+    A reliability curve: predicted probability against observed frequency.
+
+    §10 requires calibration. Only a Brier score existed, and a Brier
+    score mixes calibration with discrimination — a model can improve it
+    by growing sharper while staying badly calibrated. It cannot answer
+    the operator's question: when this model says 0.8, does the thing
+    happen about 80 % of the time?
+
+    Uses the holdout of the evaluation already in memory — the same split
+    and the same labels every other metric was computed on. It never
+    retrains, so nothing about the test period can influence the model.
+
+    Refuses rather than scores a single-class holdout: observed frequency
+    would be 0 or 1 in every populated bin whatever the model predicted,
+    so the curve would describe the holdout. Every bin carries the count
+    it rests on.
+    """
+    pipeline = get_forecasting_pipeline()
+    held = pipeline.last_holdout
+    if held is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_evaluation_in_memory",
+                "message": (
+                    "No evaluation has been performed in this process, so "
+                    "there is no holdout to calibrate against. Train first."
+                ),
+            },
+        )
+
+    target = req.model_id or pipeline.active_model_id
+    scores = held.scores.get(target)
+    if scores is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "unknown_model",
+                "message": f"No held-out predictions for model {target!r}.",
+                "available": sorted(held.scores),
+            },
+        )
+
+    y_true = held.y_true_for(target)
+    return measure_calibration(
+        probabilities=[float(s) for s in scores],
+        outcomes=[int(y) for y in y_true],
+        model_id=target,
+        n_bins=req.n_bins,
+    )
