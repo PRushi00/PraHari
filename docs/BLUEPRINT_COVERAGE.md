@@ -37,18 +37,18 @@ source and against a running instance.
 | 7 | Forecasting task and label semantics | 7 | `MET` |
 | 8 | Dataset strategy and leakage controls | 13 | `MET` |
 | 9 | Models, technology stack, lifecycle | 27 | `PARTIAL` / 3 `DEVIATES` |
-| 10 | Evaluation methodology | 16 | `PARTIAL` — 2 metrics, 2 rules short |
-| 11 | Dashboard and API contracts | 31 | `PARTIAL` — 1 view absent, 1 partial |
+| 10 | Evaluation methodology | 16 | `PARTIAL` — cross-*dataset* only (ADR-111) |
+| 11 | Dashboard and API contracts | 31 | `MET` (ADR-108, ADR-109) |
 | 12 | Security, privacy, threat model | 16 | `MET` |
 | 13 | Repository structure and configuration | 7 | `DEVIATES` (layout, keys) |
 | 14 | Installation and operating guide | 2 | `MET` |
 | 15 | Troubleshooting and failure handling | 15 | `MET` — `docs/TROUBLESHOOTING.md` |
-| 16 | Reproducibility, testing, release readiness | 17 | `PARTIAL` — no ingestion benchmark |
+| 16 | Reproducibility, testing, release readiness | 17 | `MET` — benchmark recorded (ADR-110); resource use unmeasured |
 | 17 | Research positioning and claims | 6 | `MET` |
 | 18 | Definition of done | 15 | 13 `MET`, 2 `PARTIAL` |
 | 19 | References and decision register | 2 | `MET` |
 
-**≈ 237 of ≈ 249 discrete requirements — about 95 %.**
+**≈ 245 of ≈ 249 discrete requirements — about 98 %.**
 (Was ≈ 222 / 89 % before §15's fifteen rows were written on 21 Oct 2026.)
 
 The missing ~5 % is not evenly trivial. It still contains the thing the
@@ -145,11 +145,11 @@ than a new adapter.
 | Requirement | State |
 |---|---|
 | Precision/recall, PR-AUC, FPR, missed-event, **event-level lead time**, data freshness, uncertainty | `MET` |
-| **Calibration** | `PARTIAL` — Brier score is computed; no reliability curve or calibration-vs-frequency plot |
+| **Calibration** | `MET` — reliability curve with per-bin counts (ADR-107) |
 | **Scenario-level performance** | `PARTIAL` — leave-one-group-out generalization exists; no scenario identifiers in the schema, so it groups by source/category |
-| **Inference latency / throughput** | `ABSENT` — never measured |
+| **Inference latency / throughput** | `MET` — measured at the `predict_recent_window` boundary (ADR-106); throughput under load in ADR-110 |
 | Rule: *select thresholds on validation data* | `DEVIATES` — the threshold is fixed at 0.5 and never tuned, so no test data can influence it. Documented as a limitation in the target spec: the operating point may not suit a deployment |
-| Rule: *evaluate cross-dataset generalization* | `ABSENT` — one corpus only |
+| Rule: *evaluate cross-dataset generalization* | `PARTIAL` — **cross-period** measured and negative, mean transfer gap 0.4472 (ADR-111). Cross-*dataset* still absent: CIC-IDS2017 needs an operator-submitted registration form |
 
 ### §11 — one view absent, one partial · `PARTIAL`
 
@@ -222,13 +222,13 @@ CSE-CIC-IDS2018 the learned models do not forecast attack onsets. See
 
 | Gap | Needs | Size |
 |---|---|---|
-| §11 Investigation view | nothing — frontend work | medium |
-| §11 dedicated Sources view | nothing — frontend work | small |
-| §10 calibration curve | nothing — the holdout is already kept | small |
-| §10 inference latency | nothing — instrument the predict path | small |
+| ~~§11 Investigation view~~ | **done** (ADR-109) | — |
+| ~~§11 dedicated Sources view~~ | **done** (ADR-108) | — |
+| ~~§10 calibration curve~~ | **done** (ADR-107) | — |
+| ~~§10 inference latency~~ | **done** (ADR-106) | — |
 | §5 security-platform adapter | an export format to target — none available (ADR-105) | blocked |
-| §16 ingestion benchmark | a load generator and a declared environment | medium |
-| §10 cross-dataset generalization | a second corpus (CIC-IDS2017) | medium |
+| ~~§16 ingestion benchmark~~ | **done** (ADR-110) | — |
+| §10 cross-**dataset** generalization | CIC-IDS2017 — an operator-submitted registration form. Cross-**period** is done (ADR-111) | blocked |
 | §18-1 Windows | the operator's Windows machine | — |
 | §18-3 live network collection | an authorized exporter and observation point | — |
 
