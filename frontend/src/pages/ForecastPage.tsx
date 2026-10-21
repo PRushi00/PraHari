@@ -10,7 +10,7 @@ import {
 import { api } from "../services/api";
 import { ModelMetrics, PredictionResult, TelemetrySource } from "../types";
 
-import { fmtFixed, fmtPercent, isNum, safeSeries } from "../utils/format";
+import { fmtFixed, fmtInt, fmtPercent, isNum, safeSeries } from "../utils/format";
 import { bestModelId } from "../utils/models";
 export const ForecastPage: React.FC = () => {
   const [models, setModels] = useState<Record<string, ModelMetrics>>({});
@@ -29,6 +29,12 @@ export const ForecastPage: React.FC = () => {
   const [readiness, setReadiness] = useState<import("../types").ReadinessReport | null>(null);
   const [integrity, setIntegrity] = useState<import("../types").SplitIntegrityReport | null>(null);
   const [blocked, setBlocked] = useState<any | null>(null);
+  // Event-level view of the evaluation already in memory (ADR-091). Held
+  // separately from `models` because it is a different question about the
+  // same holdout, and because it can legitimately REFUSE.
+  const [eventLevel, setEventLevel] = useState<import("../types").EventLevelReport | null>(null);
+  const [eventLevelError, setEventLevelError] = useState<string | null>(null);
+  const [eventLevelLoading, setEventLevelLoading] = useState(false);
 
   const fetchInitialData = async () => {
     try {
@@ -50,6 +56,25 @@ export const ForecastPage: React.FC = () => {
   useEffect(() => {
     fetchInitialData();
   }, []);
+
+  const handleEventLevel = async () => {
+    setEventLevelLoading(true);
+    setEventLevelError(null);
+    setEventLevel(null);
+    try {
+      const report = await api.evaluateEventLevel({
+        model_id: activeModelId || undefined,
+        source_id: selectedSource || undefined,
+      });
+      setEventLevel(report);
+    } catch (err: any) {
+      // A refusal is a result, not a crash: the backend states why it
+      // cannot produce an event-level view and that reason is shown.
+      setEventLevelError(err?.message || "Event-level evaluation unavailable.");
+    } finally {
+      setEventLevelLoading(false);
+    }
+  };
 
   const handleTrainModels = async () => {
     setTraining(true);
@@ -556,6 +581,131 @@ export const ForecastPage: React.FC = () => {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Event-level warning performance (§10, ADR-091) */}
+      <div className="glass-panel" style={{ padding: "1.75rem", marginBottom: "1.5rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem" }}>
+          <div>
+            <h2 style={{ fontSize: "1.1rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <AlertTriangle size={20} style={{ color: "var(--accent-cyan)" }} />
+              Event-Level Warning Performance
+            </h2>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.35rem", maxWidth: "70ch" }}>
+              The table above counts <strong>windows</strong>. This counts <strong>events</strong>:
+              how long before each documented event the first qualifying warning arrived,
+              how many events got no warning, and how many alerts an analyst would have read.
+              One attack spanning many windows is one event here.
+            </p>
+          </div>
+          <button
+            className="btn btn-secondary"
+            onClick={handleEventLevel}
+            disabled={eventLevelLoading || modelKeys.length === 0}
+          >
+            <BarChart size={16} className={eventLevelLoading ? "spin-icon" : ""} />
+            {eventLevelLoading ? "Matching..." : "Measure Event-Level"}
+          </button>
+        </div>
+
+        {eventLevelError && (
+          <div
+            data-testid="event-level-refusal"
+            style={{ marginTop: "1.25rem", padding: "1rem", borderRadius: "var(--radius-md)", borderLeft: "4px solid var(--accent-amber, #f59e0b)", background: "rgba(245, 158, 11, 0.08)", fontSize: "0.82rem", color: "#fcd34d" }}
+          >
+            <strong>No event-level result.</strong>
+            <div style={{ marginTop: "0.4rem", color: "var(--text-dim)" }}>{eventLevelError}</div>
+          </div>
+        )}
+
+        {eventLevel && eventLevel.available && (
+          <div style={{ marginTop: "1.5rem" }} data-testid="event-level-report">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "1rem" }}>
+              <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Events warned</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--text-main)" }}>
+                  {fmtInt(eventLevel.events_warned)} / {fmtInt(eventLevel.events_total)}
+                </div>
+              </div>
+              <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Missed-event rate</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: (eventLevel.missed_event_rate ?? 0) > 0.5 ? "#f43f5e" : "var(--text-main)" }}>
+                  {fmtPercent(eventLevel.missed_event_rate)}
+                </div>
+              </div>
+              <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Median lead time</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--accent-cyan)" }}>
+                  {isNum(eventLevel.lead_time.median_seconds) ? `${fmtFixed(eventLevel.lead_time.median_seconds, 0)}s` : "N/A"}
+                </div>
+              </div>
+              <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>False alarms / hour</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--text-main)" }}>
+                  {fmtFixed(eventLevel.false_alarms_per_hour, 2)}
+                </div>
+              </div>
+              <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Alarm duty cycle</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: (eventLevel.alarm_duty_cycle ?? 0) >= 0.5 ? "#f43f5e" : "var(--text-main)" }}>
+                  {fmtPercent(eventLevel.alarm_duty_cycle)}
+                </div>
+              </div>
+              <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Late warnings</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--text-main)" }}>
+                  {fmtInt(eventLevel.late_warnings)}
+                </div>
+              </div>
+            </div>
+
+            {/* The distribution, not just the median. */}
+            <div style={{ marginTop: "1.25rem", fontSize: "0.8rem", color: "var(--text-dim)" }}>
+              <strong style={{ color: "var(--text-main)" }}>Lead-time distribution</strong>{" "}
+              ({fmtInt(eventLevel.lead_time.count)} warned event(s)):{" "}
+              {eventLevel.lead_time.quartiles_available ? (
+                <>
+                  min {fmtFixed(eventLevel.lead_time.min_seconds, 0)}s • p25{" "}
+                  {fmtFixed(eventLevel.lead_time.p25_seconds, 0)}s • median{" "}
+                  {fmtFixed(eventLevel.lead_time.median_seconds, 0)}s • p75{" "}
+                  {fmtFixed(eventLevel.lead_time.p75_seconds, 0)}s • max{" "}
+                  {fmtFixed(eventLevel.lead_time.max_seconds, 0)}s
+                </>
+              ) : (
+                <span style={{ color: "var(--text-muted)" }}>{eventLevel.lead_time.note}</span>
+              )}
+            </div>
+
+            {/* Rules first: a lead time without them is not comparable. */}
+            <div style={{ marginTop: "1rem", fontSize: "0.75rem", color: "var(--text-muted)" }}>
+              Matching rules: a warning qualifies {fmtFixed(eventLevel.rules.min_lead_seconds, 0)}–
+              {fmtFixed(eventLevel.rules.max_lead_seconds, 0)}s before an event • episode gap{" "}
+              {fmtFixed(eventLevel.rules.episode_gap_seconds, 0)}s • suppression{" "}
+              {fmtFixed(eventLevel.rules.suppression_seconds, 0)}s • threshold{" "}
+              {fmtFixed(eventLevel.rules.threshold, 2)} • fingerprint{" "}
+              <code style={{ color: "var(--accent-cyan)" }}>{eventLevel.rules_fingerprint.slice(0, 12)}</code>
+            </div>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.35rem" }}>
+              {fmtInt(eventLevel.positive_windows)} positive window(s) aggregated into{" "}
+              {fmtInt(eventLevel.warnings_issued)} warning(s) over{" "}
+              {fmtInt(eventLevel.evaluated_windows)} evaluated window(s).
+              {eventLevel.events_out_of_coverage > 0 && (
+                <> {fmtInt(eventLevel.events_out_of_coverage)} event(s) lay outside the holdout&apos;s reach and are excluded.</>
+              )}
+            </div>
+
+            {eventLevel.limitations.length > 0 && (
+              <ul
+                data-testid="event-level-limitations"
+                style={{ marginTop: "1rem", paddingLeft: "1.1rem", fontSize: "0.75rem", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: "0.35rem" }}
+              >
+                {eventLevel.limitations.map((limitation, idx) => (
+                  <li key={idx}>{limitation}</li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>

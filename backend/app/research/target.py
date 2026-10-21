@@ -25,7 +25,11 @@ TARGET_ID = "prahari.attack_label_in_horizon"
 # 1.0.0 - the rules as the pipeline applied them before this module.
 # 1.1.0 - prediction-time availability: late live events are excluded from
 #         earlier windows' features (ADR-069).
-TARGET_VERSION = "1.1.0"
+# 1.2.0 - event-level matching exists (ADR-091): warning aggregation,
+#         suppression and event matching are defined, so the window-level
+#         rules below now say which scope they apply to rather than
+#         declaring event-level measurement absent.
+TARGET_VERSION = "1.2.0"
 
 NOT_EQUIVALENT_TO = [
     "scenario start - a dataset's recorded schedule, not an observation",
@@ -38,6 +42,13 @@ ATTACK_LABEL_RULE = (
     "a label is an ATTACK label when it is non-empty and its lower-cased, "
     "trimmed text is not one of: benign, normal, unlabeled"
 )
+
+NON_ATTACK_LABELS = frozenset({"benign", "normal", "unlabeled", ""})
+
+
+def is_attack_label(label: Optional[str]) -> bool:
+    """`ATTACK_LABEL_RULE` as code, so the prose and the test agree."""
+    return bool(label) and label.strip().lower() not in NON_ATTACK_LABELS
 
 
 class TargetSpecification(BaseModel):
@@ -98,15 +109,22 @@ def build_target_specification(
     negative += ". Any other window is EXCLUDED, never labelled 0."
 
     limitations = [
-        "Matching is per WINDOW. `detected_events`, `missed_events` and "
-        "`false_alarms` count windows, not distinct attack events: one long "
-        "attack spanning many windows is counted many times.",
+        "The metrics in THIS specification are per WINDOW: `detected_events`, "
+        "`missed_events` and `false_alarms` count windows, not distinct attack "
+        "events, so one long attack spanning many windows is counted many "
+        "times. Event-level counting lives in the separate event-level report "
+        "(ADR-091), which is where an event-level claim must be read from.",
         "Event-level lead time (first qualifying warning to the event) is NOT "
-        "measured. Lead time is studied as performance across configured lead "
-        "offsets, each a separately trained model.",
-        "Warning suppression is not modelled: every positive window is a "
-        "separate warning, so false-alarm burden is an upper bound on what an "
-        "analyst with de-duplication would see.",
+        "measured by this window-level target. It is measured by the "
+        "event-level report, under its own stated and fingerprinted matching "
+        "rules; a lead time quoted without those rules is not comparable. The "
+        "lead-time CURVE remains a different thing again: performance across "
+        "configured lead offsets, each a separately trained model.",
+        "Warning suppression is not modelled HERE: at window level every "
+        "positive window is a separate warning, so this false-alarm burden is "
+        "an upper bound on what an analyst with de-duplication would see. The "
+        "event-level report applies a stated suppression interval and reports "
+        "the alarm duty cycle beside the warning count.",
         "Trained models classify at a fixed probability of 0.5, never tuned, "
         "so no test data can influence the threshold; it is also not optimised "
         "on validation data, so the operating point may not suit a deployment. "

@@ -294,4 +294,24 @@ export const api = {
 
   getSecurityConfig: (): Promise<import("../types").SecurityConfig> =>
     request<import("../types").SecurityConfig>("/audit/config"),
+
+  /**
+   * Event-level warning performance for the evaluation already in memory.
+   *
+   * Never retrains: it re-reads the holdout the last training produced, so
+   * the numbers describe the same split and the same operating point as the
+   * window-level metrics beside them.
+   */
+  evaluateEventLevel: (data?: {
+    model_id?: string;
+    source_id?: string;
+    episode_gap_seconds?: number;
+    suppression_seconds?: number;
+    threshold?: number;
+  }): Promise<import("../types").EventLevelReport> =>
+    request<import("../types").EventLevelReport>("/forecast/event-level", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {}),
+    }),
 };

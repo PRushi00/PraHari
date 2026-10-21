@@ -64,6 +64,14 @@ MODEL_PAIRS = [
     ("CollectionGap", "CollectionGap"),
     ("FeatureContribution", None),  # built in code, not a Pydantic model
     ("ReadinessRequirement", "Requirement"),
+    # Event-level warning performance (§10, ADR-091). Paired so the
+    # dashboard's lead-time and missed-event panel cannot drift from what
+    # /forecast/event-level actually returns.
+    ("EventLevelReport", "EventLevelReport"),
+    ("MatchingRules", "MatchingRules"),
+    ("DocumentedEvent", "DocumentedEvent"),
+    ("IssuedWarning", "IssuedWarning"),
+    ("LeadTimeDistribution", "LeadTimeDistribution"),
 ]
 
 # Interfaces that intentionally have no backend counterpart: purely local

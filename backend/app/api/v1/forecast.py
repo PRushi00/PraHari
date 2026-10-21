@@ -36,6 +36,13 @@ from app.research.evaluation import (
     generalization_evaluation,
     lead_time_curve,
 )
+from app.research.event_level import (
+    DEFAULT_EPISODE_GAP_SECONDS,
+    DEFAULT_SUPPRESSION_SECONDS,
+    DEFAULT_THRESHOLD,
+    EventLevelReport,
+    evaluate_event_level,
+)
 from app.research.readiness import (
     OP_PREDICT,
     OP_TRAIN,
@@ -527,6 +534,148 @@ def evaluate_generalization(
             f"Evaluated {result.evaluated_groups} group(s), refused "
             f"{result.refused_groups}; mean transfer gap "
             f"{result.mean_transfer_gap}"
+        ),
+    )
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────
+# Event-level warning performance (ADR-091)
+# ──────────────────────────────────────────────────────────────────
+
+
+class EventLevelRequest(BaseModel):
+    """
+    Matching parameters. The qualifying interval is NOT among them: it comes
+    from the lead and horizon the evaluation was actually run with, so it
+    cannot be widened after the numbers are seen.
+    """
+
+    model_id: Optional[str] = Field(
+        default=None, description="Defaults to the active model."
+    )
+    source_id: Optional[str] = None
+    max_events: int = Field(default=20_000, ge=100, le=200_000)
+    episode_gap_seconds: float = Field(
+        default=DEFAULT_EPISODE_GAP_SECONDS, gt=0, le=86_400,
+        description="Attack-labelled records closer than this are one event.",
+    )
+    suppression_seconds: float = Field(
+        default=DEFAULT_SUPPRESSION_SECONDS, ge=0, le=86_400,
+        description="A positive window within this of the last extends the open warning.",
+    )
+    threshold: float = Field(
+        default=DEFAULT_THRESHOLD, gt=0, lt=1,
+        description="Operating point. Changing it changes the trade-off, not the truth.",
+    )
+
+
+@router.post("/event-level", response_model=EventLevelReport)
+def evaluate_event_level_performance(
+    req: EventLevelRequest,
+    db: Database = Depends(get_db),
+) -> EventLevelReport:
+    """
+    Event-level lead time, missed events, late warnings and false alarms.
+
+    The window-level metrics answer "how many windows were classified
+    correctly". Blueprint §10 asks something else: how long before a
+    documented event the first qualifying warning arrived, how many events
+    got no warning at all, and how many alerts an analyst would have read.
+    One attack spanning forty windows is one event and one alert here, not
+    forty of each.
+
+    Uses the holdout of the evaluation already in memory — the same split,
+    the same target and the same fixed operating point. It never retrains,
+    so nothing about the test period can influence the model.
+
+    The matching rules are returned and fingerprinted with the result,
+    because a lead time is only meaningful beside the rules that produced
+    it.
+    """
+    pipeline = get_forecasting_pipeline()
+    held = pipeline.last_holdout
+    if held is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_evaluation_in_memory",
+                "message": (
+                    "No evaluation has been performed in this process, so "
+                    "there is no holdout to match warnings against. Train first."
+                ),
+            },
+        )
+
+    target = req.model_id or pipeline.active_model_id
+    scores = held.scores.get(target)
+    if scores is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "unknown_model",
+                "message": f"No held-out predictions for model {target!r}.",
+                "available": sorted(held.scores),
+            },
+        )
+
+    times = held.times_for(target)
+    if not times:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "no_prediction_times",
+                "message": (
+                    f"The holdout for {target!r} carries no window times, so a "
+                    "warning cannot be placed in time. Re-run training to "
+                    "record them."
+                ),
+            },
+        )
+
+    # The same lead and horizon the evaluation ran with, not a fresh guess.
+    extractor = pipeline.extractor
+    report_windowing = getattr(extractor, "last_windowing_report", None)
+    lead = (
+        report_windowing.effective_lead_seconds
+        if report_windowing else extractor.lead_time_seconds
+    )
+    horizon = (
+        report_windowing.effective_horizon_seconds
+        if report_windowing else extractor.prediction_horizon_seconds
+    )
+
+    events = db.list_events(source_id=req.source_id, limit=req.max_events)
+    result = evaluate_event_level(
+        events, times, scores,
+        lead_seconds=lead,
+        horizon_seconds=horizon,
+        model_id=target,
+        episode_gap_seconds=req.episode_gap_seconds,
+        suppression_seconds=req.suppression_seconds,
+        threshold=req.threshold,
+    )
+
+    if not result.available:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "no_event_level_evaluation",
+                "message": result.refusal_reason,
+                "rules": result.rules.model_dump(mode="json"),
+                "events_out_of_coverage": result.events_out_of_coverage,
+                "evaluated_windows": result.evaluated_windows,
+            },
+        )
+
+    db.log_audit(
+        action="evaluate_event_level",
+        resource_type="forecasting",
+        resource_id=target,
+        details=(
+            f"{result.events_warned}/{result.events_total} event(s) warned, "
+            f"{result.false_alarms} false alarm(s), "
+            f"{result.late_warnings} late, rules {result.rules_fingerprint[:12]}"
         ),
     )
     return result

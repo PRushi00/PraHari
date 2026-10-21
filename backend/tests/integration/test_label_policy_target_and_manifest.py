@@ -204,8 +204,12 @@ def test_the_target_refuses_to_be_read_as_more_than_its_labels():
 def test_the_known_shortfalls_are_stated_not_hidden():
     limitations = " ".join(_spec().scope_limitations)
     assert "per WINDOW" in limitations
+    # Since ADR-091 event-level matching exists, but NOT in this window-level
+    # target: the shortfall is still stated, and now says where to read the
+    # event-level numbers instead of implying none exist.
     assert "Event-level lead time" in limitations and "NOT" in limitations
-    assert "suppression is not modelled" in limitations
+    assert "event-level report" in limitations
+    assert "suppression is not modelled HERE" in limitations
 
 
 def test_synthetic_evidence_leads_the_limitations():
