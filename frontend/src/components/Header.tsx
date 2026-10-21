@@ -21,6 +21,7 @@ export type NavTab =
   | "import"
   | "stream"
   | "events"
+  | "sources"
   | "analysis"
   | "research"
   | "forecast"
@@ -113,6 +114,13 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
         {/* System Health and Administration existed, typed and routed in
             the app, but had no entry here, so no user could open them. */}
+        <button
+          className={`nav-btn ${activeTab === "sources" ? "active" : ""}`}
+          onClick={() => onSelectTab("sources")}
+        >
+          <Radio size={15} />
+          Sources
+        </button>
         <button
           className={`nav-btn ${activeTab === "system" ? "active" : ""}`}
           onClick={() => onSelectTab("system")}

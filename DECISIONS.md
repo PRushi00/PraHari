@@ -5190,3 +5190,64 @@ model rather than a defect in the measurement. And a well-calibrated
 model can still be useless: calibration is independent of
 discrimination, so it must be read beside PR-AUC and the event-level
 report, never instead of them.
+
+---
+
+## ADR-108: A Sources View, Because Four Facts Lived in Three Places
+
+### Context
+Blueprint §11 lists a **Sources** view carrying "source identity,
+capability, last event and adapter errors". `BLUEPRINT_COVERAGE.md`
+recorded it as `PARTIAL`: those facts existed, spread across
+Administration (identity and the enable toggle), Live Telemetry (the
+local collector's own counters) and `GET /events/capabilities` (reachable
+only by hand). Nothing showed one source whole, and a remote sensor —
+now that one exists — had no page at all.
+
+### Decision
+`SourcesPage.tsx` at `/sources`, joining `GET /sources/health`,
+`GET /stream/adapters` and `GET /events/capabilities`.
+
+No new endpoint: every fact was already served, which is why this is a
+view and not a feature. The join is the work.
+
+### The three places it would have lied
+**A source with no adapter row.** The adapter registry lists only
+adapters *exercised in this process*. Rendering nothing would read as
+"fine"; rendering a green dot would be false. It says the adapter has
+not run since startup and that this is not an adapter failure — two
+different states that a single indicator collapses.
+
+**Freshness.** It is derived from event time *reported by the source*, so
+a host with a slow clock looks staler than it is. The basis is printed
+beside the figures rather than hidden, and the no-heartbeat note travels
+with them: silence means "no events recorded", never "the host is down".
+
+**A source that never reported.** It says so, instead of a blank cell or
+an epoch date.
+
+Adapter health and capability are fetched with `.catch(() => [])`: a
+secondary endpoint failing must not blank the identity and freshness the
+page exists for.
+
+### Verification
+9 regression tests, pinning the honesty properties rather than the
+layout. Mutation-checked: replacing the no-adapter explanation with
+"Adapter healthy", and dropping `error_message` from the render, each
+break the test that names them.
+
+Frontend: `tsc` 0 errors, **109 passed** (100 before), production build
+succeeds. Backend unchanged: **1500 passed, 22 skipped, 0 failed**.
+
+The routing test iterates `ROUTES`, so the new path and its
+`/telemetry-sources` alias are covered without touching that test.
+
+### Not established
+`scripts/verify_browser_session.py` has a hardcoded `ROUTES` list that
+does **not** include `/sources`, so the new page has not been driven by a
+real browser. That file is being rewritten concurrently by the Windows
+verification session (ADR-102), and adding a line to a file under
+rewrite buys a conflict for no benefit. The route must be added to the
+verifier, and the verifier re-run, once that work merges. Until then
+this page has jsdom coverage only — which is exactly the gap ADR-098 was
+written about.
