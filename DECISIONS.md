@@ -4496,3 +4496,234 @@ record from stretching the span across centuries.
 
 After the fix the same corpus reports `607785 events`, `1859s`,
 `can_train: true`. Backend 1432 passed, 22 skipped, 0 failed.
+
+---
+
+## ADR-096: The Address-less Feature Schema, and What It Measured
+
+### Context
+Nine of the ten CSE-CIC-IDS2018 processed CSVs carry no `Src IP`, no
+`Dst IP` and no `Flow ID`, so their endpoint addresses are unrecoverable
+(checked, not assumed — ADR-095's provenance record). PraHari's importer
+required both addresses, so those nine days were rejected row by row.
+
+That cost was not evenly distributed. The one day PraHari **could** read,
+20 Feb, holds a single attack onset, which cannot support a chronological
+split. The nine it could not read include **Thursday 15 Feb, which holds
+five separated onsets in one morning** — the only shape of data that can
+answer the research question at all.
+
+### Decision
+Two features need addresses: `distinct_src_ips` and `distinct_dst_ips`.
+
+The tempting fix is to accept address-less rows and let them compute
+`len(set()) == 0`. That is a **fabricated measurement**: "no distinct
+source addresses were observed" is a claim about the traffic, and a false
+one — the flows had addresses, the export dropped them.
+
+So the columns are **removed**, and what results is a different, named
+schema rather than the same schema with two zeroes in it:
+
+- `prahari.window_features.full.v1` — 12 features
+- `prahari.window_features.addressless.v1` — 10 features
+
+The schema is decided from the events, recorded in the windowing report
+with its feature names, and stated in a note. A **mixture** is refused
+(`MixedAddressAvailabilityError`): counting distinct addresses over a set
+where some rows structurally lack them undercounts by exactly the
+address-less share, and nothing in the number would show it.
+
+The import policy gains `address_columns`, **declared and header-checked
+in both directions**, for the same reason `timestamp_format` is declared:
+declaring them absent when the file has them would discard real data;
+declaring them required when the file lacks them rejects every row, one
+at a time, for a fact that is true of the whole file. Address-less rows
+are flagged `SOURCE_LIMITED`, which is already excluded from the quality
+defect count — it describes the source, not the record.
+
+### What it measured
+Thursday 15 Feb imported cleanly: 659,226 flows, 0 rejected, reconciles,
+two attack types (GoldenEye 41,508; Slowloris 10,990). `near_duplicate_flows`
+rose to 481,160 (73 %, against 22,341 on the addressed day) — a direct
+consequence of dropping addresses, counted and kept rather than dropped.
+
+The result depends entirely on where the split falls, and that is the
+finding:
+
+| Split | Holdout contains | LSTM PR-AUC | Persistence PR-AUC |
+|---|---|---|---|
+| 0.6 (test starts 11:08) | attack **continuations** only | **0.9925** | 0.9562 |
+| 0.5 (test starts 10:41) | an actual **onset** (11:00) | **0.3387** | 0.9420 |
+
+At 0.6 every learned model looks strong and the event-level evaluation
+**refuses**: all five documented onsets precede the holdout, so no
+evaluated window could have warned for any of them. The 131 positive test
+windows are continuations of an attack that began in the training period.
+PR-AUC 0.9925 is measuring "an attack is ongoing", not "an attack is
+coming".
+
+At 0.5, with one genuine onset in the holdout, every learned model
+collapses — the LSTM to 0.3387, random forest to 0.2112, the temporal
+stack to 0.2259, against a constant baseline of 0.3115. Only
+`baseline_persistence` ("attack now ⇒ attack next") stays strong at
+0.9420, because detection is what this data supports.
+
+Event-level, LSTM, at the 0.5 split:
+
+| Measure | Value |
+|---|---|
+| Events in coverage | 1 (4 excluded: their onsets precede the holdout) |
+| Events warned | **0** |
+| Missed-event rate | **1.0** |
+| Late warnings | 2 (fired during the attack) |
+| False alarms | 7 — 3.08 per hour |
+| Alarm duty cycle | 9.0 % |
+| Lead time | none to report |
+
+The split was moved from 0.6 to 0.5 to obtain event-level **coverage**,
+not to improve a metric, and both runs are reported above precisely so
+that choice is visible. Moving it made every headline number worse.
+
+### Conclusion
+**On this corpus PraHari's learned models do not forecast attack onsets.**
+What looked like strong performance was detection of attacks already in
+progress, and the persistence baseline does that better. The blueprint
+anticipated exactly this: "Any model that cannot beat it has demonstrated
+nothing."
+
+One event in coverage is too few for a robust rate, and the report says
+so in its own limitations. This is a negative result on one day of one
+corpus, not a claim about the approach in general.
+
+### Evidence
+8 unit tests, mutation-checked: keeping the columns (reporting a zero) and
+tolerating a mixture each break tests. Both declaration guards verified
+through the real API, in both directions. Backend 1442 passed, 22 skipped,
+0 failed.
+
+### Not established
+A 10-feature schema is not comparable with the 12-feature one; no
+controlled ablation between them has been run. The address-less days are
+also truncated at the spreadsheet row limit (ADR-095), so they are
+partial captures.
+
+---
+
+## ADR-097: Store Identity — PostgreSQL Becomes Selectable
+
+### Context
+ADR-092 built a conforming PostgreSQL backend. ADR-093 closed the three
+abstraction leaks so the application could be served from it. ADR-094
+then refused a PostgreSQL `database_url` outright, and said why it was
+not simply wired up:
+
+> Two protections are currently defined in terms of a database **file
+> path**: research-store isolation ... and the protected-database guard
+> ... Under PostgreSQL neither comparison means anything, and a backend
+> swap that silently dropped research isolation would be a worse outcome
+> than not offering the choice.
+
+It named restating both in terms of a store identity as the next piece of
+work. This is that work.
+
+### Decision
+**A store identity** both kinds of store can produce:
+
+- SQLite → `sqlite:/abs/path/prahari.db`
+- PostgreSQL → `postgresql:<host>/<database>#<schema>`
+
+It is **credential-free by construction**, because it is compared, logged
+and reported — a DSN password must never travel with it, and a test
+asserts that. Scoping by schema is what lets one server hold several
+distinct stores.
+
+**Research-store isolation** no longer demands a path. When the
+operational store has none, it contributes none, and a SQLite research
+store then cannot collide with it at all — the guarantee holds trivially
+rather than being dropped. The well-known operational filenames stay
+protected regardless of what the live store happens to be, so a stray
+import still cannot land in one.
+
+**The protected-store guard** gains `assert_safe_schema_to_initialize`.
+`path_is_temporary` cannot see a PostgreSQL store, and the equivalent
+question is whether the schema is a throwaway one. Without it, a test
+against a configured server would run DDL in `public` — the schema a
+deployment would use. `PostgresStore.initialize()` calls it, under the
+same explicit opt-out as the file guard.
+
+**`get_db` selects the backend from the scheme.** Both satisfy
+`TelemetryStore`, so nothing downstream branches on which is in use, and
+the dependency's return type is deliberately the contract rather than
+`Database`. The three callers that only *displayed* the path now use
+`store_descriptor()`.
+
+### Evidence
+The application was started with
+`PRAHARI_DATABASE_URL=postgresql://...` and nothing else changed:
+
+| Check | Result |
+|---|---|
+| `/api/v1/health` | `connected: true`, store `postgresql:/prahari_live/prahari_live#prahari_live_run` |
+| `/api/v1/system/health` | `backend: postgresql`, server 16.15, `integrity_check: null` with its note |
+| Ingest 600 synthetic flows | 600 accepted, 0 rejected |
+| Query back | 600 total |
+| `POST /analysis/run` | 600 events analysed |
+| **Real Chromium against it** | **27/27** |
+
+10 tests, mutation-checked: ignoring the scheme (restoring the ADR-094
+defect) and a guard that always allows each break one. Backend 1452
+passed, 22 skipped, 0 failed; frontend `tsc` 0, 100 passed.
+
+### Not established
+A deployment, still. There is no migration path from an existing SQLite
+database, and nothing about TLS termination, connection pooling, backups,
+failover or a tuned server is tested — the evidence is a loopback server
+with trust authentication. The research store remains SQLite-only, which
+is deliberate: it holds a local research artefact, not operational
+telemetry.
+
+---
+
+## ADR-098: A Real Browser, Because jsdom Is Not One
+
+### Context
+Every frontend check ran in jsdom. jsdom does not execute a real History
+API, does not round-trip a reload, and does not fetch from a real server.
+Three recorded defects were only visible once something actually
+rendered: ADR-084 (the page lived in React state, so every refresh
+returned to Overview), ADR-089 (the binding card), and the blank-page
+`undefined.toFixed` that unmounted the whole tree.
+
+The acceptance matrix carried "a real-browser session" as an outstanding
+prerequisite on row 1. It needed a browser, not the operator's machine —
+and this container ships Chromium.
+
+### Decision
+`scripts/verify_browser_session.py` drives **real Chromium** against the
+**real backend** serving the **real `frontend/dist` bundle**, asserting
+what jsdom cannot: every canonical route and alias as a typed deep link,
+a reload that stays put, back and forward, an unknown path rendering Not
+Found, a React root that is never empty, and no uncaught error.
+
+**One assertion was corrected rather than kept.** "No console errors"
+failed on a 404 from `GET /api/v1/sources/windows_local_host` — the
+dashboard probing for the Windows collector's source, which legitimately
+does not exist on Linux and which the page handles. A browser logs a
+console error for **every** 4xx, including handled ones, so console text
+cannot tell a defect from a probe. The check now classifies *responses*:
+a 404 under `/api/v1/sources/` is an expected absence, anything else is a
+failure. The same shape of false positive as the `src_ip` substring in
+the manifest privacy test — a loose proxy colliding with legitimate
+behaviour, fixed by testing the intent.
+
+### Evidence
+27 checks, 0 failures, against both a SQLite-backed and a
+PostgreSQL-backed instance. Mutation-checked: a wrong expected heading
+and a wrong expected alias target each produce a failure, so the checks
+are not vacuous.
+
+### Not established
+One browser engine on one platform. No screenshot or visual-regression
+comparison, no interaction beyond navigation — no form is filled, no
+training is started from the UI — and no mobile or reduced-viewport
+check.

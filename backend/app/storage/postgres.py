@@ -291,6 +291,11 @@ class PostgresStore:
 
     def initialize(self) -> None:
         """Create the schema and its tables if absent."""
+        # The file-path guard cannot see a PostgreSQL store; the schema is
+        # the equivalent thing to protect under pytest (ADR-097).
+        from app.storage.guard import assert_safe_schema_to_initialize
+
+        assert_safe_schema_to_initialize(self.schema, self.dsn.split("@")[-1])
         conn = psycopg.connect(self.dsn, row_factory=dict_row)
         try:
             conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
@@ -398,6 +403,29 @@ class PostgresStore:
             return (datetime.fromisoformat(row["lo"]), datetime.fromisoformat(row["hi"]))
         except ValueError:
             return None
+
+    def label_counts(self, source_id: Optional[str] = None) -> dict[str, int]:
+        """
+        How many events carry each label, over the whole selection.
+
+        A GROUP BY, not a scan of materialised rows, so asking "does this
+        corpus contain any attack at all" costs one query rather than
+        reading a sample that may be drawn entirely from one end of the
+        capture. NULL and empty labels are reported under "" so the caller
+        can distinguish unlabelled from benign without guessing.
+        """
+        query = (
+            "SELECT COALESCE(label, '') AS label, COUNT(*) AS n "
+            "FROM normalized_events WHERE 1=1"
+        )
+        params: list = []
+        if source_id:
+            query += " AND source_id = %s"
+            params.append(source_id)
+        query += " GROUP BY COALESCE(label, '')"
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return {r["label"]: int(r["n"]) for r in rows}
 
     # ──────────────── audit listing (ADR-093) ────────────────
 

@@ -99,8 +99,24 @@ def _canonical(path: Path, config: AppConfig) -> Path:
 
 
 def operational_database_paths(config: AppConfig) -> set[Path]:
-    """Every path that must be treated as operational telemetry storage."""
-    paths = {_canonical(Path(config.get_database_path()), config)}
+    """
+    Every path that must be treated as operational telemetry storage.
+
+    When the operational store is NOT a file - a PostgreSQL deployment
+    (ADR-097) - it contributes no path, and a SQLite research store then
+    cannot collide with it at all. The legacy and well-known operational
+    filenames are still protected, because a stray import must not land
+    in one of those whatever the live store happens to be.
+    """
+    paths: set[Path] = set()
+    try:
+        paths.add(_canonical(Path(config.get_database_path()), config))
+    except Exception:  # noqa: BLE001 - a store with no path on disk
+        logger.debug(
+            "Operational store %s is not a file; it contributes no path to "
+            "the research-isolation comparison.",
+            config.store_descriptor(),
+        )
     paths.add(_canonical(LEGACY_OPERATIONAL_RELATIVE, config))
     for name in OPERATIONAL_FILENAMES:
         paths.add(_canonical(Path(name), config))

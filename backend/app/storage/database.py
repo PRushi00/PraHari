@@ -676,6 +676,29 @@ class Database:
         except ValueError:
             return None
 
+    def label_counts(self, source_id: Optional[str] = None) -> dict[str, int]:
+        """
+        How many events carry each label, over the whole selection.
+
+        A GROUP BY, not a scan of materialised rows, so asking "does this
+        corpus contain any attack at all" costs one query rather than
+        reading a sample that may be drawn entirely from one end of the
+        capture. NULL and empty labels are reported under "" so the caller
+        can distinguish unlabelled from benign without guessing.
+        """
+        query = (
+            "SELECT COALESCE(label, '') AS label, COUNT(*) AS n "
+            "FROM normalized_events WHERE 1=1"
+        )
+        params: list = []
+        if source_id:
+            query += " AND source_id = ?"
+            params.append(source_id)
+        query += " GROUP BY COALESCE(label, '')"
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return {r["label"]: int(r["n"]) for r in rows}
+
     # ──────────────── audit listing (ADR-093) ────────────────
 
     def list_audit_events(

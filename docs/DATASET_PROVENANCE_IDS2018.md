@@ -211,3 +211,68 @@ split can divide with positives on both sides.
 Every one of these is an 80-column file, so none can be imported until
 the address-less schema is supported (§2.3). The day PraHari *can* read
 today is the one day that cannot answer the research question.
+
+
+---
+
+## 6. Thursday 15 Feb 2018 — the first interpretable result (ADR-096)
+
+Once the address-less schema existed (§2.3), the day with several onsets
+became importable.
+
+| Field | Value |
+|---|---|
+| Derived file | `thu15feb_0800-1259.csv` from `Thursday-15-02-2018_...csv`, SHA-256 `fa2947a8…` |
+| Derivation rule | rows whose time-of-day is within [08:00, 12:59] — the span where the 12-hour clock is unambiguous |
+| Rows | 659,226 of 1,048,575 |
+| Labels | Benign 606,728 · DoS-GoldenEye 41,508 · DoS-Slowloris 10,990 |
+| Policy | `day_first`, `microseconds`, bidirectional required, **`address_columns=absent_in_source`**, timezone unknown |
+| Import | 659,226 read, 659,226 accepted, **0 rejected**, reconciles |
+| Feature schema | `prahari.window_features.addressless.v1` (10 features) |
+| Near-duplicates | 481,160 (73 %) — counted and kept. Against 22,341 on the addressed day: a direct consequence of dropping addresses |
+
+Attack onsets in the span: **09:27, 09:37, 09:49, 10:02, 11:00**.
+
+### The split decides the answer
+
+| Split | Holdout contains | LSTM PR-AUC | Persistence PR-AUC |
+|---|---|---|---|
+| 0.6 — test starts 11:08:57 | continuations only | **0.9925** | 0.9562 |
+| 0.5 — test starts 10:41:27 | the 11:00 **onset** | **0.3387** | 0.9420 |
+
+At 0.6 the window-level numbers are excellent and the **event-level
+evaluation refuses**: all five onsets precede the holdout, so no evaluated
+window could have warned for any of them. The 131 positive test windows
+are continuations of an attack that started during training.
+
+At 0.5, with one real onset in the holdout:
+
+| Model | PR-AUC | Precision | Recall | F1 |
+|---|---|---|---|---|
+| `baseline_persistence` | 0.9420 | 0.9649 | 0.9649 | 0.9649 |
+| `baseline_constant` | 0.3115 | 0.0000 | 0.0000 | 0.0000 |
+| `lstm_forecaster` | **0.3387** | 0.1020 | 0.0292 | 0.0455 |
+| `temporal_window_stack` | 0.2259 | 0.0000 | 0.0000 | 0.0000 |
+| `random_forest_forecaster` | 0.2112 | 0.0000 | 0.0000 | 0.0000 |
+| `logistic_regression` | 0.2435 | 0.0000 | 0.0000 | 0.0000 |
+
+Event-level, LSTM: **1 event in coverage, 0 warned, missed-event rate 1.0**,
+2 late warnings during the attack, 7 false alarms (3.08/hour), alarm duty
+cycle 9.0 %, no lead time to report. Four events excluded — their onsets
+precede the holdout.
+
+The split was moved from 0.6 to 0.5 for event-level **coverage**, not for a
+better number; both runs are recorded so the choice is visible, and moving
+it made every headline figure worse.
+
+### Conclusion
+
+**On this corpus the learned models do not forecast attack onsets.** The
+strong figures at the 0.6 split measure detection of an attack already in
+progress, and the trivial persistence rule does that better than any
+model. One event in coverage is too few for a robust rate — the report
+says so itself — so this is a negative result on one day of one corpus,
+not a verdict on the approach.
+
+Manifest: `research-data/experiments/ids2018-thu15feb-onset-split.json`,
+dataset fingerprint `40c038396cb19fff…`.

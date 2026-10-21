@@ -110,6 +110,7 @@ def _current_readiness(db: Database, source_id: Optional[str] = None) -> Readine
         not_after=(now + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS)).isoformat(),
     )
     dataset_span = (bounds[1] - bounds[0]).total_seconds() if bounds else None
+    dataset_labels = db.label_counts(source_id=source_id)
 
     has_model = bool(pipeline.trained_models)
     interpretable = any(
@@ -125,6 +126,7 @@ def _current_readiness(db: Database, source_id: Optional[str] = None) -> Readine
         model_metrics_interpretable=interpretable,
         dataset_event_count=dataset_count,
         dataset_span_seconds=dataset_span,
+        dataset_label_counts=dataset_labels,
     )
 
 

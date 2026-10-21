@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.adapters.research_csv import (
     COLUMN_CANDIDATES,
+    AddressColumns,
     DurationUnit,
     ResearchCsvError,
     ResearchCsvPolicy,
@@ -139,6 +140,14 @@ class ResearchImportRequest(BaseModel):
         description="CICFlowMeter Flow Duration is microseconds. Unknown means the column is not imported.",
     )
     require_bidirectional_counts: bool = True
+    address_columns: AddressColumns = Field(
+        default=AddressColumns.REQUIRED,
+        description=(
+            "Whether the source has endpoint address columns at all. "
+            "'absent_in_source' is checked against the header and narrows "
+            "the feature schema; it is never inferred."
+        ),
+    )
     max_records: int = Field(default=1_000_000, ge=1, le=5_000_000)
     dry_run: bool = Field(
         default=True,
@@ -164,13 +173,13 @@ def research_store_status(config: AppConfig = Depends(get_config)) -> dict:
         return {
             "configured": False,
             "reason": str(exc),
-            "operational_database": str(config.get_database_path()),
+            "operational_database": config.store_descriptor(),
             "fail_closed": True,
         }
     return {
         "configured": True,
         "research_database": str(path),
-        "operational_database": str(config.get_database_path()),
+        "operational_database": config.store_descriptor(),
         "exists": path.exists(),
         "fail_closed": True,
     }
@@ -227,6 +236,7 @@ def import_research_csv_file(
         source_timezone=req.source_timezone,
         duration_unit=req.duration_unit,
         require_bidirectional_counts=req.require_bidirectional_counts,
+        address_columns=req.address_columns,
         max_records=req.max_records,
     )
 

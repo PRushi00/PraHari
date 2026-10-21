@@ -473,3 +473,27 @@ def test_event_time_range_honours_plausibility_bounds(store):
     )
     assert bounded[0] == T0
     assert bounded[1] == T0 + timedelta(seconds=9)
+
+
+def test_label_counts_are_measured_over_the_whole_selection(store):
+    """
+    Whether a corpus holds ANY positive is a dataset fact (ADR-095). A
+    sample drawn from one end cannot answer it: the last 50,000 flows of
+    a day whose attacks ran in the morning are all benign, and reading
+    "0 positive" from that refuses a dataset holding tens of thousands.
+    """
+    store.insert_events([_ev("src-a", i) for i in range(20)])
+    attacks = []
+    for i in range(20, 25):
+        e = _ev("src-a", i)
+        e.label = "DoS attacks-GoldenEye"
+        attacks.append(e)
+    store.insert_events(attacks)
+
+    counts = store.label_counts(source_id="src-a")
+    assert counts.get("DoS attacks-GoldenEye") == 5
+    # The unlabelled 20 report under "", distinguishable from benign.
+    assert counts.get("") == 20
+    assert sum(counts.values()) == 25
+
+    assert store.label_counts(source_id="src-never-used") == {}

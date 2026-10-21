@@ -56,7 +56,7 @@ def health_check(
         uptime_seconds=round(time.time() - START_TIME, 2),
         database={
             "connected": db_ok,
-            "path": str(config.get_database_path()),
+            "path": config.store_descriptor(),
             "sources_count": sources_count,
             "events_count": events_count,
         },

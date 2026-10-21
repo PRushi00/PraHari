@@ -148,6 +148,7 @@ def assess_readiness(
     model_performance_adequate: Optional[bool] = None,
     dataset_event_count: Optional[int] = None,
     dataset_span_seconds: Optional[float] = None,
+    dataset_label_counts: Optional[dict[str, int]] = None,
 ) -> ReadinessReport:
     """
     Assess whether the supplied telemetry can support honest forecasting.
@@ -189,6 +190,25 @@ def assess_readiness(
     span = sample_span if dataset_span_seconds is None else float(dataset_span_seconds)
     counted = total if dataset_event_count is None else int(dataset_event_count)
 
+    # Whether a corpus contains ANY positive is a property of the corpus.
+    # A sample taken from one end of the capture cannot answer it: the
+    # last 50,000 flows of a day whose attacks ran in the morning are all
+    # benign, and reading "0 positive" from that refuses a dataset which
+    # holds 52,498 of them (ADR-095).
+    if dataset_label_counts is None:
+        n_labelled, n_positive, n_negative = len(labelled), len(positives), len(negatives)
+        counts_from_sample = True
+    else:
+        n_labelled = sum(c for lab, c in dataset_label_counts.items() if lab.strip())
+        n_positive = sum(
+            c for lab, c in dataset_label_counts.items() if _is_attack_label(lab)
+        )
+        n_negative = n_labelled - n_positive
+        counts_from_sample = False
+
+    def _observed(value: int, word: str) -> str:
+        return f"{value} {word}" + ("" if counts_from_sample else " (whole dataset)")
+
     categories: dict[str, int] = {}
     provenances: dict[str, int] = {}
     for e in events:
@@ -225,9 +245,9 @@ def assess_readiness(
         ),
         Requirement(
             name="labels_present",
-            satisfied=len(labelled) >= MIN_LABELLED_EVENTS,
+            satisfied=n_labelled >= MIN_LABELLED_EVENTS,
             required=f">= {MIN_LABELLED_EVENTS} labelled events",
-            observed=f"{len(labelled)} labelled",
+            observed=_observed(n_labelled, "labelled"),
             detail=(
                 "Supervised forecasting needs labels. Unlabelled traffic is not "
                 "counted as benign: absence of a label is not evidence of safety. "
@@ -238,16 +258,16 @@ def assess_readiness(
         ),
         Requirement(
             name="positive_examples",
-            satisfied=len(positives) >= MIN_POSITIVE_EVENTS,
+            satisfied=n_positive >= MIN_POSITIVE_EVENTS,
             required=f">= {MIN_POSITIVE_EVENTS} events labelled as incidents",
-            observed=f"{len(positives)} positive",
+            observed=_observed(n_positive, "positive"),
             detail="Without incident examples there is nothing to learn or measure.",
         ),
         Requirement(
             name="negative_examples",
-            satisfied=len(negatives) >= MIN_NEGATIVE_EVENTS,
+            satisfied=n_negative >= MIN_NEGATIVE_EVENTS,
             required=f">= {MIN_NEGATIVE_EVENTS} events labelled benign",
-            observed=f"{len(negatives)} negative",
+            observed=_observed(n_negative, "negative"),
             detail="Confirmed-benign examples are needed to estimate false alarms.",
         ),
     ]
@@ -307,8 +327,8 @@ def assess_readiness(
     elif not requirements[3].satisfied or not requirements[4].satisfied:
         state = ReadinessState.INADEQUATE_CLASS_REPRESENTATION
         summary = (
-            f"Inadequate class representation: {len(positives)} incident and "
-            f"{len(negatives)} benign labelled events. Both classes must be "
+            f"Inadequate class representation: {n_positive} incident and "
+            f"{n_negative} benign labelled events. Both classes must be "
             "present in sufficient number."
         )
         next_steps = [

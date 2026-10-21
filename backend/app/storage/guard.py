@@ -41,6 +41,7 @@ from pathlib import Path
 
 __all__ = [
     "ProtectedDatabaseError",
+    "assert_safe_schema_to_initialize",
     "assert_safe_to_initialize",
     "is_under_test",
     "path_is_temporary",
@@ -131,4 +132,39 @@ def assert_safe_to_initialize(db_path: str | os.PathLike[str]) -> None:
         "would alter real data.\n"
         "Use a tmp_path fixture: Database(db_path=str(tmp_path / 'test.db')). "
         f"If a fixed path is genuinely required, set {_OPT_OUT}=1 for that run."
+    )
+
+
+# Schemas a test run may create or migrate. A PostgreSQL store has no
+# path, so `path_is_temporary` cannot protect it; the equivalent question
+# is whether the schema is a throwaway one (ADR-097).
+TEST_SCHEMA_PREFIXES = ("prahari_contract_", "prahari_pg_", "prahari_app_", "test_")
+
+
+def assert_safe_schema_to_initialize(schema: str, descriptor: str = "") -> None:
+    """
+    Refuse to create or migrate a non-throwaway PostgreSQL schema under pytest.
+
+    The file-path guard above cannot see a PostgreSQL store. Without this,
+    a test that built a `PostgresStore` against a configured server would
+    run DDL in `public` - the schema a real deployment would use.
+
+    No-op outside pytest, and no-op under the same explicit opt-out.
+    """
+    if not is_under_test():
+        return
+    if os.environ.get(_OPT_OUT, "").strip().lower() in {"1", "true", "yes"}:
+        return
+    if schema.startswith(TEST_SCHEMA_PREFIXES):
+        return
+
+    raise ProtectedDatabaseError(
+        f"Refusing to initialize PostgreSQL schema {schema!r}"
+        + (f" ({descriptor})" if descriptor else "")
+        + " from a test run.\n"
+        "initialize() creates tables and applies schema migrations, so this "
+        "would alter a schema a deployment may be using.\n"
+        "Use a throwaway schema - one starting with "
+        f"{', '.join(TEST_SCHEMA_PREFIXES)} - as the conformance suite does. "
+        f"If a fixed schema is genuinely required, set {_OPT_OUT}=1 for that run."
     )
