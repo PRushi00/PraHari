@@ -36,6 +36,25 @@ SUMMARY_ROW = re.compile(
     re.M,
 )
 
+#: `| 11 | Dashboard and API contracts | 31 | …` — the requirement count.
+SUMMARY_COUNT = re.compile(
+    r"^\|\s*(\d{1,2})\s*\|[^|]*\|\s*(\d+)\s*\|",
+    re.M,
+)
+
+#: `**251 of 255 discrete requirements — about 98 %.**`
+HEADLINE = re.compile(
+    r"\*\*(\d+)\s+of\s+(\d+)\s+discrete requirements[^*]*\*\*"
+)
+
+#: `**Four requirements remain` / `**Two requirements remain`
+REMAINING = re.compile(r"\*\*(\w+)\s+requirements? remain", re.I)
+
+WORDS = {
+    "zero": 0, "no": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
 #: ``### §16 — operational acceptance … · `MET` ``
 SECTION_HEADING = re.compile(
     r"^###\s*§(\d{1,2})\s*—[^\n]*?·\s*`([A-Z]+)`",
@@ -128,4 +147,61 @@ def test_no_section_claims_a_gap_the_summary_calls_met(document: str) -> None:
     assert not offences, (
         "a section denies something the summary table claims (ADR-116):\n  "
         + "\n  ".join(offences)
+    )
+
+
+def test_the_headline_total_is_the_sum_of_the_table(document: str) -> None:
+    """
+    The headline count must be the table's own arithmetic.
+
+    It read "≈ 247 of ≈ 249" while the Requirements column summed to
+    255 — understating by six the table it claimed to summarise. The
+    `≈` hedged a number that is not approximate: it is a column of
+    integers (ADR-117).
+    """
+    headline = HEADLINE.search(document)
+    assert headline, "the headline requirement count is missing or reworded"
+    met, claimed_total = int(headline.group(1)), int(headline.group(2))
+
+    actual_total = sum(int(n) for _, n in SUMMARY_COUNT.findall(document))
+    assert actual_total > 200, "the Requirements column did not parse"
+
+    assert claimed_total == actual_total, (
+        f"the headline says {claimed_total} requirements; the summary "
+        f"table sums to {actual_total} (ADR-117)"
+    )
+    assert met <= claimed_total
+
+
+def test_the_remaining_count_matches_the_open_gaps(document: str) -> None:
+    """
+    "N requirements remain" must equal the open rows of the
+    closing-gaps table.
+
+    It said "two", naming only §5 and §10, while that table listed four
+    — §18's Windows and network-integration criteria as well. Three
+    parts of one file, two answers to the question the document exists
+    to answer (ADR-117).
+
+    A closed gap is struck through (`| ~~§11 …`); an open one is not.
+    """
+    remaining = REMAINING.search(document)
+    assert remaining, "the 'N requirements remain' sentence is missing or reworded"
+    word = remaining.group(1).lower()
+    claimed = WORDS.get(word, None)
+    assert claimed is not None, f"unrecognised count word {word!r}"
+
+    start = document.index("## What would close the rest")
+    table = document[start : document.index("\n\n", document.index("|---", start))]
+    rows = [
+        line for line in table.splitlines()
+        if line.startswith("|") and not line.startswith("|---") and "| Gap |" not in line
+    ]
+    assert rows, "the closing-gaps table did not parse"
+    open_rows = [line for line in rows if "~~" not in line]
+
+    assert claimed == len(open_rows), (
+        f"the summary says {claimed} requirement(s) remain; the "
+        f"closing-gaps table lists {len(open_rows)} open:\n  "
+        + "\n  ".join(open_rows)
     )
