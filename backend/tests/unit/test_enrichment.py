@@ -582,3 +582,98 @@ def test_dns_endpoints_never_spawn_powershell_off_windows(tmp_path, monkeypatch)
         reset_enrichment_service(None)
         db.close()
     assert spawned == []
+
+
+# ──────────────────────────────────────────────────────────────────
+# The DNS-Client event channel (ADR-119)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _diagnose_with(monkeypatch, payload: dict):
+    import json as _json
+    import subprocess as _sp
+
+    class _Proc:
+        returncode = 0
+        stdout = _json.dumps(payload)
+        stderr = ""
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _Proc())
+    return diagnose_dns_visibility()
+
+
+def test_a_disabled_event_channel_is_named_as_a_cause(monkeypatch):
+    """
+    The state measured on a real Windows 11 Home machine, 22 Oct 2026.
+
+    Provider present, Operational channel DISABLED — the Windows default
+    — and the cache empty. Reporting the empty cache alone invites the
+    reader to think the cache is the only place host DNS evidence could
+    come from, and that PraHari is failing to read it. Both halves have
+    to be stated for the conclusion to be honest.
+    """
+    diag = _diagnose_with(
+        monkeypatch,
+        {
+            "doh_servers": [],
+            "interfaces": [{"interface": "Wi-Fi", "servers": ["1.1.1.1", "8.8.8.8"]}],
+            "cache_entries": 0,
+            "dnscache_service": "Running",
+            "event_channel_present": True,
+            "event_channel_enabled": False,
+            "event_channel_records": None,
+        },
+    )
+
+    assert diag["event_channel_present"] is True
+    assert diag["event_channel_enabled"] is False
+
+    channel_causes = [c for c in diag["likely_causes"] if "Operational" in c]
+    assert channel_causes, "a disabled DNS event channel was not reported"
+    cause = channel_causes[0]
+    assert "DISABLED" in cause
+    assert "Administrator" in cause, "the cost of enabling it must be stated"
+    # It must NOT promise that enabling the channel yields query names.
+    # Discovery could not inspect a single field, because the channel
+    # was off, so that remains unestablished.
+    assert "has NOT been established" in cause
+
+
+def test_an_absent_provider_is_distinguished_from_a_disabled_channel(monkeypatch):
+    diag = _diagnose_with(
+        monkeypatch,
+        {
+            "doh_servers": [],
+            "interfaces": [],
+            "cache_entries": 0,
+            "dnscache_service": "Running",
+            "event_channel_present": False,
+            "event_channel_enabled": False,
+            "event_channel_records": None,
+        },
+    )
+    causes = " ".join(diag["likely_causes"])
+    assert "not present on" in causes
+    assert "DISABLED" not in causes, "an absent provider was reported as disabled"
+
+
+def test_a_probe_that_does_not_report_the_channel_says_unknown(monkeypatch):
+    """
+    An older agent omits these keys. Unknown must not collapse to
+    "absent": claiming there is no event channel when nobody looked is
+    exactly the fabrication this project refuses.
+    """
+    diag = _diagnose_with(
+        monkeypatch,
+        {
+            "doh_servers": [],
+            "interfaces": [],
+            "cache_entries": 0,
+            "dnscache_service": "Running",
+        },
+    )
+    assert diag["event_channel_present"] is None
+    assert diag["event_channel_enabled"] is None
+    causes = " ".join(diag["likely_causes"])
+    assert "Operational" not in causes
+    assert "not present on" not in causes

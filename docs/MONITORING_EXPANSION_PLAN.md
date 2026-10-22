@@ -76,6 +76,15 @@ confirmed exist on the target machine. The order is therefore:
    may read it, and what a sample record actually contains. It is
    **read-only**: it enables no channel, changes no DNS setting, flushes
    no cache and raises no privilege.
+
+   **Done, 22 Oct 2026 — and it stopped the plan here (ADR-119).** On
+   Windows 11 Home, unelevated: the `Microsoft-Windows-DNS-Client`
+   provider is present, its Operational channel is **disabled** (the
+   Windows default), and the cache holds zero entries. So **no host DNS
+   evidence exists on that machine at all**, and no field could be
+   inspected. Steps 2 and 3 are blocked until the channel is enabled —
+   an Administrator action and the operator's decision — and discovery
+   is re-run.
 2. **Field mapping** — written from that output, not from documentation.
 3. **Adapter + tests** — a `windows_dns_events` adapter against the
    confirmed shape, with the same refusal discipline as every other
@@ -113,12 +122,20 @@ caveat (ADR-115).
 | 1 | Two peer nav groups | here | every route still reachable; browser verifier green |
 | 2 | Two-column Overview: this host / other devices | here | host counts are real; no registered device renders an explicit empty state, never invented traffic |
 | 3 | Device registration UI over the existing source API | here | a device can be registered with a monitoring method; inventory-only is distinguishable from monitored |
-| 4 | DNS evidence discovery script | **operator's Windows machine** | the script reports providers, permissions and a sample record, having changed nothing |
-| 5 | `windows_dns_events` adapter | here, after 4 | tests cover present, absent and unreadable evidence, with source attribution |
+| 4 | DNS evidence discovery script | **operator's Windows machine** | ✅ **done** — ran clean, changed nothing, found the channel disabled (ADR-119) |
+| 4b | Enable the channel, re-run discovery | **operator's decision** — needs Administrator | real event ids and field names come back |
+| 5 | `windows_dns_events` adapter | here, after 4b | tests cover present, absent and unreadable evidence, with source attribution |
 | 6 | Per-device traffic, once an agent or sensor reports it | needs an authorized device | figures reconcile with the reporting source |
 
-Phases 1–3 need nothing but work in this repository. Phase 4 is the
-operator's. Phases 5–6 wait on it.
+Phases 1–3 need nothing but work in this repository and are **done**.
+Phase 4 is **done** and returned a negative result. Phase 5 is blocked
+on 4b, which is a decision rather than work.
+
+**The alternative is already working.** Zeek is wired into the JSON
+stream path and has accepted 989/989 real records. A sensor observes DNS
+queries on the wire — evidence neither host source currently provides —
+and needs no change to the Windows machine at all. Where DNS visibility
+is the goal rather than host-only collection, that is the shorter path.
 
 ---
 

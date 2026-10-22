@@ -31,6 +31,11 @@
     PraHari's collector will run as, so the permission answers are the
     ones that will apply in practice.
 
+    VERIFIED: run 22 Oct 2026 on Windows 11 Home Single Language,
+    PowerShell 5.1.26100.9711, unelevated. It completed and reported the
+    provider present, the Operational channel disabled, and the cache
+    empty — see ADR-119. Nothing on that machine was changed.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\discover_dns_evidence.ps1
 
@@ -136,7 +141,14 @@ foreach ($channel in $channels) {
         $log = Get-WinEvent -ListLog $channel -ErrorAction Stop
         Write-Fact '  enabled' $log.IsEnabled
         Write-Fact '  log mode' $log.LogMode
-        Write-Fact '  records held' $log.RecordCount
+        # A disabled channel reports no RecordCount, which printed as a
+        # blank line on the first real run (Windows 11 Home, 22 Oct 2026)
+        # and read as a missing value rather than an inapplicable one.
+        if ($null -eq $log.RecordCount) {
+            Write-Fact '  records held' 'not reported (channel disabled)'
+        } else {
+            Write-Fact '  records held' $log.RecordCount
+        }
         Write-Fact '  max size (bytes)' $log.MaximumSizeInBytes
 
         if (-not $log.IsEnabled) {
