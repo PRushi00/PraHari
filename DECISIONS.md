@@ -6305,9 +6305,10 @@ reports no `RecordCount`, which printed as a blank line and read as a
 missing value rather than an inapplicable one. It now prints
 `not reported (channel disabled)`.
 
-Backend `test_enrichment.py` **31 passed**. Three new tests reproduce
-the exact measured state, and each fails under the mutation it exists to
-catch.
+Backend **1485 passed, 65 skipped, 0 failed** (no PostgreSQL DSN on this
+run, so the conformance suite skipped rather than passed, as designed);
+`test_enrichment.py` **31 passed**. Three new tests reproduce the exact
+measured state, and each fails under the mutation it exists to catch.
 
 ### Not established
 The probe added here has **never executed**: it is PowerShell, and this
