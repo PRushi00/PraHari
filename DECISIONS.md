@@ -6538,3 +6538,211 @@ from it is not evidence a lookup did not happen.
 
 One machine, one build, one afternoon. ADR-119 generalised from less
 than this and was wrong; this ADR should be read with that in mind.
+
+---
+
+## ADR-122: Traffic Explorer and DNS Activity — Phase 2 and the DNS View
+
+### Context
+The redesign proposal's phase 2 ("improve host connection and traffic
+views") and its DNS page were never built. Two gaps, with different
+causes:
+
+* **Traffic.** The proposal asked for direction made explicit —
+  inbound, outbound, local, unknown. `direction` **did not exist
+  anywhere**: not on `NormalizedEvent`, not in any adapter, not in the
+  frontend. It was backend work before it was interface work.
+* **DNS.** ADR-120 built the collection. The observations had **nowhere
+  to be seen** — no list read existed on the storage contract, so the
+  data went in and never came out except one address at a time.
+
+### Direction is an inference, and never stops looking like one
+
+The Windows connection table **does not report who opened the socket**.
+So direction cannot be a field on the event: a stored value reads as
+something a sensor observed. It is derived at query time and travels
+with its method, exactly as `DomainAttribution` does.
+
+| Case | Verdict | Confidence |
+|---|---|---|
+| Loopback at both ends | `local` | **observed** — a property of the addresses |
+| Local port ephemeral, remote not | `outbound` | **inferred** |
+| Remote port ephemeral, local not | `inbound` | **inferred** |
+| Both ephemeral, neither ephemeral, or a port missing | `unknown` | none |
+| Record not collected on this host | `unknown` | none |
+
+That last row is the one that matters most. On a CSV import or a replay,
+`src_ip` is whichever endpoint the corpus listed first — **it is not
+"this machine"**. The port asymmetry would still have produced a
+confident-looking answer, and it would have been meaningless. Only
+`windows_connection_table`, `windows_udp_endpoint` and
+`application_layer` have a local perspective; a test guards that set,
+because widening it silently would start applying a perspective to data
+that has none.
+
+**`unknown` is a filter value**, not an absence. It selects the
+connections PraHari declined to call, which is the set worth auditing;
+reachable only through "no filter", the declines would be invisible.
+
+**Deliberately not attempted:** reading the listening-port table to
+settle the symmetric cases. It would resolve some of them, and it is a
+second live query whose answer is a snapshot taken *after* the
+connection — a listener that has since opened or closed changes it.
+That measurement has not been made, so the case stays `unknown`.
+
+### What the Traffic view does not show
+**No bytes, packets or bandwidth column.** The connection table measures
+none of them. A test reads the table headers and fails on any of those
+words, because a column of blanks is an invitation (ADR-118).
+
+### DNS Activity
+`recent_dns_observations(limit, method)` added to the storage contract
+and **both** backends. Every row carries the address, the name, the time
+and **the evidence source** — a hostname without its address and method
+is not evidence of anything, so none of the three is omitted. Cache and
+event-log evidence are filterable apart and never merged.
+
+An empty result is **explained, not blank**: "nothing has been
+collected" and "this host resolved nothing" are opposite claims that
+look identical on screen, and the backend's note distinguishes them.
+
+ADR-104 recorded that adding a member to `contract.py` does not make the
+conformance suite test it — `event_breakdown()` was implemented for both
+backends while nothing ever called the PostgreSQL one. So this ships
+with a cross-backend conformance test, **run against a real PostgreSQL
+16.15 server** and mutation-verified: swapping `%s` for SQLite's `?`
+fails `[postgres]` while `[sqlite]` passes.
+
+### A defect the tests found
+The DNS page's collect button called `load()` after a **failed**
+collection, and `load()` clears the error banner — so the refusal's
+reason was wiped by the refresh that followed it, leaving a silent
+no-op. A failed collection changes nothing, so it now reloads only on
+success. Found by the test asserting a refused collection surfaces its
+specific reason.
+
+### Verification
+`verify_browser_session.py` **35 passed, 0 failed**, up from 31: both
+new routes and both new aliases resolve as typed deep links in real
+Chromium. Frontend `tsc` 0, **166 passed** (22 files) — 14 new across
+the two pages. Backend: 22 new direction tests, plus the cross-backend
+conformance test.
+
+### Not established
+Direction has **never been checked against ground truth.** No capture
+exists in which the opener of a socket is independently known, so the
+inference's accuracy is unmeasured — only its reasoning is stated. The
+ephemeral range is Windows' documented default and is **not read from
+the host**; a machine with a tuned range produces more `unknown` rather
+than a wrong answer, which is the safe direction to be wrong in.
+
+The DNS view shows what was collected. It is not a live query, and an
+empty page is a statement about the store, not about the host.
+
+---
+
+## ADR-123: The Persisted Poll Summary Must Reconcile
+
+### Context
+A session on the operator's own Windows machine read the live database
+and found this, across 434 polls of the connection collector:
+
+```
+total=34,279   accepted=1,885   rejected=0   reasons={}
+```
+
+**32,394 records with no account of where they went.** Not lost
+telemetry — the connections themselves were stored correctly — but
+32,394 observations whose disposition the durable record could not
+explain. A number that large, unexplained, is indistinguishable from a
+collection fault, which is exactly the question the summary exists to
+answer.
+
+The live `PollResult` reconciled perfectly the whole time. Two separate
+defects produced the gap.
+
+**First: `.pop()` on the object that was about to be stored.**
+`poll_once` lifted the two bookkeeping counts out of the summary with
+`.pop()` — a repeat of a still-open connection, and a row excluded by
+collector policy — and put them in their own fields on the live result.
+`.pop()` mutates. `_persist` then stored *that same object*, now missing
+both keys. The in-memory view was complete; the row written to disk was
+not.
+
+**Second, found while testing the first: the quiet polls stored
+nothing at all.** `save_import_summary` is reached only through
+`_persist`, which runs only when there is a new event to insert. On a
+machine at rest, most polls have none — the same handful of long-lived
+connections, every one already stored. Those polls observed records,
+rejected some, suppressed others, and left no trace. The quieter the
+host, the larger the shortfall.
+
+The two compounded: the polls that *were* recorded had their accounting
+stripped, and the polls that would have shown the most suppression were
+not recorded at all.
+
+### Why a green suite never saw it
+The adapter was tested. The live `PollResult` was tested. The row in
+`import_summaries` was not — nothing read back what had been written.
+This is the same shape as ADR-104: a contract can be stated in one
+place and verified nowhere.
+
+### Decision
+**The persisted summary carries the full accounting; the live view
+carries rejections only.**
+
+* `poll_once` **reads** the bookkeeping keys with `.get()`. They stay on
+  the summary that is persisted.
+* They are stripped only when building `PollResult`, where
+  `rejection_reasons` means *rejections* and a bookkeeping key there
+  would read as one. They travel in their own fields instead.
+* `summary.duplicate_records` is populated too, so a reader does not
+  have to know the underscore convention to find the figure.
+* A poll that persists no new event now stores its summary through
+  `_persist_summary_only`, which registers the source (the table has a
+  foreign key to `telemetry_sources`) and writes the row. A failure
+  there is logged, never raised: the telemetry is already safe and a
+  bookkeeping write is not worth discarding it for.
+
+The identity that must hold on the stored row:
+
+```
+total = accepted + duplicates_suppressed + filtered_by_policy + rejected
+```
+
+### Tests
+`tests/integration/test_collector_summary_accounting.py`, six tests
+against the real collector and real storage:
+
+* the stored summary satisfies the identity above;
+* the two bookkeeping counts survive persistence, alongside the genuine
+  rejection;
+* the live result still reports rejections only, and still reconciles;
+* the live and stored views agree on every figure;
+* a poll that stores no new event still stores its summary;
+* a poll that stores normally is not counted twice.
+
+**Mutation-verified.** Restoring `.pop()` fails three of the six and
+leaves the live-view test passing — which is the point: that test was
+green throughout the defect's life. Replacing the summary-only branch
+with a dead condition fails the quiet-poll test alone.
+
+### Not established
+**The historical rows are not repaired.** The 434 summaries already in
+the operator's database still read `reasons={}`, and nothing
+reconstructs what was stripped — the information was never written.
+Only polls from this change onward reconcile. Backfilling would mean
+inventing the split between duplicates and policy-filtered records, and
+a fabricated breakdown is worse than an acknowledged gap.
+
+**The counts are durable in `rejection_reasons`, not in their own
+columns.** `import_summaries` has no `duplicate_records` column; the
+field exists on the model and is not persisted. Adding columns means
+migrating the operator's live database, which is not done without
+explicit approval and a verified backup. The underscore-prefixed keys
+are the durable record, and they are read back by the tests above.
+
+**The shortfall's true size is unknown.** 32,394 is what the recorded
+polls failed to explain. The polls that recorded nothing are not in
+that figure and cannot now be counted, so the real number of
+unaccounted observations is higher by an unmeasured amount.

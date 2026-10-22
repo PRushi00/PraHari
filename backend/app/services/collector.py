@@ -411,10 +411,26 @@ class WindowsTelemetryCollectorService:
             poll_time=polled_at,
         )
 
-        duplicates = summary.rejection_reasons.pop("_duplicates_suppressed", 0)
-        filtered = summary.rejection_reasons.pop("_filtered_by_policy", 0)
+        # READ, do not pop (ADR-123). These two keys carry the records
+        # that were neither accepted nor rejected — a repeat of a still-open
+        # connection, and a row excluded by collector policy. `.pop()`
+        # stripped them from the summary object, and `_persist` stores
+        # THAT SAME object, so the durable row lost them: the live
+        # PollResult reconciled while `import_summaries` recorded
+        # total=34,279 accepted=1,885 rejected=0 reasons={} — 32,394
+        # records with no account of where they went.
+        #
+        # They stay on the summary that is persisted, and are stripped
+        # only from the live view below, where they would read as
+        # rejections because that is what that field means there.
+        duplicates = summary.rejection_reasons.get("_duplicates_suppressed", 0)
+        filtered = summary.rejection_reasons.get("_filtered_by_policy", 0)
+        # Populate the typed field too, so a reader does not have to know
+        # the underscore convention to find the figure.
+        summary.duplicate_records = duplicates
 
         persisted = 0
+        summary_stored = False
         latest_observed: Optional[datetime] = None
         if events:
             try:
@@ -432,6 +448,7 @@ class WindowsTelemetryCollectorService:
                 events = [e for e in events if e.event_id not in known]
                 if events:
                     persisted = await asyncio.to_thread(self._persist, events, summary)
+                    summary_stored = True
             except Exception as exc:  # noqa: BLE001
                 # Nothing from this batch was stored, so none of it may be
                 # suppressed as a repeat on the next poll.
@@ -439,6 +456,30 @@ class WindowsTelemetryCollectorService:
                 return self._record_failed_poll(
                     polled_at, f"persistence_failed: {type(exc).__name__}: {exc}"
                 )
+
+        if not summary_stored:
+            # A poll that stored no NEW event still observed records, and
+            # until now stored no summary at all (ADR-123). On a quiet
+            # machine most polls are exactly this: the same handful of
+            # long-lived connections, every one a repeat. Omitting them
+            # made `import_summaries` a record of the busy polls only —
+            # so the quieter the host, the larger the shortfall, and
+            # nothing on screen said any poll was missing.
+            #
+            # Storing it cannot be allowed to fail the poll: the telemetry
+            # is already safe, and a bookkeeping write is not worth
+            # discarding it for. A failure here is reported in its own
+            # right rather than silently swallowed.
+            try:
+                await asyncio.to_thread(self._persist_summary_only, summary)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "poll summary not stored for %s: %s: %s",
+                    self.source_id,
+                    type(exc).__name__,
+                    exc,
+                )
+
         if events:
             latest_observed = max(e.observed_at for e in events)
             if (
@@ -494,7 +535,14 @@ class WindowsTelemetryCollectorService:
             duplicates_suppressed=duplicates,
             records_filtered_by_policy=filtered,
             records_rejected=summary.rejected_records,
-            rejection_reasons=dict(summary.rejection_reasons),
+            # The live view reports rejections only. Bookkeeping keys are
+            # carried by their own fields above, and remain on the
+            # persisted summary.
+            rejection_reasons={
+                reason: count
+                for reason, count in summary.rejection_reasons.items()
+                if not reason.startswith("_")
+            },
             latest_event_observed_at=latest_observed,
         )
 
@@ -503,6 +551,17 @@ class WindowsTelemetryCollectorService:
         from app.services.enrichment import get_enrichment_service
 
         get_enrichment_service(self.db).refresh_from_dns_cache()
+
+    def _persist_summary_only(self, summary: ImportSummary) -> None:
+        """
+        Store a poll's accounting when it persisted no new event.
+
+        `import_summaries` has a foreign key to `telemetry_sources`, so the
+        source row must exist first — the same reason `_persist` registers
+        it. Runs in a worker thread.
+        """
+        self._ensure_source_registered()
+        self.db.save_import_summary(summary)
 
     def _persist(self, events: list, summary: ImportSummary) -> int:
         """Persist events and update source health. Runs in a worker thread."""

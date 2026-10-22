@@ -24,6 +24,8 @@ export const ROUTES: Record<NavTab, string> = {
   research: "/feasibility",
   forecast: "/forecast",
   investigate: "/investigate",
+  traffic: "/traffic",
+  dns: "/dns",
   system: "/system-health",
   admin: "/admin",
   audit: "/audit",
@@ -43,6 +45,8 @@ const ALIASES: Record<string, NavTab> = {
   "/security": "audit",
   "/telemetry-sources": "sources",
   "/investigation": "investigate",
+  "/connections": "traffic",
+  "/dns-activity": "dns",
 };
 
 const BY_PATH: Record<string, NavTab> = Object.fromEntries(

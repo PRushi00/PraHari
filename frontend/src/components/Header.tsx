@@ -13,6 +13,8 @@ import {
   HeartPulse,
   Settings,
   Search,
+  Filter,
+  Globe,
 } from "lucide-react";
 import { HealthResponse } from "../types";
 import { GuidedModeToggle, useGuidedMode } from "./GuidedMode";
@@ -28,6 +30,8 @@ export type NavTab =
   | "research"
   | "forecast"
   | "investigate"
+  | "traffic"
+  | "dns"
   | "system"
   | "admin"
   | "audit";
@@ -70,6 +74,8 @@ const NAV_GROUPS: { legend: string; entries: NavEntry[] }[] = [
       { tab: "overview", label: "Overview", icon: <Activity size={15} /> },
       { tab: "live", label: "Live Telemetry", icon: <Wifi size={15} /> },
       { tab: "sources", label: "Devices & Sources", icon: <Radio size={15} /> },
+      { tab: "traffic", label: "Traffic", icon: <Filter size={15} /> },
+      { tab: "dns", label: "DNS Activity", icon: <Globe size={15} /> },
       { tab: "events", label: "Events Explorer", icon: <Database size={15} /> },
       { tab: "analysis", label: "Analytics", icon: <BarChart2 size={15} /> },
       { tab: "import", label: "CSV Import", icon: <FileSpreadsheet size={15} /> },

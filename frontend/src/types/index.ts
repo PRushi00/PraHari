@@ -457,12 +457,44 @@ export interface DomainAttribution {
   attribution_kind: string;
 }
 
+export type TrafficDirection = "inbound" | "outbound" | "local" | "unknown";
+
+/**
+ * Direction is INFERRED, never recorded. It carries its method and its
+ * limitations for the same reason `DomainAttribution` does (ADR-122).
+ */
+export interface DirectionAssessment {
+  direction: TrafficDirection;
+  confidence: "observed" | "inferred" | "none";
+  method: string;
+  reason: string;
+  limitations: string[];
+}
+
+export interface DnsObservationRow {
+  ip_address: string;
+  hostname: string;
+  observed_at: string;
+  method: string;
+  ttl_seconds: number | null;
+  source_id: string | null;
+}
+
+export interface DnsObservationsPage {
+  total_stored: number;
+  returned: number;
+  observations: DnsObservationRow[];
+  method_filter: string | null;
+  note: string;
+}
+
 export interface ConnectionDetail {
   event: NormalizedEvent;
   connection_state: string | null;
   process_name: string | null;
   process_id: number | null;
   domain_attribution: DomainAttribution | null;
+  direction: DirectionAssessment | null;
   source_type: string | null;
   unsupported_fields: string[];
   source_limitations: string[];

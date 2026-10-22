@@ -125,19 +125,26 @@ caveat (ADR-115).
 
 ## Phases
 
-| | Work | Where it can be done | Done when |
+| | Work | Where it can be done | State |
 |---|---|---|---|
-| 1 | Two peer nav groups | here | every route still reachable; browser verifier green |
-| 2 | Two-column Overview: this host / other devices | here | host counts are real; no registered device renders an explicit empty state, never invented traffic |
-| 3 | Device registration UI over the existing source API | here | a device can be registered with a monitoring method; inventory-only is distinguishable from monitored |
-| 4 | DNS evidence discovery script | **operator's Windows machine** | ✅ **done** — ran clean, changed nothing, found the channel disabled (ADR-119) |
-| 4b | Enable the channel, re-run discovery | **operator's decision** — needs Administrator | real event ids and field names come back |
-| 5 | `windows_dns_events` adapter | here, after 4b | tests cover present, absent and unreadable evidence, with source attribution |
-| 6 | Per-device traffic, once an agent or sensor reports it | needs an authorized device | figures reconcile with the reporting source |
+| 1 | Two peer nav groups | here | ✅ **done** (ADR-118) — every route reachable, verifier green |
+| 2 | Two-column Overview: this host / other devices | here | ✅ **done** (ADR-118) — real host counts; no registered device renders an explicit empty state, never invented traffic |
+| 3 | Device registration UI over the existing source API | here | ✅ **done** (ADR-118) — monitoring method recorded; inventory-only distinguishable; exposed and closed an unguarded `POST /sources` in central mode |
+| 4 | DNS evidence discovery script | **operator's Windows machine** | ✅ **done** (ADR-119) — ran clean, changed nothing |
+| 4b | Enable the channel, re-run discovery | operator's decision | ✅ **done** (ADR-121) — 17 event ids field-mapped; **59 external names in 7.6 min**, reversing ADR-119 |
+| 5 | `windows_dns_events` adapter | here | ✅ **done** (ADR-120, ADR-121) — event 3008 only; 3006 and 1001 counted, not parsed |
+| 6 | Traffic Explorer with explicit direction | here | ✅ **done** (ADR-122) — inbound/outbound/local/unknown as a labelled inference; `unknown` filterable |
+| 7 | DNS Activity view | here | ✅ **done** (ADR-122) — every row carries its evidence source; empty store explained, not blank |
+| 8 | Per-device traffic | **needs an authorized device** | ⛔ **blocked** — needs an agent on the device, or a sensor that can see its traffic. Neither exists |
+| 9 | Second device sends distinguishable telemetry | **needs a second machine** | ⛔ **blocked** — the registration path is built; nothing has registered through it |
+| 10 | Network sensor reconciled against sensor logs | **needs an observation point** | ⛔ **blocked** — Zeek parsing works (989/989 accepted), but from one source on a Docker bridge, and the container is gone |
 
-Phases 1–3 need nothing but work in this repository and are **done**.
-Phase 4 is **done** and returned a negative result. Phase 5 is blocked
-on 4b, which is a decision rather than work.
+**Everything that needs only work in this repository is done.** Rows 1
+to 7 are complete and verified. Rows 8 to 10 are blocked on physical
+things this container does not have: a second machine, an authorized
+agent, or an observation point that can see the traffic. No amount of
+work here closes them, and building a convincing-looking interface for
+data that does not exist is the one thing this project must not do.
 
 **The alternative is already working.** Zeek is wired into the JSON
 stream path and has accepted 989/989 real records. A sensor observes DNS

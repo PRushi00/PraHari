@@ -1277,6 +1277,33 @@ class Database:
             )
         return out
 
+    def recent_dns_observations(
+        self, limit: int = 100, method: Optional[str] = None
+    ) -> list[dict]:
+        """
+        The most recently observed resolutions, newest first (ADR-122).
+
+        `ip_address` is selected alongside the name because this is the
+        only read that is not already scoped to one address, and a
+        hostname without the address it resolved to is not evidence of
+        anything.
+
+        `method` filters by evidence source — `dns_cache_observation`
+        and `dns_query_log` are different kinds of evidence and an
+        operator auditing one should not have to read past the other.
+        """
+        sql = """SELECT ip_address, hostname, observed_at, method, ttl_seconds,
+                        source_id
+                 FROM dns_observations"""
+        params: list = []
+        if method:
+            sql += " WHERE method = ?"
+            params.append(method)
+        sql += " ORDER BY observed_at DESC LIMIT ?"
+        params.append(limit)
+        with self.get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
     def count_dns_observations(self) -> int:
         with self.get_connection() as conn:
             return conn.execute("SELECT COUNT(*) FROM dns_observations").fetchone()[0]

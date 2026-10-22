@@ -12,6 +12,11 @@ from pydantic import BaseModel, Field
 from app.adapters.capabilities import get_capability
 from app.api.auth import scope_source
 from app.api.deps import get_db
+from app.services.direction import (
+    DirectionAssessment,
+    TrafficDirection,
+    assess_direction,
+)
 from app.services.enrichment import get_enrichment_service
 from app.storage.database import Database
 from app.schemas.events import (
@@ -50,6 +55,12 @@ class ConnectionDetail(BaseModel):
 
     # Hostname inference — separate from the record, with its evidence
     domain_attribution: Optional[DomainAttribution] = None
+
+    # Direction inference — likewise separate, and likewise carrying its
+    # method. It is NOT a field on the event: the connection table does
+    # not report who opened the socket, so a stored value would read as
+    # something a sensor observed (ADR-122).
+    direction: Optional[DirectionAssessment] = None
 
     # What the producing source can and cannot report
     source_type: Optional[str] = None
@@ -131,6 +142,14 @@ def list_connections(
     process: Optional[str] = Query(default=None, description="Substring match on process name"),
     dst_ip: Optional[str] = Query(default=None, description="Substring match on destination IP"),
     hostname: Optional[str] = Query(default=None, description="Substring match on attributed hostname"),
+    direction: Optional[TrafficDirection] = Query(
+        default=None,
+        description=(
+            "Filter by inferred direction. `unknown` is a real value here, "
+            "not an absence: it selects the connections PraHari declined to "
+            "call, which is the set worth auditing."
+        ),
+    ),
     include_enrichment: bool = Query(
         default=True, description="Attach hostname attribution with evidence"
     ),
@@ -208,6 +227,19 @@ def list_connections(
         stype = source_types.get(ev.source_id)
         capability = get_capability(stype)
 
+        assessed = assess_direction(
+            src_ip=ev.src_ip,
+            dst_ip=ev.dst_ip,
+            src_port=ev.src_port,
+            dst_port=ev.dst_port,
+            source_type=stype,
+        )
+        # Filtered AFTER assessment, never by a stored column: there is
+        # no stored column, and inventing one would turn an inference
+        # into a recorded fact.
+        if direction is not None and assessed.direction is not direction:
+            continue
+
         details.append(
             ConnectionDetail(
                 event=ev,
@@ -215,6 +247,7 @@ def list_connections(
                 process_name=proc_name,
                 process_id=pid,
                 domain_attribution=attribution,
+                direction=assessed,
                 source_type=stype,
                 unsupported_fields=capability.unsupported_fields(),
                 source_limitations=capability.limitations,
@@ -222,9 +255,10 @@ def list_connections(
         )
 
     note = (
-        "Hostnames are inferred from local DNS evidence and carry a confidence "
-        "and method; they are not recorded by the connection itself. Unknown "
-        "values are shown as unknown and are never guessed."
+        "Hostnames and direction are both INFERRED and carry a confidence "
+        "and method; neither is recorded by the connection itself. Direction "
+        "is only inferable for records collected on the host whose sockets "
+        "they describe. Unknown values are shown as unknown, never guessed."
         if include_enrichment
         else "Enrichment disabled for this request."
     )
