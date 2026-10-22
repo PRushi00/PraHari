@@ -5836,6 +5836,23 @@ Frontend `tsc` 0, **139 passed** (18 files). `verify_browser_session.py`
 **31 passed, 0 failed**. Nothing renders below the 13px floor (ADR-114)
 on any of the 13 routes.
 
+Both modes were also driven in **real Chromium**, because no test here
+renders a cascade and the toggle's whole job is to change what the page
+looks like. With the preference seeded and the rendered DOM counted:
+
+| Route | Guided | `body[data-guided]` | `.explain` | collapsed panels | nav legends |
+|---|---|---|---|---|---|
+| `/` | on | `on` | 3 | 0 | 4 |
+| `/live` | on | `on` | 1 | 1 | 4 |
+| `/` | off | `off` | **0** | **0** | **0** |
+| `/live` | off | `off` | **0** | **0** | **0** |
+
+Expert mode leaves no trace of the layer — no explanation, no chevron,
+no legend — which is the claim that "the expert's page is what it always
+was" depends on. `/live` shows one collapsed panel rather than two
+because no collector source exists on Linux, so the source-health panel
+does not render at all.
+
 ### Not established
 This is a comprehension aid, not a usability study. Nobody who is
 actually inexperienced has used it; the wording is a judgement about
@@ -5847,3 +5864,136 @@ prose inside an `<Advanced>` block — no marker, no badge, no role — would
 pass it, and only a reader would notice. What it does guarantee is that
 the markers PraHari actually uses for its refusals and limits cannot be
 deferred without the test naming the file.
+
+---
+
+## ADR-116: The Coverage Document Drifted, and PostgreSQL Is 2.9x Slower
+
+### Context
+Two of the four items left open were blocked on the operator (a security-
+platform export file, §5; the CIC-IDS2017 registration form, §10). The
+other two were mine. Establishing *which* two meant reading
+`BLUEPRINT_COVERAGE.md` — and it contradicted itself.
+
+**§11** listed `Sources` as `PARTIAL — there is no single Sources view`
+and `Investigation` as `ABSENT`. Both had shipped: ADR-108 and ADR-109,
+three revisions earlier, routed at `/sources` and `/investigate` and
+exercised by the real-browser session verifier on every run since.
+
+**§16** read `None of that has been measured` about its eight
+operational-acceptance items. ADR-110 had measured six and ADR-113 the
+seventh, two revisions and one revision earlier respectively.
+
+In both cases the summary table at the top of the same document was
+correct, and the prose below it was wrong. That is worse than being
+uniformly out of date: each half reads as authoritative on its own, and
+a reader who checks the table and a reader who checks the section come
+away with different answers about the same release.
+
+The cause is mechanical. A table row is one line and gets updated with
+the change; a prose section is a paragraph elsewhere in the file and
+does not. Nothing in this repository checks the two against each other,
+and nothing checks either against the code.
+
+### Decision
+
+**Re-derive, do not edit.** Each stale row was checked against the thing
+it describes — `routing.ts` and the two page components for §11, the
+benchmark report and `scripts/benchmark_ingestion.py` for §16 — before
+the verdict was changed. Each corrected section states in the document
+**when it was wrong and for how long**, because a coverage document that
+silently repairs itself gives no reason to trust the rows that were
+never wrong.
+
+`§18` row 1 also cited the browser verifier as `27/27`; it is `31/31`,
+having grown as routes were added. Corrected with the history noted.
+
+**And measure the thing §16 actually still lacked.** The benchmark
+report's own largest stated gap was *"No PostgreSQL run. SQLite only;
+the storage backend is the most likely thing to change these numbers."*
+It was, and it does.
+
+### What PostgreSQL changed
+
+Both scenarios re-run against a real PostgreSQL 16.15 server, same
+machine, same records, same code.
+
+| | SQLite | **PostgreSQL** |
+|---|---|---|
+| Event rate (steady) | 7105.7 rec/s | **2460.4 rec/s** |
+| Duration | 1.92 s | **4.06 s** |
+| Request latency p50 | 120.9 ms | **404.4 ms** |
+| Request latency **p99** | **1070.9 ms** | **508.3 ms** |
+| RSS peak | 190.2 MB | 196.6 MB |
+
+**PraHari ingests at roughly 35 % of its SQLite rate on PostgreSQL** —
+2.9x slower. Any throughput figure quoted without naming the backend is
+therefore meaningless, and the SQLite number must never stand alone.
+
+The *tail* moves the other way: p99 is **508 ms on PostgreSQL against
+1071 ms on SQLite**. The faster mean comes with the worse worst case,
+consistent with a single writer serialising behind a lock. This is
+exactly why the benchmark reports a distribution and not an average; an
+average would have hidden the one figure that favours the slower
+backend.
+
+**Saturation was identical to the record**: `{200: 8, 503: 52}`, 8
+admitted, 52 refused, 1600 stored, `queue_depth: null`, on both
+backends. The refusal boundary is a property of `services/admission.py`,
+which caps concurrent in-flight work, so it refuses at the same point
+whatever is underneath. A slower backend did **not** push more work into
+refusal, because admission counts requests in flight rather than time
+spent — a prediction the design implies and that had never been tested.
+
+### Verified from outside the application
+The application's counters claimed 11,600 records stored across both
+runs. `psql`, as a separate client, counted **11,620** in
+`bench.normalized_events`.
+
+The 20 are accounted for exactly: the reconnect probe's recovery check
+posts a 10-record batch to the live endpoint *after* the counters are
+read, once per run. 10,000 + 1,600 + 2x10 = 11,620.
+
+That cross-check is the point of running it at all. A throughput figure
+taken only from the process that generated the load is a claim about
+that process. A row count read out of the database by a different client
+is evidence that the rows exist.
+
+### Verification
+Full backend suite against the same live PostgreSQL 16.15 server:
+**1521 passed, 22 skipped, 0 failed** (4m 05s). Without a DSN the run is
+1475 passed / 65 skipped — the PostgreSQL tests **skip, never pass**, so
+the 43-test difference is the conformance and cross-backend suite
+actually executing. The 22 that remain skipped are Windows-only.
+
+The three new document-consistency tests are part of that count and pass
+on the corrected document; each fails when its original defect is
+restored.
+
+### Not established
+PostgreSQL ran on `initdb` defaults, on the same host as the
+application, over loopback. A real deployment would separate them and
+tune `shared_buffers`, `synchronous_commit` and the WAL, any of which
+could move 2460 rec/s substantially in either direction. **It is a floor
+measured on defaults, not a ceiling**, and still not a service target.
+
+Both runs last seconds. Nothing here says anything about hours: WAL
+checkpointing, autovacuum, index bloat and connection-pool behaviour are
+entirely unmeasured, and the memory figures remain uninterpreted for the
+same reason as before.
+
+The drift is now checked, but only in the two forms it took.
+`test_coverage_document_consistency.py` asserts that every section
+heading carrying a verdict carries the **same** verdict its summary row
+gives (the §11 failure), and that no section the summary calls `MET`
+contains a phrase denying the measurement (the §16 failure). Both halves
+are mutation-verified by restoring the original defect: each is named by
+the test, and neither trips the other.
+
+It has two real limits. A quoted denial is dropped before scanning, so
+§16 can record what it used to say — which also means a genuine claim
+written inside quotation marks would slip through. And it compares the
+two halves of one document **against each other**, never against the
+code. A section and a table that agree and are both wrong pass it
+cleanly. That is how this drift was found in the first place, by a
+person reading the whole file, and nothing here replaces that.
