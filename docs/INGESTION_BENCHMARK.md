@@ -135,10 +135,90 @@ use was not sampled. Install it (pip install psutil) and re-run."}
 
 To measure it: `pip install psutil`, then re-run.
 
+---
+
+## PostgreSQL — the same two scenarios
+
+The first revision of this report listed "No PostgreSQL run" as its
+largest gap, noting that **the storage backend is the most likely thing
+to change these numbers**. It was. Both scenarios were re-run against a
+real PostgreSQL 16.15 server (ADR-116).
+
+| | |
+|---|---|
+| Platform | `Linux-6.18.44-fc-v140-x86_64-with-glibc2.39` |
+| Server | PostgreSQL 16.15 (Ubuntu), a throwaway cluster, schema `bench` |
+| Transport | loopback HTTP to the app; loopback TCP to the database |
+| Everything else | identical to the SQLite runs |
+
+### Steady state (concurrency 4, below capacity 8)
+
+| Measure | SQLite | **PostgreSQL** |
+|---|---|---|
+| Records offered | 10,000 | 10,000 |
+| Duration | 1.92 s | **4.06 s** |
+| Event rate | 7105.7 rec/s | **2460.4 rec/s** |
+| Request latency p50 | 120.9 ms | **404.4 ms** |
+| Request latency p95 | 429.3 ms | **475.5 ms** |
+| Request latency p99 | 1070.9 ms | **508.3 ms** |
+| Stored / rejected / duplicate | 10000 / 0 / 0 | **10000 / 0 / 0** |
+| RSS peak | 190.2 MB | **196.6 MB** |
+| CPU mean while busy | 95.4 % | **107.0 %** |
+
+**PostgreSQL ingests at roughly 35 % of SQLite's rate here** — 2.9x
+slower on the same machine, same records, same code. That is the
+headline, and it is the reason the SQLite figures must never be quoted
+as PraHari's throughput.
+
+The *tail* moves the other way: p99 is **508 ms on PostgreSQL against
+1071 ms on SQLite**. SQLite's higher mean rate comes with a worse worst
+case, which is consistent with a single writer serialising behind a
+lock, and it is why the distribution is reported rather than an average.
+
+### Saturation (concurrency 24, three times capacity)
+
+| Measure | SQLite | **PostgreSQL** |
+|---|---|---|
+| HTTP statuses | `{200: 8, 503: 52}` | **`{200: 8, 503: 52}`** |
+| Admitted / refused | 8 / 52 | **8 / 52** |
+| Stored | 1600 | **1600** |
+| Queue depth | `null` | **`null`** |
+
+**Identical, to the record.** The refusal boundary is a property of
+admission control (`services/admission.py`), not of the storage backend:
+it caps concurrent in-flight work, so it refuses at the same point
+whatever is underneath. The slower backend did not push *more* work into
+refusal, because admission counts requests in flight rather than time
+spent.
+
+### Verified from outside the application
+
+The application's own counters said 11,600 records were stored across
+both runs. Asked directly, the database said **11,620**:
+
+```sql
+SELECT count(*) FROM bench.normalized_events;  -- 11620
+```
+
+The difference is exactly accounted for: the reconnect probe's recovery
+check posts a 10-record batch to the live endpoint after the counters
+are read, once per run (`scripts/benchmark_ingestion.py`). 10,000 +
+1,600 + 2x10 = **11,620**.
+
+That cross-check is the point. A throughput figure taken only from the
+process that produced the load is a claim about that process; a count
+read out of the database by a different client is evidence that the rows
+exist.
+
+---
+
 ## What this does not establish
 
-* **No PostgreSQL run.** SQLite only; the storage backend is the most
-  likely thing to change these numbers.
+* **No tuning of either backend.** PostgreSQL ran on `initdb` defaults
+  on the same host as the application. A deployment would separate them
+  and tune `shared_buffers`, `synchronous_commit` and the WAL — any of
+  which could move the 2460 rec/s figure substantially in either
+  direction. It is a floor measured on defaults, not a ceiling.
 * **No network.** Loopback removes the transport that a real sensor
   would cross.
 * **No sustained run.** Both scenarios last a second or two, which is why the memory-growth figures are reported but not interpreted. Behaviour over
