@@ -5572,3 +5572,163 @@ loopback against SQLite — no PostgreSQL, no network, no sustained run,
 and nothing published as a service target. Scenario is the attack label
 and nothing richer: it cannot distinguish two campaigns that share a
 label, which is the defect ADR-095 recorded in this very corpus.
+
+---
+
+## ADR-114: The Design System Reaches the Pages
+
+### Context
+The operator's words were: *"the font is not good … there are some
+underscores and the font is too small … I want an entire GUI change."*
+
+Three separate defects were behind that, and only the first is a matter
+of taste.
+
+**1. The stylesheet was never in charge.** `frontend/src/index.css`
+defined a type scale, but **263 inline `fontSize` declarations across
+14 files** overrode it — 22 distinct values from `0.62rem` (9.9px) to
+`2rem`. An inline style beats a stylesheet rule, so rewriting the
+stylesheet alone changed almost nothing on screen. Measured in real
+Chromium before this change, a single page rendered text at 10.88px,
+11.52px, 11.84px, 12px, 12.6px and 12.8px simultaneously. The same
+heading level rendered at 17.6px on `/forecast` and 24px on `/admin`.
+
+**2. Thirty-six class names were used and never defined.** The pages
+were written against a vocabulary — `.panel`, `.panel-header`,
+`.metric-grid`, `.metric`, `.metric-label`, `.metric-value`,
+`.metric-unavailable`, `.page-header`, `.status-banner`, `.card` and 26
+more — used **190 times** across the application. None of them had a
+rule. `System Health` therefore rendered every label/value pair as one
+run of text: `Deploymentlocal`, `Uptime305s`, `Queue depthno queue —
+synchronous ingestion`. `Investigation` and `Sources`, both added days
+earlier, rendered as bare unstyled divs and had done since they were
+written.
+
+Every test passed throughout. jsdom computes no cascade, so a missing
+rule is **invisible** to it: the elements exist, the text is present,
+and `getByText` finds it. Nine passing tests on `SystemHealthPage`
+asserted its content while the page was unreadable.
+
+**3. The content column collapsed to its content.** `.main-content`
+carried `max-width: 1440px; margin: 0 auto`. The app shell is a flex
+**column**, and on a flex item's cross axis an `auto` margin overrides
+the default `stretch`. The column therefore shrank to fit its widest
+child — measured at **852px** inside a 1680px viewport — so every page
+sat in a narrow ribbon with empty space either side.
+
+### Decision
+
+**One scale, seven steps, with a 13px floor.**
+
+| Token | Size | Use |
+|---|---|---|
+| `--text-2xs` | 13px | captions, table headers — **the floor** |
+| `--text-xs` | 14px | table cells, secondary text |
+| `--text-sm` | 15px | body |
+| `--text-md` | 17px | lead paragraphs, subsection headings |
+| `--text-lg` | 20px | section headings |
+| `--text-xl` | 24px | page titles |
+| `--text-2xl` | 34px | stat values |
+
+Every one of the 263 inline sizes now names a token. Nothing below the
+floor survives: the nine values under 13px were lifted to it rather than
+preserved, because preserving them is what the operator complained
+about. A heading takes one of three levels and is never body-sized; its
+weight comes from the stylesheet, so one level is one weight everywhere.
+
+ECharts draws its own text and ignores the cascade entirely, so the
+chart label sizes were raised to the floor **by hand** — a stylesheet
+cannot reach them.
+
+`.main-content` keeps `margin: 0 auto` and gains `width: 100%`, which is
+load-bearing and commented as such in the CSS so it is not "tidied"
+away. The comment names the flex cross-axis rule, not just the symptom.
+
+**The whole class vocabulary is defined**, not just the names that
+happened to look broken. `.panel` shares one surface with `.card` so a
+page built from panels and a page built from cards are not two
+applications. `.metric-label` is set in tracked small caps rather than
+smaller type, so a label/value pair stays above the floor at both
+levels. `.metric-unavailable` is italic body text in the dim colour and
+never the value style, because "not measured" is not a number and must
+not read as one — the same rule the backend follows in refusing to
+report an unmeasured value as zero. Each `SourceState` gets a badge
+colour, and a state added later still renders as a badge: `.badge`
+carries the shape, and only the colour is per-state.
+
+**A label is not an identifier.** `humanise()` (`utils/format.ts`)
+converts a backend enum to sentence case — not Title Case — keeping a
+set of tokens upper (`ip`, `tcp`, `dns`, `http`, `pr`, `auc`, `ddos`
+and others), so `source_limited` reads "Source limited" and `tcp_flow`
+reads "TCP flow". It is applied to **conditions** (a state, a rejection
+reason, a quality flag, a data category) across nine pages.
+
+An **identifier** is the opposite case and is not humanised: a source
+id, a model id, a schema field name is a key the operator may have to
+type or grep, and changing its spelling for looks would be a lie about
+what the system holds. Those are wrapped in `<code>`, which the
+stylesheet now renders in mono with a subtle chip — including
+`max(0.92em, var(--text-2xs))`, because `em` alone cannot hold a floor
+inside a caption.
+
+One backend string was changed for the same reason. The feasibility
+report rendered `Declared label provenance: {'synthetic_rule': 400}` —
+a Python `dict` repr, reaching the operator's screen as debug output.
+`describe_breakdown()` in `research/label_policy.py` renders it as
+`synthetic_rule (400)`. The provenance **names** are untouched: they are
+identifiers.
+
+### Verification
+Measured in **real Chromium** at 1680px against the served bundle, on
+all 13 routes, before and after:
+
+| | Before | After |
+|---|---|---|
+| Content column | 852px | **1600px** |
+| Smallest rendered text | **9.9px** | **13px**, on every route |
+| Distinct inline sizes | 22 | 0 (7 tokens) |
+| Undefined CSS classes | 36 (190 uses) | **0** |
+| Page title | 17.6px / 24px, 600 / 700 | **24px / 650 everywhere** |
+| Section heading | 15–20px | **20px / 650 everywhere** |
+
+`verify_browser_session.py` **31 passed, 0 failed** after the change, so
+no route, alias, deep link, reload or history move regressed while the
+CSS was replaced. Frontend `tsc` 0, **125 passed**. Backend **1475 passed, 65
+skipped, 0 failed** after the `label_policy` and audit-detail changes.
+
+### Not established
+This is a typography and layout pass measured by computed style. It is
+**not** an accessibility audit: contrast ratios, focus-visible states,
+reduced-motion and keyboard traps were not measured, and nothing here
+should be read as a WCAG claim. Nor was it reviewed on a phone — the
+measurement ran at one viewport width.
+
+One defect in this ADR is a warning about the rest of the test suite,
+not about CSS: 36 class names were undefined for days while every test
+over the pages using them passed, and `verify_browser_session.py` —
+which drives real Chromium — passed 31/31 both before and after,
+because it asserts that a page *renders*, not that it is *legible*.
+jsdom asserts structure and the session verifier asserts behaviour;
+neither asks what anything looks like.
+
+What found it was reading a screenshot and measuring computed style,
+which no check in this repository does. So the mechanical half is now a
+test: `StyleVocabulary.test.ts` asserts that every class named in the
+TSX resolves to a rule in `index.css`, and would have caught all 36. It
+is verified by mutation — deleting the `.metric-unavailable` or
+`.panel-note` rule fails it by name — and it carries a second assertion
+that the scan actually read a stylesheet and a set of pages, because a
+walk that silently finds nothing would otherwise pass.
+
+That second assertion is not hypothetical. The first version imported
+the stylesheet as `../index.css?raw`. vitest runs with CSS processing
+off, so the import returned an **empty string**: the check compared 67
+used classes against zero defined ones. It failed loudly only because
+the rules were already there to miss — written before them, it would
+have passed against nothing from the first run. The stylesheet is now
+read from disk, and `@types/node` was added as a dev dependency so that
+read typechecks.
+
+It claims nothing about appearance. A class can resolve to a rule that
+looks wrong, and no test here would notice; that still needs a person
+looking at the page.

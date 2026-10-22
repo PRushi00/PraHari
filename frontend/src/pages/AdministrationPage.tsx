@@ -10,6 +10,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "../services/api";
+import { humanise } from "../utils/format";
 import { RetentionPolicy, SourceHealthSummary, SourceHealthRecord } from "../types";
 
 /**
@@ -207,12 +208,12 @@ export const AdministrationPage: React.FC = () => {
               {sources.map((s) => (
                 <tr key={s.source_id}>
                   <td>
-                    <strong>{s.name || s.source_id}</strong>
-                    <div className="cell-note">{s.source_id}</div>
+                    <strong>{s.name || <code>{s.source_id}</code>}</strong>
+                    <div className="cell-note"><code>{s.source_id}</code></div>
                   </td>
-                  <td>{s.source_type}</td>
+                  <td><code>{s.source_type}</code></td>
                   <td>
-                    <span className={`badge badge-${s.state}`}>{s.state}</span>
+                    <span className={`badge badge-${s.state}`}>{humanise(s.state)}</span>
                   </td>
                   <td>
                     {s.event_count === null || s.event_count === undefined ? (
@@ -273,7 +274,7 @@ export const AdministrationPage: React.FC = () => {
               <div className="metric">
                 <span className="metric-label">In force</span>
                 <span className="metric-value">{policy.retention_days} days</span>
-                <span className="metric-sub">{policy.origin}</span>
+                <span className="metric-sub">{humanise(policy.origin)}</span>
               </div>
               <div className="metric">
                 <span className="metric-label">Configured default</span>

@@ -157,25 +157,25 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
         {adapters.map((ad, idx) => (
           <div key={idx} className="glass-panel" style={{ padding: "1.5rem" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textTransform: "uppercase" }}>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", textTransform: "uppercase" }}>
                 {ad.adapter_type} Adapter
               </span>
               <span className="badge" style={{ background: ad.is_healthy ? "rgba(16, 185, 129, 0.2)" : "rgba(244, 63, 94, 0.2)", color: ad.is_healthy ? "#10b981" : "#f43f5e" }}>
                 {ad.is_healthy ? "HEALTHY" : "ERROR"}
               </span>
             </div>
-            <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--text-main)", marginBottom: "0.5rem" }}>
+            <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, color: "var(--text-main)", marginBottom: "0.5rem" }}>
               {ad.adapter_id}
             </div>
-            <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", display: "flex", gap: "1rem" }}>
+            <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", display: "flex", gap: "1rem" }}>
               <span>Processed: <strong style={{ color: "#10b981" }}>{fmtInt(ad.records_processed)}</strong></span>
               <span>Rejected: <strong style={{ color: (ad.records_rejected ?? 0) > 0 ? "#f43f5e" : "var(--text-dim)" }}>{fmtInt(ad.records_rejected)}</strong></span>
             </div>
-            <div style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginTop: "0.4rem" }}>
+            <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.4rem" }}>
               Last active: {fmtTime(ad.last_active_at, "never")}
             </div>
             {ad.error_message && (
-              <div style={{ fontSize: "0.72rem", color: "#fca5a5", marginTop: "0.35rem" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "#fca5a5", marginTop: "0.35rem" }}>
                 {ad.error_message}
               </div>
             )}
@@ -186,17 +186,17 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: "1.75rem" }}>
         {/* Synthetic Generator Card */}
         <div className="glass-panel" style={{ padding: "1.75rem" }}>
-          <h2 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <h2 style={{ fontSize: "var(--text-lg)", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Zap size={20} style={{ color: "var(--accent-cyan)" }} />
             Deterministic Synthetic Flow Generator
           </h2>
-          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginBottom: "1.25rem" }}>
+          <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginBottom: "1.25rem" }}>
             Generates realistic enterprise benign traffic punctuated with episodic brute-force, scan, and DoS attack bursts. Tagged explicitly as synthetic demo.
           </p>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
             <div>
-              <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+              <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
                 Flow Batch Size
               </label>
               <input
@@ -210,7 +210,7 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
               />
             </div>
             <div>
-              <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+              <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
                 PRNG Seed
               </label>
               <input
@@ -224,7 +224,7 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
           </div>
 
           <div style={{ marginBottom: "1.5rem" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-xs)", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
               <span>Attack Burst Ratio</span>
               <span style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{(attackRatio * 100).toFixed(0)}%</span>
             </div>
@@ -251,11 +251,11 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
 
           {replayResult && (
             <div style={{ marginTop: "1.5rem", padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(6, 182, 212, 0.08)", border: "1px solid var(--border-highlight)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981", fontWeight: 600, fontSize: "0.9rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981", fontWeight: 600, fontSize: "var(--text-xs)" }}>
                 <CheckCircle size={18} />
                 <span>Replay Batch Generated Successfully</span>
               </div>
-              <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "0.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: "0.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
                 <div>Records Generated: <strong>{fmtInt(replayResult.total_records)}</strong></div>
                 <div>Accepted: <strong style={{ color: "#10b981" }}>{fmtInt(replayResult.accepted_records)}</strong></div>
                 <div>Rejected: <strong style={{ color: (replayResult.rejected_records ?? 0) > 0 ? "#f43f5e" : "var(--text-dim)" }}>{fmtInt(replayResult.rejected_records)}</strong></div>
@@ -277,21 +277,21 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
         {/* NDJSON Stream Ingest Card */}
         <div className="glass-panel" style={{ padding: "1.75rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-            <h2 style={{ fontSize: "1.1rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <h2 style={{ fontSize: "var(--text-lg)", display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <Radio size={20} style={{ color: "var(--accent-indigo)" }} />
               NDJSON Stream Ingestion
             </h2>
-            <button className="btn btn-secondary" onClick={handleLoadSampleNdjson} style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}>
+            <button className="btn btn-secondary" onClick={handleLoadSampleNdjson} style={{ padding: "0.3rem 0.6rem", fontSize: "var(--text-2xs)" }}>
               <Code size={14} /> Load Sample
             </button>
           </div>
-          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginBottom: "1.25rem" }}>
+          <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginBottom: "1.25rem" }}>
             Simulate real-time sensor streams by posting newline-delimited JSON logs in Zeek or Suricata format.
           </p>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
             <div>
-              <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+              <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
                 Log Format
               </label>
               <select
@@ -306,7 +306,7 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
               </select>
             </div>
             <div>
-              <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+              <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
                 Sensor Source ID
               </label>
               <input
@@ -318,7 +318,7 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
               />
             </div>
             <div>
-              <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+              <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
                 Sensor Display Name
               </label>
               <input
@@ -332,7 +332,7 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
           </div>
 
           <div style={{ marginBottom: "1.25rem" }}>
-            <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+            <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
               Stream Payload (One JSON Object Per Line)
             </label>
             <textarea
@@ -341,7 +341,7 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
               value={ndjsonContent}
               onChange={(e) => setNdjsonContent(e.target.value)}
               placeholder='{"ts": 1700000000.0, "id.orig_h": "192.168.1.50", "id.resp_h": "10.0.0.1", ...}'
-              style={{ width: "100%", fontFamily: "var(--font-mono)", fontSize: "0.75rem", lineHeight: 1.4 }}
+              style={{ width: "100%", fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", lineHeight: 1.4 }}
             />
           </div>
 
@@ -357,11 +357,11 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
 
           {ingestResult && (
             <div style={{ marginTop: "1.5rem", padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(99, 102, 241, 0.08)", border: "1px solid var(--border-subtle)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981", fontWeight: 600, fontSize: "0.9rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981", fontWeight: 600, fontSize: "var(--text-xs)" }}>
                 <CheckCircle size={18} />
                 <span>Stream Ingestion Complete</span>
               </div>
-              <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "0.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: "0.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
                 <div>Total Records: <strong>{ingestResult.total_records}</strong></div>
                 <div>Accepted: <strong style={{ color: "#10b981" }}>{ingestResult.accepted_records}</strong></div>
                 <div>Rejected: <strong style={{ color: ingestResult.rejected_records > 0 ? "#f43f5e" : "var(--text-dim)" }}>{ingestResult.rejected_records}</strong></div>

@@ -159,7 +159,7 @@ export const ForecastPage: React.FC = () => {
           gap: "0.75rem",
         }}
       >
-        <h3 style={{ margin: 0, fontSize: "1rem", fontWeight: 600 }}>Research Readiness</h3>
+        <h3 style={{ margin: 0, fontSize: "var(--text-md)" }}>Research Readiness</h3>
         <span
           className={
             readiness.can_serve_validated_forecast
@@ -173,7 +173,7 @@ export const ForecastPage: React.FC = () => {
         </span>
       </div>
 
-      <p style={{ fontSize: "0.82rem", margin: "0.75rem 0", lineHeight: 1.6 }}>
+      <p style={{ fontSize: "var(--text-xs)", margin: "0.75rem 0", lineHeight: 1.6 }}>
         {readiness.summary}
       </p>
 
@@ -183,7 +183,7 @@ export const ForecastPage: React.FC = () => {
           border: "1px solid var(--border-subtle)",
           borderRadius: "6px",
           padding: "0.75rem 0.9rem",
-          fontSize: "0.74rem",
+          fontSize: "var(--text-2xs)",
           lineHeight: 1.65,
           marginBottom: "1rem",
         }}
@@ -212,14 +212,14 @@ export const ForecastPage: React.FC = () => {
           ["Span (min)", Math.round(readiness.time_span_seconds / 60)],
         ].map(([label, value]) => (
           <div key={label as string}>
-            <div style={{ fontSize: "1.3rem", fontWeight: 600 }}>{value as number}</div>
-            <div style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>{label as string}</div>
+            <div style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>{value as number}</div>
+            <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>{label as string}</div>
           </div>
         ))}
       </div>
 
       <div className="table-container">
-        <table style={{ width: "100%", fontSize: "0.74rem" }}>
+        <table style={{ width: "100%", fontSize: "var(--text-2xs)" }}>
           <thead>
             <tr>
               <th style={{ textAlign: "left" }}>Requirement</th>
@@ -256,10 +256,10 @@ export const ForecastPage: React.FC = () => {
             background: "rgba(245, 158, 11, 0.07)",
           }}
         >
-          <div style={{ fontSize: "0.75rem", color: "#f59e0b", marginBottom: "0.35rem" }}>
+          <div style={{ fontSize: "var(--text-2xs)", color: "#f59e0b", marginBottom: "0.35rem" }}>
             These labels are not ground truth
           </div>
-          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.75rem", lineHeight: 1.7 }}>
+          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "var(--text-2xs)", lineHeight: 1.7 }}>
             {readiness.label_caveats.map((c, i) => (
               <li key={i}>{c}</li>
             ))}
@@ -269,10 +269,10 @@ export const ForecastPage: React.FC = () => {
 
       {readiness.next_steps.length > 0 && (
         <div style={{ marginTop: "1rem" }}>
-          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+          <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
             To become research-ready
           </div>
-          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "0.75rem", lineHeight: 1.7 }}>
+          <ul style={{ margin: 0, paddingLeft: "1.1rem", fontSize: "var(--text-2xs)", lineHeight: 1.7 }}>
             {readiness.next_steps.map((n, i) => (
               <li key={i}>{n}</li>
             ))}
@@ -287,13 +287,13 @@ export const ForecastPage: React.FC = () => {
       className="glass-panel"
       style={{ padding: "1.5rem", marginBottom: "1.5rem", borderLeft: "3px solid #f59e0b" }}
     >
-      <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>
+      <h3 style={{ margin: "0 0 0.5rem", fontSize: "var(--text-md)" }}>
         Operation refused: {String(blocked.error).replace(/_/g, " ")}
       </h3>
-      <p style={{ fontSize: "0.8rem", lineHeight: 1.6 }}>{blocked.message}</p>
+      <p style={{ fontSize: "var(--text-xs)", lineHeight: 1.6 }}>{blocked.message}</p>
 
       {Array.isArray(blocked.unmet_requirements) && blocked.unmet_requirements.length > 0 && (
-        <ul style={{ fontSize: "0.75rem", paddingLeft: "1.1rem", lineHeight: 1.7 }}>
+        <ul style={{ fontSize: "var(--text-2xs)", paddingLeft: "1.1rem", lineHeight: 1.7 }}>
           {blocked.unmet_requirements.map((u: any, i: number) => (
             <li key={i}>
               <strong>{String(u.name).replace(/_/g, " ")}</strong>: requires {u.required}, observed{" "}
@@ -304,7 +304,7 @@ export const ForecastPage: React.FC = () => {
       )}
 
       {blocked.split_report && (
-        <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", lineHeight: 1.7 }}>
+        <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", lineHeight: 1.7 }}>
           Windows: {blocked.split_report.total_instances} total ·{" "}
           {blocked.split_report.train_instances} training ·{" "}
           {blocked.split_report.purged_instances} purged ·{" "}
@@ -314,10 +314,10 @@ export const ForecastPage: React.FC = () => {
       )}
 
       {blocked.remediation && (
-        <p style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{blocked.remediation}</p>
+        <p style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>{blocked.remediation}</p>
       )}
       {Array.isArray(blocked.next_steps) && (
-        <ul style={{ fontSize: "0.75rem", paddingLeft: "1.1rem", lineHeight: 1.7 }}>
+        <ul style={{ fontSize: "var(--text-2xs)", paddingLeft: "1.1rem", lineHeight: 1.7 }}>
           {blocked.next_steps.map((n: string, i: number) => (
             <li key={i}>{n}</li>
           ))}
@@ -328,10 +328,10 @@ export const ForecastPage: React.FC = () => {
 
   const integrityPanel = integrity && (
     <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
-      <h3 style={{ margin: "0 0 0.25rem", fontSize: "1rem", fontWeight: 600 }}>
+      <h3 style={{ margin: "0 0 0.25rem", fontSize: "var(--text-md)" }}>
         Evaluation Split Integrity
       </h3>
-      <p style={{ color: "var(--text-dim)", fontSize: "0.73rem", marginBottom: "0.9rem" }}>
+      <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "0.9rem" }}>
         Training ends before evaluation begins, and the contaminated boundary
         windows between them are purged. Read every metric alongside this.
       </p>
@@ -340,32 +340,32 @@ export const ForecastPage: React.FC = () => {
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
           gap: "0.9rem",
-          fontSize: "0.78rem",
+          fontSize: "var(--text-xs)",
         }}
       >
         <div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 600 }}>{integrity.train_instances}</div>
-          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>
+          <div style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>{integrity.train_instances}</div>
+          <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>
             training windows ({integrity.train_positive} incident)
           </div>
         </div>
         <div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "#f59e0b" }}>
+          <div style={{ fontSize: "var(--text-lg)", fontWeight: 600, color: "#f59e0b" }}>
             {integrity.purged_instances}
           </div>
-          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>
+          <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>
             purged ({integrity.embargo_seconds}s)
           </div>
         </div>
         <div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 600 }}>{integrity.test_instances}</div>
-          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>
+          <div style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>{integrity.test_instances}</div>
+          <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>
             holdout windows ({integrity.test_positive} incident)
           </div>
         </div>
         <div>
-          <div style={{ fontSize: "0.78rem" }}>{integrity.split_strategy.replace(/_/g, " ")}</div>
-          <div style={{ color: "var(--text-dim)", fontSize: "0.68rem" }}>split strategy</div>
+          <div style={{ fontSize: "var(--text-xs)" }}>{integrity.split_strategy.replace(/_/g, " ")}</div>
+          <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>split strategy</div>
         </div>
       </div>
       {integrity.test_positive === 0 && (
@@ -438,11 +438,11 @@ export const ForecastPage: React.FC = () => {
       <div className="glass-panel" style={{ padding: "1.75rem", marginBottom: "1.5rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", flexWrap: "wrap", gap: "1rem" }}>
           <div>
-            <h2 style={{ fontSize: "1.1rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <h2 style={{ fontSize: "var(--text-lg)", display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <BarChart size={20} style={{ color: "var(--accent-cyan)" }} />
               Competitive Model Benchmarking (Temporal Evaluation)
             </h2>
-            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.2rem" }}>
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "0.2rem" }}>
               Strict chronological past-train / future-test split, with the contaminated boundary purged. Two baselines, logistic regression, random forest, a window-sequence model and an LSTM — all on the same target, dataset and split.
             </p>
           </div>
@@ -461,7 +461,7 @@ export const ForecastPage: React.FC = () => {
               forecast is available.
             </p>
             {readiness && !readiness.can_train ? (
-              <p style={{ fontSize: "0.8rem", maxWidth: "34rem", margin: "0.5rem auto 0", lineHeight: 1.6 }}>
+              <p style={{ fontSize: "var(--text-xs)", maxWidth: "34rem", margin: "0.5rem auto 0", lineHeight: 1.6 }}>
                 Training is blocked by the research gate: {readiness.summary} See
                 Research Readiness above for the unmet requirements.
               </p>
@@ -520,7 +520,7 @@ export const ForecastPage: React.FC = () => {
                           {activeModelId === k && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent-cyan)" }} />}
                           <span>{m.model_name}</span>
                           {isBest && (
-                            <span className="badge" style={{ fontSize: "0.65rem", background: "rgba(16, 185, 129, 0.2)", color: "#10b981" }}>
+                            <span className="badge" style={{ fontSize: "var(--text-2xs)", background: "rgba(16, 185, 129, 0.2)", color: "#10b981" }}>
                               Best ML
                             </span>
                           )}
@@ -535,7 +535,7 @@ export const ForecastPage: React.FC = () => {
                                   ? "The model produced one score for every held-out window, so it ranked nothing."
                                   : "The model predicted a single class for every held-out window."
                               }
-                              style={{ fontSize: "0.65rem", background: "rgba(244, 63, 94, 0.2)", color: "#f43f5e" }}
+                              style={{ fontSize: "var(--text-2xs)", background: "rgba(244, 63, 94, 0.2)", color: "#f43f5e" }}
                             >
                               Degenerate
                             </span>
@@ -547,7 +547,7 @@ export const ForecastPage: React.FC = () => {
                                 title={`PR-AUC does not exceed the no-skill base rate${
                                   m.no_skill_pr_auc != null ? ` (${m.no_skill_pr_auc})` : ""
                                 }.`}
-                                style={{ fontSize: "0.65rem", background: "rgba(245, 158, 11, 0.2)", color: "#f59e0b" }}
+                                style={{ fontSize: "var(--text-2xs)", background: "rgba(245, 158, 11, 0.2)", color: "#f59e0b" }}
                               >
                                 No skill
                               </span>
@@ -556,14 +556,14 @@ export const ForecastPage: React.FC = () => {
                             <span
                               className="badge"
                               title="Too few held-out instances, or only one class, to establish anything."
-                              style={{ fontSize: "0.65rem", background: "rgba(148, 163, 184, 0.2)", color: "var(--text-dim)" }}
+                              style={{ fontSize: "var(--text-2xs)", background: "rgba(148, 163, 184, 0.2)", color: "var(--text-dim)" }}
                             >
                               Inconclusive
                             </span>
                           )}
                         </div>
                       </td>
-                      <td style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{m.model_type}</td>
+                      <td style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>{m.model_type}</td>
                       <td>{fmtPercent(m.precision)}</td>
                       <td>{fmtPercent(m.recall)}</td>
                       <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{fmtPercent(m.f1_score ?? m.f1)}</td>
@@ -573,7 +573,7 @@ export const ForecastPage: React.FC = () => {
                       <td style={{ color: m.false_positive_rate > 0.2 ? "#f43f5e" : "#10b981" }}>
                         {fmtPercent(m.false_positive_rate)}
                       </td>
-                      <td style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      <td style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>
                         {m.train_instances} / {m.test_instances}
                       </td>
                     </tr>
@@ -589,11 +589,11 @@ export const ForecastPage: React.FC = () => {
       <div className="glass-panel" style={{ padding: "1.75rem", marginBottom: "1.5rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem" }}>
           <div>
-            <h2 style={{ fontSize: "1.1rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <h2 style={{ fontSize: "var(--text-lg)", display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <AlertTriangle size={20} style={{ color: "var(--accent-cyan)" }} />
               Event-Level Warning Performance
             </h2>
-            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.35rem", maxWidth: "70ch" }}>
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "0.35rem", maxWidth: "70ch" }}>
               The table above counts <strong>windows</strong>. This counts <strong>events</strong>:
               how long before each documented event the first qualifying warning arrived,
               how many events got no warning, and how many alerts an analyst would have read.
@@ -613,7 +613,7 @@ export const ForecastPage: React.FC = () => {
         {eventLevelError && (
           <div
             data-testid="event-level-refusal"
-            style={{ marginTop: "1.25rem", padding: "1rem", borderRadius: "var(--radius-md)", borderLeft: "4px solid var(--accent-amber, #f59e0b)", background: "rgba(245, 158, 11, 0.08)", fontSize: "0.82rem", color: "#fcd34d" }}
+            style={{ marginTop: "1.25rem", padding: "1rem", borderRadius: "var(--radius-md)", borderLeft: "4px solid var(--accent-amber, #f59e0b)", background: "rgba(245, 158, 11, 0.08)", fontSize: "var(--text-xs)", color: "#fcd34d" }}
           >
             <strong>No event-level result.</strong>
             <div style={{ marginTop: "0.4rem", color: "var(--text-dim)" }}>{eventLevelError}</div>
@@ -624,45 +624,45 @@ export const ForecastPage: React.FC = () => {
           <div style={{ marginTop: "1.5rem" }} data-testid="event-level-report">
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "1rem" }}>
               <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Events warned</div>
-                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--text-main)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Events warned</div>
+                <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: "var(--text-main)" }}>
                   {fmtInt(eventLevel.events_warned)} / {fmtInt(eventLevel.events_total)}
                 </div>
               </div>
               <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Missed-event rate</div>
-                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: (eventLevel.missed_event_rate ?? 0) > 0.5 ? "#f43f5e" : "var(--text-main)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Missed-event rate</div>
+                <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: (eventLevel.missed_event_rate ?? 0) > 0.5 ? "#f43f5e" : "var(--text-main)" }}>
                   {fmtPercent(eventLevel.missed_event_rate)}
                 </div>
               </div>
               <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Median lead time</div>
-                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--accent-cyan)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Median lead time</div>
+                <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: "var(--accent-cyan)" }}>
                   {isNum(eventLevel.lead_time.median_seconds) ? `${fmtFixed(eventLevel.lead_time.median_seconds, 0)}s` : "N/A"}
                 </div>
               </div>
               <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>False alarms / hour</div>
-                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--text-main)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>False alarms / hour</div>
+                <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: "var(--text-main)" }}>
                   {fmtFixed(eventLevel.false_alarms_per_hour, 2)}
                 </div>
               </div>
               <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Alarm duty cycle</div>
-                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: (eventLevel.alarm_duty_cycle ?? 0) >= 0.5 ? "#f43f5e" : "var(--text-main)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Alarm duty cycle</div>
+                <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: (eventLevel.alarm_duty_cycle ?? 0) >= 0.5 ? "#f43f5e" : "var(--text-main)" }}>
                   {fmtPercent(eventLevel.alarm_duty_cycle)}
                 </div>
               </div>
               <div className="stat-tile" style={{ padding: "1rem", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Late warnings</div>
-                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "var(--text-main)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Late warnings</div>
+                <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: "var(--text-main)" }}>
                   {fmtInt(eventLevel.late_warnings)}
                 </div>
               </div>
             </div>
 
             {/* The distribution, not just the median. */}
-            <div style={{ marginTop: "1.25rem", fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            <div style={{ marginTop: "1.25rem", fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>
               <strong style={{ color: "var(--text-main)" }}>Lead-time distribution</strong>{" "}
               ({fmtInt(eventLevel.lead_time.count)} warned event(s)):{" "}
               {eventLevel.lead_time.quartiles_available ? (
@@ -679,7 +679,7 @@ export const ForecastPage: React.FC = () => {
             </div>
 
             {/* Rules first: a lead time without them is not comparable. */}
-            <div style={{ marginTop: "1rem", fontSize: "0.75rem", color: "var(--text-muted)" }}>
+            <div style={{ marginTop: "1rem", fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>
               Matching rules: a warning qualifies {fmtFixed(eventLevel.rules.min_lead_seconds, 0)}–
               {fmtFixed(eventLevel.rules.max_lead_seconds, 0)}s before an event • episode gap{" "}
               {fmtFixed(eventLevel.rules.episode_gap_seconds, 0)}s • suppression{" "}
@@ -687,7 +687,7 @@ export const ForecastPage: React.FC = () => {
               {fmtFixed(eventLevel.rules.threshold, 2)} • fingerprint{" "}
               <code style={{ color: "var(--accent-cyan)" }}>{eventLevel.rules_fingerprint.slice(0, 12)}</code>
             </div>
-            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.35rem" }}>
+            <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginTop: "0.35rem" }}>
               {fmtInt(eventLevel.positive_windows)} positive window(s) aggregated into{" "}
               {fmtInt(eventLevel.warnings_issued)} warning(s) over{" "}
               {fmtInt(eventLevel.evaluated_windows)} evaluated window(s).
@@ -699,7 +699,7 @@ export const ForecastPage: React.FC = () => {
             {eventLevel.limitations.length > 0 && (
               <ul
                 data-testid="event-level-limitations"
-                style={{ marginTop: "1rem", paddingLeft: "1.1rem", fontSize: "0.75rem", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: "0.35rem" }}
+                style={{ marginTop: "1rem", paddingLeft: "1.1rem", fontSize: "var(--text-2xs)", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: "0.35rem" }}
               >
                 {eventLevel.limitations.map((limitation, idx) => (
                   <li key={idx}>{limitation}</li>
@@ -714,13 +714,13 @@ export const ForecastPage: React.FC = () => {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "1.5rem" }}>
         {/* Scoring Controls & Gauge */}
         <div className="glass-panel" style={{ padding: "1.75rem" }}>
-          <h2 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <h2 style={{ fontSize: "var(--text-lg)", marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Zap size={20} style={{ color: "var(--accent-amber)" }} />
             Threat Propensity Scorer
           </h2>
 
           <div style={{ marginBottom: "1.25rem" }}>
-            <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.35rem" }}>
+            <label style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "block", marginBottom: "0.35rem" }}>
               Active Inference Model
             </label>
             <select
@@ -741,7 +741,7 @@ export const ForecastPage: React.FC = () => {
           </div>
 
           <div style={{ marginBottom: "1.5rem" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-xs)", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
               <span>Decision Threshold</span>
               <span style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{threshold.toFixed(2)}</span>
             </div>
@@ -769,10 +769,10 @@ export const ForecastPage: React.FC = () => {
           {prediction && (
             <div style={{ marginTop: "1.5rem", padding: "1.25rem", borderRadius: "var(--radius-md)", background: prediction.predicted_incident ? "rgba(244, 63, 94, 0.1)" : "rgba(16, 185, 129, 0.1)", border: `1px solid ${prediction.predicted_incident ? "var(--accent-rose)" : "#10b981"}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "0.85rem", fontWeight: 600, color: prediction.predicted_incident ? "#f43f5e" : "#10b981" }}>
+                <span style={{ fontSize: "var(--text-xs)", fontWeight: 600, color: prediction.predicted_incident ? "#f43f5e" : "#10b981" }}>
                   {prediction.predicted_incident ? "PREDICTED INCIDENT IMMINENT" : "BENIGN TELEMETRY FORECAST"}
                 </span>
-                <span style={{ fontSize: "1.25rem", fontWeight: 800, color: prediction.predicted_incident ? "#f43f5e" : "#10b981" }}>
+                <span style={{ fontSize: "var(--text-lg)", fontWeight: 800, color: prediction.predicted_incident ? "#f43f5e" : "#10b981" }}>
                   {fmtPercent(prediction.propensity_score)}
                 </span>
               </div>
@@ -786,7 +786,7 @@ export const ForecastPage: React.FC = () => {
                   }}
                 />
               </div>
-              <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "0.5rem" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.5rem" }}>
                 Lead Time: {prediction.lead_time_seconds}s • Horizon: {prediction.horizon_seconds}s • Model: {prediction.model_name}
               </div>
             </div>
@@ -795,11 +795,11 @@ export const ForecastPage: React.FC = () => {
 
         {/* Feature Impact Attribution */}
         <div className="glass-panel" style={{ padding: "1.75rem" }}>
-          <h2 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <h2 style={{ fontSize: "var(--text-lg)", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <TrendingUp size={20} style={{ color: "var(--accent-cyan)" }} />
             Feature Attribution & Telemetry Drivers
           </h2>
-          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginBottom: "1.25rem" }}>
+          <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginBottom: "1.25rem" }}>
             Top retrospective causal signals influencing future incident propensity.
           </p>
 
@@ -816,7 +816,7 @@ export const ForecastPage: React.FC = () => {
                   : 0;
                 return (
                   <div key={idx}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", marginBottom: "0.25rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-xs)", marginBottom: "0.25rem" }}>
                       <span style={{ fontWeight: 600, color: "var(--text-main)" }}>{feat.feature}</span>
                       <span style={{ color: "var(--text-dim)" }}>
                         val: <code style={{ color: "var(--accent-cyan)" }}>{fmtFixed(feat.value, 1)}</code> • impact: {fmtFixed(feat.impact, 3)}

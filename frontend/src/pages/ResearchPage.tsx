@@ -226,7 +226,7 @@ export const ResearchPage: React.FC = () => {
             <div className="glass-panel" style={{ padding: "1.5rem" }}>
               <div
                 style={{
-                  fontSize: "0.8rem",
+                  fontSize: "var(--text-xs)",
                   color: "var(--text-muted)",
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
@@ -243,14 +243,14 @@ export const ResearchPage: React.FC = () => {
                 <div>
                   <div
                     style={{
-                      fontSize: "1.3rem",
+                      fontSize: "var(--text-lg)",
                       fontWeight: 700,
                       color: report.gate_passed ? "#10b981" : "#f43f5e",
                     }}
                   >
                     {report.gate_passed ? "GATE PASSED" : "GATE NOT PASSED"}
                   </div>
-                  <div style={{ fontSize: "0.78rem", color: "var(--text-dim)" }}>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>
                     {report.gate_passed
                       ? "All audited criteria satisfied"
                       : "One or more criteria unsatisfied"}
@@ -262,7 +262,7 @@ export const ResearchPage: React.FC = () => {
             <div className="glass-panel" style={{ padding: "1.5rem" }}>
               <div
                 style={{
-                  fontSize: "0.8rem",
+                  fontSize: "var(--text-xs)",
                   color: "var(--text-muted)",
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
@@ -271,11 +271,11 @@ export const ResearchPage: React.FC = () => {
                 Overall Feasibility Score
               </div>
               <div style={{ display: "flex", alignItems: "baseline", gap: "0.4rem", marginTop: "0.75rem" }}>
-                <span style={{ fontSize: "2rem", fontWeight: 800, color: "var(--accent-cyan)" }}>
+                <span style={{ fontSize: "var(--text-2xl)", fontWeight: 800, color: "var(--accent-cyan)" }}>
                   {pct(report.overall_score)}
                 </span>
               </div>
-              <div style={{ fontSize: "0.76rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.25rem" }}>
                 Dataset: <code style={{ color: "var(--text-muted)" }}>{report.dataset_id}</code>
                 <br />
                 Evaluated {fmtTime(report.evaluated_at)}
@@ -285,7 +285,7 @@ export const ResearchPage: React.FC = () => {
             <div className="glass-panel" style={{ padding: "1.5rem" }}>
               <div
                 style={{
-                  fontSize: "0.8rem",
+                  fontSize: "var(--text-xs)",
                   color: "var(--text-muted)",
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
@@ -296,14 +296,14 @@ export const ResearchPage: React.FC = () => {
               <div
                 style={{
                   marginTop: "0.75rem",
-                  fontSize: "1.05rem",
+                  fontSize: "var(--text-lg)",
                   fontWeight: 700,
                   color: rec?.color,
                 }}
               >
                 {rec?.label}
               </div>
-              <div style={{ fontSize: "0.76rem", color: "var(--text-dim)", marginTop: "0.4rem", lineHeight: 1.5 }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.4rem", lineHeight: 1.5 }}>
                 Advisory. Forecasting is additionally gated in the backend — see
                 Threat Forecasting for the enforced readiness state.
               </div>
@@ -314,8 +314,7 @@ export const ResearchPage: React.FC = () => {
           <div className="glass-panel" style={{ padding: "1.75rem", marginBottom: "1.5rem" }}>
             <h2
               style={{
-                fontSize: "1.1rem",
-                fontWeight: 600,
+                fontSize: "var(--text-lg)",
                 marginBottom: "1.25rem",
                 display: "flex",
                 alignItems: "center",
@@ -327,7 +326,7 @@ export const ResearchPage: React.FC = () => {
             </h2>
 
             {checks.length === 0 ? (
-              <div style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+              <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>
                 The audit returned no individual criteria.
               </div>
             ) : (
@@ -361,7 +360,7 @@ export const ResearchPage: React.FC = () => {
                           <span>{check.check_name}</span>
                         </div>
                         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                          <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
+                          <span style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
                             score {pct(check.score)}
                           </span>
                           <span
@@ -372,7 +371,7 @@ export const ResearchPage: React.FC = () => {
                           </span>
                         </div>
                       </div>
-                      <div style={{ fontSize: "0.84rem", color: "var(--text-muted)", lineHeight: 1.6 }}>
+                      <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", lineHeight: 1.6 }}>
                         {check.details}
                       </div>
                     </div>
@@ -406,8 +405,8 @@ export const ResearchPage: React.FC = () => {
               >
                 {Object.entries(metrics).map(([key, value]) => (
                   <div key={key}>
-                    <div style={{ fontSize: "1.15rem", fontWeight: 600 }}>{String(value)}</div>
-                    <div style={{ fontSize: "0.7rem", color: "var(--text-dim)" }}>
+                    <div style={{ fontSize: "var(--text-lg)", fontWeight: 600 }}>{String(value)}</div>
+                    <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
                       {key.replace(/_/g, " ")}
                     </div>
                   </div>
@@ -416,7 +415,7 @@ export const ResearchPage: React.FC = () => {
               <div
                 style={{
                   marginTop: "1.1rem",
-                  fontSize: "0.74rem",
+                  fontSize: "var(--text-2xs)",
                   color: "var(--text-dim)",
                   lineHeight: 1.7,
                 }}

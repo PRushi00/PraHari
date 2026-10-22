@@ -3,7 +3,7 @@ import { Upload, FileText, CheckCircle2, XCircle, History } from "lucide-react";
 import { api } from "../services/api";
 import { ImportSummary } from "../types";
 
-import { fmtTime } from "../utils/format";
+import { fmtTime, humanise } from "../utils/format";
 interface ImportPageProps {
   onImportComplete: () => void;
 }
@@ -94,10 +94,10 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
   return (
     <div>
       <div style={{ marginBottom: "1.5rem" }}>
-        <h1 style={{ fontSize: "1.6rem", fontWeight: 700, letterSpacing: "-0.02em" }}>
+        <h1 style={{ fontSize: "var(--text-xl)", letterSpacing: "-0.02em" }}>
           Telemetry Ingestion & CSV Import
         </h1>
-        <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginTop: "0.2rem" }}>
+        <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
           Validates each record against network protocol standards and maps valid rows into the canonical NormalizedEvent schema.
         </p>
       </div>
@@ -123,10 +123,10 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
 
       {/* Ingestion Configuration Card */}
       <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
-        <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem" }}>Telemetry Source Metadata</h3>
+        <h3 style={{ fontSize: "var(--text-md)", marginBottom: "1rem" }}>Telemetry Source Metadata</h3>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
           <div>
-            <label style={{ display: "block", fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
+            <label style={{ display: "block", fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
               Source Identifier (Unique ID)
             </label>
             <input
@@ -137,7 +137,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
             />
           </div>
           <div>
-            <label style={{ display: "block", fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
+            <label style={{ display: "block", fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
               Source Friendly Name
             </label>
             <input
@@ -156,9 +156,9 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
             <Upload size={18} color="#38bdf8" />
-            <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Option A: Upload CSV File</h3>
+            <h3 style={{ fontSize: "var(--text-md)" }}>Option A: Upload CSV File</h3>
           </div>
-          <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1.25rem" }}>
+          <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1.25rem" }}>
             Supports CIC-IDS2018 format and standard network flow exports (.csv, .txt)
           </p>
 
@@ -181,10 +181,10 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
             />
             <label htmlFor="csvFileInput" style={{ cursor: "pointer", display: "inline-block" }}>
               <FileText size={32} color="#94a3b8" style={{ margin: "0 auto 0.5rem" }} />
-              <div style={{ fontSize: "0.85rem", color: "var(--text-main)", fontWeight: 500 }}>
+              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-main)", fontWeight: 500 }}>
                 {file ? file.name : "Click to select a CSV file"}
               </div>
-              <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.25rem" }}>
                 {file ? `${(file.size / 1024).toFixed(1)} KB` : "Drag and drop or browse"}
               </div>
             </label>
@@ -205,7 +205,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <FileText size={18} color="#34d399" />
-              <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Option B: Paste Raw CSV</h3>
+              <h3 style={{ fontSize: "var(--text-md)" }}>Option B: Paste Raw CSV</h3>
             </div>
             <button
               onClick={insertSampleTemplate}
@@ -213,7 +213,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
                 background: "none",
                 border: "none",
                 color: "#38bdf8",
-                fontSize: "0.75rem",
+                fontSize: "var(--text-2xs)",
                 cursor: "pointer",
                 textDecoration: "underline",
               }}
@@ -221,7 +221,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
               Insert Test Sample
             </button>
           </div>
-          <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+          <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
             Directly test ingestion and observe validation rejection mechanics
           </p>
 
@@ -249,34 +249,34 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
         <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "2rem", border: "1px solid var(--accent-cyan)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
             <CheckCircle2 size={20} color="#10b981" />
-            <h3 style={{ fontSize: "1.1rem", fontWeight: 700 }}>Ingestion & Validation Report</h3>
+            <h3 style={{ fontSize: "var(--text-lg)" }}>Ingestion & Validation Report</h3>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
             <div style={{ background: "rgba(15, 23, 42, 0.6)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Total Records Parsed</div>
-              <div style={{ fontSize: "1.4rem", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.2rem" }}>
+              <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>Total Records Parsed</div>
+              <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.2rem" }}>
                 {currentSummary.total_records}
               </div>
             </div>
 
             <div style={{ background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.3)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "#34d399", fontSize: "0.75rem" }}>Accepted & Persisted</div>
-              <div style={{ fontSize: "1.4rem", fontWeight: 700, fontFamily: "var(--font-mono)", color: "#34d399", marginTop: "0.2rem" }}>
+              <div style={{ color: "#34d399", fontSize: "var(--text-2xs)" }}>Accepted & Persisted</div>
+              <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, fontFamily: "var(--font-mono)", color: "#34d399", marginTop: "0.2rem" }}>
                 {currentSummary.accepted_records}
               </div>
             </div>
 
             <div style={{ background: "rgba(244, 63, 94, 0.1)", border: "1px solid rgba(244, 63, 94, 0.3)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "#fb7185", fontSize: "0.75rem" }}>Rejected (Corrupted)</div>
-              <div style={{ fontSize: "1.4rem", fontWeight: 700, fontFamily: "var(--font-mono)", color: "#fb7185", marginTop: "0.2rem" }}>
+              <div style={{ color: "#fb7185", fontSize: "var(--text-2xs)" }}>Rejected (Corrupted)</div>
+              <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, fontFamily: "var(--font-mono)", color: "#fb7185", marginTop: "0.2rem" }}>
                 {currentSummary.rejected_records}
               </div>
             </div>
 
             <div style={{ background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.3)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "#fbbf24", fontSize: "0.75rem" }}>Warnings / Flags</div>
-              <div style={{ fontSize: "1.4rem", fontWeight: 700, fontFamily: "var(--font-mono)", color: "#fbbf24", marginTop: "0.2rem" }}>
+              <div style={{ color: "#fbbf24", fontSize: "var(--text-2xs)" }}>Warnings / Flags</div>
+              <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, fontFamily: "var(--font-mono)", color: "#fbbf24", marginTop: "0.2rem" }}>
                 {currentSummary.warnings_count}
               </div>
             </div>
@@ -285,7 +285,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
           {/* Rejection reasons table */}
           {Object.keys(currentSummary.rejection_reasons).length > 0 && (
             <div>
-              <h4 style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+              <h4 style={{ fontSize: "var(--text-md)", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
                 Explicit Rejection Reasons:
               </h4>
               <div className="table-container">
@@ -301,7 +301,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
                       <tr key={reason}>
                         <td>
                           <span className="badge badge-attack" style={{ marginRight: "0.5rem" }}>REJECTED</span>
-                          {reason}
+                          {humanise(reason)}
                         </td>
                         <td>{count}</td>
                       </tr>
@@ -318,7 +318,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
       <div className="glass-panel" style={{ padding: "1.5rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <History size={18} color="#94a3b8" />
-          <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Past Import Audit Log</h3>
+          <h3 style={{ fontSize: "var(--text-md)" }}>Past Import Audit Log</h3>
         </div>
 
         <div className="table-container">
@@ -338,7 +338,7 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
               {history.length > 0 ? (
                 history.map((h) => (
                   <tr key={h.import_id}>
-                    <td>{h.source_id}</td>
+                    <td><code>{h.source_id}</code></td>
                     <td>{h.source_file || "<direct-stream>"}</td>
                     <td>{fmtTime(h.started_at, "—")}</td>
                     <td>{h.total_records}</td>

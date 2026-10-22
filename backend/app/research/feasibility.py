@@ -179,6 +179,7 @@ def audit_dataset_feasibility(
     from app.research.label_policy import (
         LabelProvenanceError,
         assess_label_provenance,
+        describe_breakdown,
         enforce_label_policy,
     )
 
@@ -197,7 +198,7 @@ def audit_dataset_feasibility(
         score=provenance_score,
         details=(
             f"Ground truth labelled: {ground_truth_count}, Synthetic flagged: {synthetic_count}. "
-            f"Declared label provenance: {policy.declared_breakdown or 'none'}; "
+            f"Declared label provenance: {describe_breakdown(policy.declared_breakdown)}; "
             f"evidence class: {policy.evidence_class}. "
             + (refusal or policy.evidence_meaning)
         ),

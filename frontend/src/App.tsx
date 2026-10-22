@@ -142,7 +142,7 @@ export const App: React.FC = () => {
           padding: "1.5rem 2rem",
           borderTop: "1px solid var(--border-subtle)",
           textAlign: "center",
-          fontSize: "0.75rem",
+          fontSize: "var(--text-2xs)",
           color: "var(--text-dim)",
           background: "rgba(7, 10, 18, 0.8)",
         }}

@@ -86,6 +86,21 @@ EVIDENCE_MEANING = {
 }
 
 
+def describe_breakdown(breakdown: dict[str, int]) -> str:
+    """
+    A provenance breakdown as a phrase, not as a Python dict.
+
+    This string reaches the dashboard. ``{'synthetic_rule': 400}`` is a
+    repr of an internal data structure: it reads as debug output, and the
+    quoting and braces are noise to the operator reading it.
+    """
+    if not breakdown:
+        return "none"
+    return ", ".join(
+        f"{name} ({count})" for name, count in sorted(breakdown.items())
+    )
+
+
 class LabelProvenanceError(ValueError):
     """Training refused because the labels are not one coherent kind of evidence."""
 
@@ -157,7 +172,7 @@ def enforce_label_policy(events: list[NormalizedEvent]) -> LabelPolicyResult:
     if result.evidence_class == "mixed":
         raise LabelProvenanceError(
             "Training refused: the labelled events mix provenances "
-            f"{result.declared_breakdown}. These are different kinds of "
+            f"{describe_breakdown(result.declared_breakdown)}. These are different kinds of "
             "evidence and are not merged to increase the sample count. "
             "Select one provenance per experiment."
         )

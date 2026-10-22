@@ -152,7 +152,10 @@ describe("Administration view", () => {
     await waitFor(() => {
       expect(screen.getByText("In force")).toBeInTheDocument();
     });
-    expect(screen.getByText("configured_default")).toBeInTheDocument();
+    // The origin is a label, not an identifier, so it reads as one
+    // (ADR-114). The underlying value is still `configured_default`.
+    // Twice: the metric label, and the origin of the policy in force.
+    expect(screen.getAllByText("Configured default")).toHaveLength(2);
   });
 
   it("warns that a policy change deletes nothing", async () => {
