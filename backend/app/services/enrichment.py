@@ -194,6 +194,83 @@ class DomainEnrichmentService:
 
     # ──────────────── collection ────────────────
 
+    def collect_from_dns_event_log(
+        self,
+        max_events: int = 500,
+        source_id: str = "windows_dns_events",
+    ) -> dict[str, Any]:
+        """
+        Snapshot the Windows DNS-Client event log into the observation store.
+
+        A SECOND evidence source alongside the cache, not a replacement
+        (ADR-120). Both write `dns_observations`; they are told apart by
+        `method`, so enabling this changes nothing the cache path does.
+
+        Reads only — it enables no channel, clears no log, sends no query.
+        Where the channel is absent, disabled or unreadable the specific
+        reason is returned, because those are three different operator
+        actions.
+        """
+        from app.adapters.windows_dns_events import (
+            DnsEventLogUnavailable,
+            collect_dns_observations,
+        )
+
+        result: dict[str, Any] = {
+            "succeeded": False,
+            "error": None,
+            "records_read": 0,
+            "successful_records": 0,
+            "observations_recorded": 0,
+            "skipped_failed_query": 0,
+            "skipped_no_results": 0,
+            "skipped_malformed": 0,
+            "uninterpreted_by_event_id": {},
+            "notes": [],
+            "collected_at": None,
+        }
+
+        try:
+            rows, report = collect_dns_observations(
+                source_id=source_id, max_events=max_events
+            )
+        except DnsEventLogUnavailable as exc:
+            # Not a failure of PraHari: a statement about what this host
+            # offers. Reported verbatim so the operator knows which of the
+            # three cases applies.
+            result["error"] = str(exc)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return result
+
+        recorded = self.db.record_dns_observations(rows)
+
+        result.update(
+            succeeded=True,
+            records_read=report.records_read,
+            successful_records=report.successful_records,
+            # Rows produced minus those storage already held. The two
+            # differ on a re-read of an overlapping window, which is the
+            # UNIQUE constraint doing its job, not a loss.
+            observations_recorded=recorded,
+            skipped_failed_query=report.skipped_failed_query,
+            skipped_no_results=report.skipped_no_results,
+            skipped_malformed=report.skipped_malformed,
+            uninterpreted_by_event_id={
+                str(k): v for k, v in report.uninterpreted_by_event_id.items()
+            },
+            notes=list(report.notes),
+            collected_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.observations_recorded += recorded
+        logger.info(
+            "DNS event log: %d record(s) read, %d observation(s) recorded",
+            report.records_read,
+            recorded,
+        )
+        return result
+
     def refresh_from_dns_cache(self) -> dict[str, Any]:
         """
         Snapshot the local DNS cache into the observation store.
@@ -792,14 +869,38 @@ def diagnose_dns_visibility(
                 "The Microsoft-Windows-DNS-Client/Operational event channel is "
                 "enabled but holds no records yet."
             )
-        result["conclusion"] = (
-            "No local DNS evidence is obtainable on this host, so destination "
-            "hostnames cannot be attributed and are correctly reported as "
-            "unknown. The specific cause is NOT established by the read-only "
-            "evidence available: several explanations remain consistent with "
-            "what was measured. This is a visibility limit, not a collection "
-            "failure."
-        )
+        # The conclusion must account for BOTH host sources. It used to be
+        # unconditional on an empty cache, so it announced "no local DNS
+        # evidence is obtainable" while this same response reported
+        # `event_channel_records: 1961` — measured on a real machine,
+        # ADR-121. The change that added the field left the sentence
+        # alone, which is the worst version of the error: the number that
+        # refutes it was already in hand.
+        channel_records = result["event_channel_records"]
+        if result["event_channel_enabled"] and (channel_records or 0) > 0:
+            result["conclusion"] = (
+                f"The DNS cache is empty, but the DNS-Client event channel "
+                f"holds {channel_records} record(s). Evidence IS obtainable "
+                "on this host — it is simply not in the cache. Collect it "
+                "with POST /enrichment/dns/events/collect. Hostnames are "
+                "unattributed only until that runs."
+            )
+        elif result["event_channel_enabled"]:
+            result["conclusion"] = (
+                "The DNS cache is empty and the DNS-Client event channel is "
+                "enabled but holds no records yet, so no local DNS evidence "
+                "is available at this moment. The channel is circular and "
+                "short: records may have aged out rather than never existed."
+            )
+        else:
+            result["conclusion"] = (
+                "No local DNS evidence is obtainable on this host, so "
+                "destination hostnames cannot be attributed and are correctly "
+                "reported as unknown. The specific cause is NOT established "
+                "by the read-only evidence available: several explanations "
+                "remain consistent with what was measured. This is a "
+                "visibility limit, not a collection failure."
+            )
     else:
         result["conclusion"] = (
             f"{result['cache_entries']} cached DNS record(s) are visible and "

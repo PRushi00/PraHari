@@ -6320,3 +6320,221 @@ machine. That needs one more run on Windows.
 Nothing here establishes what the Operational channel would contain if
 enabled. It is a default-off channel whose contents this project has
 never observed.
+
+---
+
+## ADR-120: The DNS Event Adapter Interprets One Event Id
+
+### Context
+The operator enabled `Microsoft-Windows-DNS-Client/Operational` and
+re-ran discovery. The channel is now **readable without elevation**,
+holding 216 records across three event ids, and **one** record was
+captured in full:
+
+```
+Id 3008 · TimeCreated 2026-10-22T12:09:56.4674908Z · ProcessId 13268
+QueryName localhost · QueryType 1 · QueryOptions 720575941721587776
+QueryStatus 0 · QueryResults "127.0.0.1;"
+```
+
+That record is the entire evidentiary basis for this adapter.
+
+### What the architecture already had
+Three findings made this far smaller than the plan assumed, and each was
+read in the source before any code was written:
+
+| Found | Consequence |
+|---|---|
+| `DomainAttributionMethod.DNS_QUERY_LOG` **already existed** | No schema change; attribution reports it correctly with no new branch |
+| `dns_observations` carries `method` and `UNIQUE (ip_address, hostname, observed_at)` | **Deduplication is storage's job**, not the adapter's |
+| Attribution reads `obs["method"]` per row | Cache enrichment is untouched: same table, different `method` |
+
+So a DNS lookup does **not** become a `NormalizedEvent`. It is not a
+connection flow, and `dns_observations` exists for exactly this.
+
+### Decision
+
+**Event id 3008 is interpreted. Nothing else is.**
+
+`3006` and `1001` appear in the same channel and **no field of either
+has ever been observed**. They are counted, reported by id, and
+explicitly refused with the reason: naming them would be a guess, and a
+guess here becomes an attributed hostname — a wrong one, on a real
+connection. A mutation that parses 3006 as though it resembled 3008
+fails the suite.
+
+Four further refusals, each from the same principle:
+
+* **`QueryOptions` is carried raw.** `720575941721587776` is a bitfield
+  this project has never decoded. A partial decode invites trust in
+  flags nobody verified.
+* **A failed query (`QueryStatus != 0`) records no resolution.** The
+  lookup did not succeed, so there is no name-to-address fact. That it
+  was attempted is not one.
+* **A successful query with no parseable address records no
+  resolution.** A lookup is known to have happened; what it resolved to
+  is not.
+* **A non-address result is dropped, not stored.** A CNAME target is not
+  an `ip_address`, and putting one in that column would make the
+  attribution table lie about what it holds.
+
+**Timestamps are truncated, not rounded.** Windows reports 100-ns
+precision (`.4674908`); the sub-microsecond digit is dropped. Rounding
+upward invents time that did not pass, and a timestamp here is evidence.
+A naive timestamp is read as UTC rather than local, which would
+otherwise shift every record by the collector host's offset.
+
+**Every record read is accounted for.** `reconciles()` asserts that
+successful + failed + empty + malformed + uninterpreted equals records
+read, so "nothing resolved" is always distinguishable from "nothing was
+read".
+
+### Verification
+Backend **1525 passed, 65 skipped, 0 failed**. Frontend `tsc` 0, **152
+passed** — unchanged, as this adds no interface.
+
+* **31 unit tests** on the parser, including the operator's real record
+  parsed field by field.
+* **9 integration tests** through the real API and storage: a record
+  reaches the store, a re-read of an overlapping window stores nothing
+  twice, event-log evidence does not disturb cache evidence, and an
+  attribution reports `dns_query_log` as its method.
+* **Three mutations, each caught by one test and no other**: parsing
+  3006 as 3008; recording a failed query as a resolution; storing a
+  non-address as an address.
+
+### Not established
+**`read_dns_events` has never executed.** It is PowerShell; this
+container is Linux. Its tests stub `subprocess.run`, which proves the
+error handling and the parsing — **not** that `Get-WinEvent` returns
+what the script expects on a real machine.
+
+**External DNS visibility is unproven.** The only 3008 ever observed was
+a lookup of `localhost`. That the channel records *something* is
+established; that it records a browser resolving a public name is
+**not**. Until an external `QueryName` is seen, PraHari must not claim
+browser DNS visibility. `scripts/sample_dns_events.ps1` settles it, and
+distinguishes the two ways it can fail: no external lookups happened
+while the channel was on, versus the browser using its own encrypted DNS
+and bypassing the Windows resolver entirely. In the second case **no
+host-side source will ever see it**, and a sensor is the only path.
+
+**3006 and 1001 remain unknown.** The same script dumps their fields.
+Until it runs, they are counted and nothing more.
+
+---
+
+## ADR-121: ADR-119 Was Wrong, and the Refuting Number Was Already On Screen
+
+### Context
+A session on the operator's own Windows machine sampled the DNS-Client
+channel properly — after real browsing, not a single cold read. It
+refutes ADR-119's central claim and finds a defect in the change that
+ADR-119 shipped.
+
+### What ADR-119 got wrong
+
+Its title is **"There Is No Host DNS Evidence On That Machine"**. That is
+false.
+
+| ADR-119 said | Measured |
+|---|---|
+| Channel holds nothing useful | **17 distinct event ids**, not 3 |
+| Only `localhost` ever observed | **59 distinct external names in 7.6 minutes**, browser lookups included |
+| Unknown whether query names appear | They appear **abundantly** |
+
+ADR-119's observation was not wrong; its **generalisation** was. One cold
+read of a freshly-enabled circular channel found `localhost` and nothing
+else, and that was written up as a property of the host. It was a
+property of *when the sample was taken*.
+
+The lesson is narrower than "sample more": the channel is **circular and
+retains under 8 minutes** (1 MiB, ~550 bytes/record, ~252 records/min).
+A single read of a short circular buffer is a sample of a moment, and
+ADR-119 drew a conclusion about the machine from it.
+
+### The defect ADR-119 shipped
+
+`diagnose_dns_visibility()` returns, in **one response**:
+
+```
+event_channel_enabled: true
+event_channel_records: 1961
+conclusion: "No local DNS evidence is obtainable on this host..."
+```
+
+The conclusion was unconditional on an empty cache. ADR-119 added the
+`event_channel_*` fields and **left the sentence alone** — so the change
+that put the refuting number into the payload did not change the claim
+sitting three fields below it. `verify_live_windows_telemetry.py`
+inherited it and reported *"Hostnames attributed: 0, unknown: 50"* for
+traffic the resolver had just logged.
+
+This is the worst shape this class of error takes. Not a missing
+measurement — a measurement taken, reported, and then contradicted in
+the same breath.
+
+**Fixed.** The conclusion now branches on channel state: records present
+says evidence *is* obtainable and names the endpoint that collects it;
+enabled-but-empty says so and notes records may have aged out; only a
+disabled or absent channel keeps the original wording, which is right
+when it is actually true. Three tests, and restoring the unconditional
+sentence fails exactly the two written for it.
+
+### The adapter defect this exposed
+
+`ADR-120` stored the record's `ProcessId` as `process_id`, beside a
+hostname. **3006 and 3008 are the only two ids in the channel carrying
+no `ClientPID`** — the field that identifies the requester. The PID on
+the record is the process that *emitted* it, which is not established to
+be the one that resolved the name.
+
+A field called `process_id` next to a hostname reads as *"this
+application looked this up"*. That is attribution nobody earned. It is
+now `logging_process_id`, documented for what it is, and a test asserts
+no bare `process_id` exists and that neither reaches storage.
+
+Ids 3010, 3011 and 3020 **do** carry `ClientPID`. Per-process
+attribution is possible from this channel — just not from the id this
+adapter parses.
+
+### Two measured facts now pinned by tests
+
+* **3020's `QueryResults` interleaves typed CNAMEs with addresses** —
+  `type: 5 host;…;1.2.3.4;`. A naive `;` split reads `type: 5 host` as
+  an address. The existing address check already dropped it; a test now
+  says so, because the hazard is in the format and 3008 shares it.
+* **Status `9701` (cache miss) and `121` (NETBIOS timeout) are normal**,
+  not malformed. They count as queries that did not resolve, never as
+  records the parser failed to read. A rising malformed count means the
+  parser is wrong; a rising unresolved count means the network is.
+
+### What 3006 and 1001 actually are
+Both are now field-mapped, and both remain **deliberately unparsed**:
+
+* **3006** is the request side, pairing with 3008's completion. Counts
+  track closely (270/272) but **nothing in either record links a pair**,
+  so no correlation is claimed.
+* **1001 is not a query at all** — per-interface resolver configuration,
+  carrying a hex `SOCKADDR` blob whose layout is unverified here.
+
+Knowing what they are is not the same as having a reason to parse them.
+
+### Verification
+Backend `test_enrichment.py` **34 passed**, `test_windows_dns_events.py`
+**35 passed**. The conclusion fix is mutation-verified.
+
+### Not established
+Everything in ADR-120's "Not established" still stands, and the
+retention finding adds one: **no collector has run against this
+channel.** It turns over ~252 records/minute with no overflow counter,
+so a poll slower than the window loses records *and cannot tell that it
+did*. The adapter's `max_events` bound does not detect loss; it only
+limits a read.
+
+Whether 3006 and 3008 pair one-to-one is unknown. Which applications
+bypass the Windows resolver is unknowable from this channel — absence
+from it is not evidence a lookup did not happen.
+
+One machine, one build, one afternoon. ADR-119 generalised from less
+than this and was wrong; this ADR should be read with that in mind.

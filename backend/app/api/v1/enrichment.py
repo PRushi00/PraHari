@@ -29,6 +29,28 @@ from app.storage.database import Database
 router = APIRouter(prefix="/enrichment", tags=["Domain Enrichment"])
 
 
+class DnsEventCollectResult(BaseModel):
+    """
+    What a read of the DNS-Client event log yielded, and what it refused.
+
+    Every counter is reported, including the records this adapter does
+    not interpret, so a partial read is never presented as a complete
+    one (ADR-120).
+    """
+
+    succeeded: bool
+    error: Optional[str] = None
+    records_read: int = 0
+    successful_records: int = 0
+    observations_recorded: int = 0
+    skipped_failed_query: int = 0
+    skipped_no_results: int = 0
+    skipped_malformed: int = 0
+    uninterpreted_by_event_id: dict[str, int] = {}
+    notes: list[str] = []
+    collected_at: Optional[str] = None
+
+
 class DnsRefreshResult(BaseModel):
     succeeded: bool
     error: Optional[str] = None
@@ -101,6 +123,35 @@ def refresh_dns_observations(db: Database = Depends(get_db)) -> DnsRefreshResult
     false` with the reason, and spawns nothing.
     """
     return DnsRefreshResult(**get_enrichment_service(db).refresh_from_dns_cache())
+
+
+@router.post("/dns/events/collect", response_model=DnsEventCollectResult)
+def collect_dns_event_log(
+    max_events: int = Query(
+        500, ge=1, le=5000,
+        description="Upper bound on records read from the circular log in one call.",
+    ),
+    db: Database = Depends(get_db),
+) -> DnsEventCollectResult:
+    """
+    Snapshot the Windows DNS-Client event log into the observation store.
+
+    A second evidence source alongside the cache, not a replacement: both
+    write `dns_observations` and are told apart by `method`, so this
+    changes nothing the cache path does (ADR-120).
+
+    Read-only. It enables no channel, clears no log and sends no query.
+    Where the channel is absent, disabled, or unreadable by this account,
+    that specific reason is returned rather than a generic failure —
+    they are three different operator actions.
+
+    Only event id 3008 is interpreted. 3006 and 1001 appear in the same
+    channel and no field of either has been observed, so they are
+    counted and reported, never parsed.
+    """
+    return DnsEventCollectResult(
+        **get_enrichment_service(db).collect_from_dns_event_log(max_events=max_events)
+    )
 
 
 @router.get("/ip/{ip_address}", response_model=IpAttributionResponse)

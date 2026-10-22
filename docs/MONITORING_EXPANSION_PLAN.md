@@ -77,7 +77,15 @@ confirmed exist on the target machine. The order is therefore:
    **read-only**: it enables no channel, changes no DNS setting, flushes
    no cache and raises no privilege.
 
-   **Done, 22 Oct 2026 — and it stopped the plan here (ADR-119).** On
+   **Done, 22 Oct 2026 — twice, and the second run reversed the first
+   (ADR-121).** A cold read of a freshly-enabled circular channel found
+   only `localhost`; a read taken after real browsing found **59
+   distinct external names in 7.6 minutes**, browser lookups included.
+   The channel retains under 8 minutes, so the first result was a
+   property of when it was sampled, not of the host. ADR-119's
+   conclusion below is superseded.
+
+   **Superseded (ADR-119).** On
    Windows 11 Home, unelevated: the `Microsoft-Windows-DNS-Client`
    provider is present, its Operational channel is **disabled** (the
    Windows default), and the cache holds zero entries. So **no host DNS
