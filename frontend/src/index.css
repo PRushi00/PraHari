@@ -282,8 +282,11 @@ code, .identifier {
 
 .nav-tabs {
   display: flex;
-  align-items: center;
-  gap: var(--space-1);
+  /* Groups sit side by side and each wraps internally, so the legends
+     stay level with one another instead of stepping down the header
+     as the window narrows (ADR-115). */
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-4);
   flex-wrap: wrap;
 }
 
@@ -919,6 +922,199 @@ td.cell-note { font-size: var(--text-2xs); }
 @media (prefers-reduced-motion: reduce) {
   .spin,
   .spin-icon { animation-duration: 3.5s; }
+}
+
+/* ---- Guided mode ------------------------------------------------------
+   Plain-language help and deferred detail for a reader who has not run a
+   SOC before (ADR-115). It adds sentences and collapses dense panels; it
+   never hides a warning, a refusal or a limitation. */
+
+.guided-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.guided-toggle:hover {
+  border-color: rgba(6, 182, 212, 0.45);
+  color: var(--text-main);
+}
+
+.guided-toggle.is-on {
+  border-color: rgba(6, 182, 212, 0.45);
+  background: rgba(6, 182, 212, 0.1);
+  color: #67e8f9;
+}
+
+.guided-toggle-state {
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.07);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An explanation sits with the thing it explains, indented by a rule so
+   it reads as commentary and is never mistaken for a measurement. */
+.explain {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-4);
+  padding-left: var(--space-3);
+  border-left: 2px solid rgba(6, 182, 212, 0.4);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  max-width: 82ch;
+}
+
+.explain-icon {
+  flex-shrink: 0;
+  margin-top: 0.2rem;
+  color: #67e8f9;
+}
+
+/* Deferred detail. Closed it is one row; open it is the panel exactly as
+   an expert sees it. */
+.advanced {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  margin-bottom: var(--space-4);
+}
+
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: none;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.advanced-toggle:hover { background: rgba(255, 255, 255, 0.03); }
+
+.advanced-title { font-weight: 650; }
+
+.advanced-summary {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.advanced-body {
+  padding: 0 var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-4);
+}
+
+/* "What you can do from here" — the question a newcomer actually has. */
+.next-steps {
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.07), rgba(15, 23, 42, 0.5));
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.next-steps-heading {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-md);
+}
+
+.next-steps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--space-3);
+}
+
+.next-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--text-main);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.15s ease;
+}
+
+.next-step:hover {
+  border-color: rgba(6, 182, 212, 0.5);
+  transform: translateY(-1px);
+}
+
+.next-step-label { font-size: var(--text-xs); font-weight: 650; }
+
+.next-step-detail {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+}
+
+/* ---- Navigation groups -------------------------------------------------
+   Thirteen flat tabs is itself a complexity problem. Grouping labels them
+   by what the operator is trying to do, and hides nothing. */
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.nav-group:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+/* Without a legend there is nothing to separate, so expert mode keeps
+   the single unbroken row it always had. */
+body[data-guided="off"] .nav-group {
+  padding-left: 0;
+  border-left: none;
+}
+
+.nav-group-label {
+  /* The 13px floor (ADR-114) holds here too. A group legend is small
+     by tracking and weight, not by dropping below the floor. */
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding-left: 0.6rem;
+}
+
+.nav-group-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
 }
 
 /* ---- Responsive ------------------------------------------------------ */

@@ -1,7 +1,19 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { App } from "../App";
 import { api } from "../services/api";
+
+/**
+ * The button in the primary navigation, not any button whose text
+ * happens to name a page: the Overview page's own links say things
+ * like "Open the Events Explorer" (ADR-115).
+ */
+function navButton(name: RegExp) {
+  return within(screen.getByRole("navigation", { name: /Primary/i })).getByRole(
+    "button",
+    { name },
+  );
+}
 
 /**
  * Navigation regression tests.
@@ -116,7 +128,7 @@ function mockApiAllFailing() {
 
 async function visitEveryTab() {
   for (const tab of TABS) {
-    const button = screen.getByRole("button", { name: new RegExp(tab, "i") });
+    const button = navButton(new RegExp(tab, "i"));
     fireEvent.click(button);
     // The application shell must remain mounted after every navigation.
     await waitFor(() => {
@@ -152,13 +164,13 @@ describe("Application navigation", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: /Feasibility/i }));
+    fireEvent.click(navButton(/Feasibility/i));
     await waitFor(() =>
       expect(screen.getByText(/Research Feasibility Scorecard/i)).toBeInTheDocument()
     );
 
     // Previously this required a full page reload.
-    fireEvent.click(screen.getByRole("button", { name: /Overview/i }));
+    fireEvent.click(navButton(/Overview/i));
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
     expect(screen.queryByText(/Research Feasibility Scorecard/i)).not.toBeInTheDocument();
   });
@@ -179,11 +191,11 @@ describe("Application navigation", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: /Feasibility/i }));
+    fireEvent.click(navButton(/Feasibility/i));
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
 
     // Navigation must still work, with or without the boundary engaging.
-    fireEvent.click(screen.getByRole("button", { name: /Analytics/i }));
+    fireEvent.click(navButton(/Analytics/i));
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
     expect(document.body.textContent?.trim().length ?? 0).toBeGreaterThan(50);
   });

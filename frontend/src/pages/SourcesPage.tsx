@@ -24,6 +24,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw, Radio } from "lucide-react";
 import { api } from "../services/api";
 import { humanise } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 import {
   AdapterHealth,
   SourceCapability,
@@ -257,6 +258,11 @@ export const SourcesPage: React.FC = () => {
         <h2 style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <Radio size={20} /> Sources
         </h2>
+        <Explain>
+          Everywhere PraHari gets data from — a live collector on a machine,
+          or a file you imported. The state column describes PraHari's
+          evidence, not whether a remote computer is switched on.
+        </Explain>
         <button className="btn" onClick={fetchAll} disabled={loading}>
           <RefreshCw size={14} /> {loading ? "Refreshing…" : "Refresh"}
         </button>

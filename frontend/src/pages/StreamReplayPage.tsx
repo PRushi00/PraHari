@@ -11,6 +11,7 @@ import { api } from "../services/api";
 import { AdapterHealth, SyntheticReplayResponse, ImportSummary } from "../types";
 
 import { fmtElapsed, fmtInt, fmtTime } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ onReplayComplete }) => {
   const [adapters, setAdapters] = useState<AdapterHealth[]>([]);
   const [replayCount, setReplayCount] = useState<number>(100);
@@ -141,6 +142,11 @@ export const StreamReplayPage: React.FC<{ onReplayComplete?: () => void }> = ({ 
         <p className="page-subtitle">
           Safe telemetry streaming via Zeek / Suricata JSON logs and deterministic synthetic flow replay engines.
         </p>
+        <Explain>
+          Feed records in continuously, or replay a synthetic stream to see
+          how the system behaves under load. Synthetic records are marked as
+          such and never counted as real evidence.
+        </Explain>
       </div>
 
       {error && (

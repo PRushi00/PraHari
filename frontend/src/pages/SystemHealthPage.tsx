@@ -14,6 +14,7 @@ import {
 import { api } from "../services/api";
 import { SystemHealthReport, HealthBlock } from "../types";
 import { fmtTime, humanise } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 
 /**
  * System Health (blueprint §11).
@@ -109,6 +110,12 @@ export const SystemHealthPage: React.FC = () => {
             Operational measurements taken by this backend. Values the backend
             did not measure are shown as “not measured”, never as zero.
           </p>
+          <Explain>
+            “Not measured” above means PraHari never took that reading — it
+            does not mean the reading was zero. The two look the same on a
+            dashboard and mean opposite things, which is why they are kept
+            apart here.
+          </Explain>
         </div>
         <button className="btn" onClick={fetchReport} disabled={loading}>
           <RefreshCw size={16} className={loading ? "spinning" : ""} />

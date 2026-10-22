@@ -38,7 +38,7 @@ source and against a running instance.
 | 8 | Dataset strategy and leakage controls | 13 | `MET` |
 | 9 | Models, technology stack, lifecycle | 27 | `PARTIAL` / 3 `DEVIATES` |
 | 10 | Evaluation methodology | 16 | `PARTIAL` — cross-*dataset* only (ADR-111) |
-| 11 | Dashboard and API contracts | 31 | `MET` (ADR-108, ADR-109, ADR-114) |
+| 11 | Dashboard and API contracts | 31 | `MET` (ADR-108, ADR-109, ADR-114, ADR-115) |
 | 12 | Security, privacy, threat model | 16 | `MET` |
 | 13 | Repository structure and configuration | 7 | `DEVIATES` (layout, keys) |
 | 14 | Installation and operating guide | 2 | `MET` |

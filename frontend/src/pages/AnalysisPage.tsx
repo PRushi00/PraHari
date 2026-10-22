@@ -4,6 +4,7 @@ import { api } from "../services/api";
 import { DescriptiveAnalysis } from "../types";
 
 import { UNAVAILABLE, fmtFixed, fmtInt, fmtTime, isNum, humanise } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 export const AnalysisPage: React.FC = () => {
   const [analysis, setAnalysis] = useState<DescriptiveAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,6 +70,11 @@ export const AnalysisPage: React.FC = () => {
           <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
             Objective statistical profiling of ingested network telemetry.
           </p>
+          <Explain>
+            Plain statistics about the stored records — how many addresses,
+            which ports, how long connections lasted. These are descriptions of
+            what happened, not predictions of what will.
+          </Explain>
         </div>
 
         <button className="btn btn-primary" onClick={handleRecompute} disabled={recomputing}>
