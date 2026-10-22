@@ -6191,8 +6191,9 @@ that is a change to the machine and the operator's decision, so the
 resolver, sends no query and raises no privilege.
 
 ### Verification
-Frontend `tsc` 0, **152 passed** (20 files). Backend
-`test_central_security.py` **26 passed**.
+Frontend `tsc` 0, **152 passed** (20 files). Backend **1482 passed, 65
+skipped, 0 failed** (no PostgreSQL DSN on this run, so the conformance
+suite skipped rather than passed, as it is designed to).
 `verify_browser_session.py` **31 passed, 0 failed** — the navigation was
 restructured without breaking a route, an alias, a deep link or a
 history move. Nothing renders below the 13px floor (ADR-114) on any of
