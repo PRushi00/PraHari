@@ -677,3 +677,85 @@ def test_a_probe_that_does_not_report_the_channel_says_unknown(monkeypatch):
     causes = " ".join(diag["likely_causes"])
     assert "Operational" not in causes
     assert "not present on" not in causes
+
+
+def test_the_conclusion_does_not_deny_evidence_it_just_reported(monkeypatch):
+    """
+    The state measured on the operator's machine, 22 Oct 2026 (ADR-121).
+
+    An empty cache alongside a channel holding 1,961 records. The
+    conclusion used to be unconditional on the empty cache, so this
+    exact response announced "No local DNS evidence is obtainable on
+    this host" while reporting `event_channel_records: 1961` three
+    fields above it.
+
+    That is the worst form of the error: the number that refutes the
+    sentence was already in the same payload. A downstream verifier
+    inherited it and reported "Hostnames attributed: 0, unknown: 50"
+    for traffic the resolver had just logged.
+    """
+    diag = _diagnose_with(
+        monkeypatch,
+        {
+            "doh_servers": [],
+            "interfaces": [{"interface": "Wi-Fi", "servers": ["1.1.1.1", "8.8.8.8"]}],
+            "cache_entries": 0,
+            "dnscache_service": "Running",
+            "event_channel_present": True,
+            "event_channel_enabled": True,
+            "event_channel_records": 1961,
+        },
+    )
+
+    conclusion = diag["conclusion"]
+    assert "1961" in conclusion, "the conclusion ignored the records it reported"
+    assert "Evidence IS obtainable" in conclusion
+    assert "No local DNS evidence is obtainable" not in conclusion, (
+        "the response denied evidence it had just counted"
+    )
+    # It must also say what to do about it, not merely contradict itself
+    # less loudly.
+    assert "/enrichment/dns/events/collect" in conclusion
+
+
+def test_an_enabled_but_empty_channel_is_not_reported_as_no_evidence_possible(
+    monkeypatch,
+):
+    """
+    Enabled-and-empty is a moment, not a property of the host. The
+    channel is circular and short (measured: under 8 minutes), so
+    records aging out looks identical to records never existing.
+    """
+    diag = _diagnose_with(
+        monkeypatch,
+        {
+            "doh_servers": [],
+            "interfaces": [],
+            "cache_entries": 0,
+            "dnscache_service": "Running",
+            "event_channel_present": True,
+            "event_channel_enabled": True,
+            "event_channel_records": 0,
+        },
+    )
+    assert "no records yet" in diag["conclusion"]
+    assert "aged out" in diag["conclusion"]
+    assert "No local DNS evidence is obtainable" not in diag["conclusion"]
+
+
+def test_a_disabled_channel_still_concludes_a_visibility_limit(monkeypatch):
+    """The original conclusion is still right when it is actually true."""
+    diag = _diagnose_with(
+        monkeypatch,
+        {
+            "doh_servers": [],
+            "interfaces": [],
+            "cache_entries": 0,
+            "dnscache_service": "Running",
+            "event_channel_present": True,
+            "event_channel_enabled": False,
+            "event_channel_records": None,
+        },
+    )
+    assert "visibility limit" in diag["conclusion"].lower()
+    assert "not established" in diag["conclusion"].lower()
