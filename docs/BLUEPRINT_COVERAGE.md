@@ -48,13 +48,34 @@ source and against a running instance.
 | 18 | Definition of done | 15 | 13 `MET`, 2 `PARTIAL` |
 | 19 | References and decision register | 2 | `MET` |
 
-**≈ 247 of ≈ 249 discrete requirements — about 99 %.**
+**251 of 255 discrete requirements — about 98 %.**
 (Was ≈ 222 / 89 % before §15's fifteen rows were written on 21 Oct 2026.)
 
-What remains is **two** requirements, and **both need an input rather
-than work**: one real security-platform export file to target (§5,
-ADR-105), and CIC-IDS2017, whose download sits behind a form asking for
-the operator's own name, organisation and email (§10, ADR-111).
+255 is the sum of the Requirements column above, §18's fifteen included.
+It is stated exactly rather than as "≈ 249", which was the figure here
+until 22 Oct 2026 and understated the table it claimed to summarise by
+six.
+
+**Four requirements remain, and each needs an input rather than work in
+this repository:**
+
+| | Gap | Needs |
+|---|---|---|
+| §5 | No security-platform adapter | One real export file to target (ADR-105) |
+| §10 | No cross-**dataset** generalization | CIC-IDS2017, behind a form asking for the operator's name, organisation and email (ADR-111) |
+| §18-1 | Windows not run for this revision | The operator's Windows machine |
+| §18-3 | No live network-level collection | An authorized exporter and observation point |
+
+**This paragraph said "two" until 22 Oct 2026**, naming only §5 and §10
+and omitting §18's two criteria — which the §18 section and the
+closing-gaps table at the bottom of this same document both listed as
+outstanding at the time. Three parts of one file, two answers. Found
+while answering the question "how much is left", which is the question
+the paragraph exists to answer, and corrected in ADR-117.
+
+The deviations in §9 and §13 are **not** counted as gaps. `DEVIATES`
+means implemented differently on purpose with the reason recorded, which
+the legend above states and both sections do.
 
 Two items listed here as blocked were not. Resource-consumption sampling
 and scenario-level performance each needed only work, and both are done

@@ -5997,3 +5997,87 @@ two halves of one document **against each other**, never against the
 code. A section and a table that agree and are both wrong pass it
 cleanly. That is how this drift was found in the first place, by a
 person reading the whole file, and nothing here replaces that.
+
+---
+
+## ADR-117: "How Much Is Left" Had Three Answers
+
+### Context
+The operator asked how much of PraHari remains. That is the one question
+`BLUEPRINT_COVERAGE.md` exists to answer, so I read it rather than
+answering from memory — and it gave **three different answers in one
+file**:
+
+| Where | Said |
+|---|---|
+| Summary paragraph | *"What remains is **two** requirements"* — §5 and §10 |
+| §18 section | two further criteria outstanding: Windows, live network collection |
+| Closing-gaps table | **four** open rows: §5, §10, §18-1, §18-3 |
+
+The headline count was wrong too. It read **"≈ 247 of ≈ 249 discrete
+requirements — about 99 %"**, while the Requirements column of the table
+immediately above it sums to **255**. The `≈` hedged a figure that is
+not approximate: it is a column of integers, and adding them up is the
+whole of the arithmetic.
+
+This is the third time in one day that this document contradicted
+itself, after the §11 and §16 drift of ADR-116. The previous two were
+caught by reading the file; this one was caught by *using* it.
+
+### Decision
+
+**251 of 255 — about 98 %, with four requirements remaining**, each
+needing an input rather than work in this repository:
+
+| | Gap | Needs |
+|---|---|---|
+| §5 | No security-platform adapter | One real export file to target |
+| §10 | No cross-**dataset** generalization | CIC-IDS2017, behind a registration form |
+| §18-1 | Windows not run for this revision | The operator's Windows machine |
+| §18-3 | No live network-level collection | An authorized exporter and observation point |
+
+The total is stated **exactly**, not with a `≈`. The deviations in §9
+and §13 are not counted as gaps: `DEVIATES` means implemented
+differently on purpose with the reason recorded, which the document's
+own legend says and both sections do.
+
+ADR-116 said the consistency check "compares the two halves of one
+document against each other" and caught the two forms the drift had
+taken *then*. It did not catch this one, because this drift is
+arithmetic rather than a verdict. Two checks are added:
+
+* **the headline total must equal the sum of the Requirements column** —
+  it did not, by six;
+* **"N requirements remain" must equal the number of un-struck rows in
+  the closing-gaps table** — it said two and the table listed four.
+
+Both are mutation-verified by restoring the original wording. Restoring
+`247 of 249` fails the first by name (`the headline says 249
+requirements; the summary table sums to 255`); restoring `Two
+requirements remain` fails the second and prints the four open rows.
+
+### Why this kind of error keeps happening here
+Each of the three was the same shape: a **derived** statement — a
+verdict, a count, a summary sentence — written by hand next to the data
+it derives from, and then not re-derived when the data moved. A table
+row changes with the work. A sentence summarising nineteen rows does
+not, because nothing about changing one row points at it.
+
+The fix is not more care. It is that every derived claim in this file is
+now computed by a test from the thing it claims to summarise, so the two
+cannot drift apart silently.
+
+### Not established
+Five checks now cover this document, and all five are **internal**: they
+compare one part of the file against another. None of them can tell
+whether the file is true of the code. A verdict, a count and a gap table
+that all agree and are all wrong pass cleanly — which is exactly how the
+§11 and §16 drift survived, and nothing here replaces a person reading
+the sections against the source.
+
+The count itself remains a bad instrument, and the document says so at
+the top: it weights a dashboard panel the same as "can it forecast". 98 %
+is not a claim that PraHari is 98 % of the way to being useful. **Two of
+the four remaining items are §18 definition-of-done criteria**, so by
+the blueprint's own standard the project is not done, and the percentage
+is the least informative true thing that can be said about it.
