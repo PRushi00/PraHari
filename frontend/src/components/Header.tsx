@@ -51,26 +51,29 @@ interface NavEntry {
  * which of them a newcomer should open first, or that `Feasibility`
  * comes before `Threat Forecasting` (ADR-115).
  *
- * Grouping labels them by what the operator is trying to do. Every tab
- * remains present in every mode — this reduces what the row makes you
- * read, not what it lets you reach.
+ * **Monitor and Forecast are peers** (ADR-118). A proposal to make
+ * PraHari a monitoring dashboard would have moved forecasting into
+ * "advanced views"; `README.md` defines this system as causal future
+ * threat forecasting, and monitoring dashboards are a solved category
+ * while a forecaster that refuses when the data cannot support a claim
+ * is not. Neither workflow is subordinate to the other.
+ *
+ * `Operate` is a third group because settings and audit are a different
+ * kind of activity, not a lesser one. Every tab remains reachable in
+ * every mode: this changes what the row makes you read, never what it
+ * lets you open.
  */
 const NAV_GROUPS: { legend: string; entries: NavEntry[] }[] = [
   {
-    legend: "Collect",
+    legend: "Monitor",
     entries: [
       { tab: "overview", label: "Overview", icon: <Activity size={15} /> },
       { tab: "live", label: "Live Telemetry", icon: <Wifi size={15} /> },
+      { tab: "sources", label: "Devices & Sources", icon: <Radio size={15} /> },
+      { tab: "events", label: "Events Explorer", icon: <Database size={15} /> },
+      { tab: "analysis", label: "Analytics", icon: <BarChart2 size={15} /> },
       { tab: "import", label: "CSV Import", icon: <FileSpreadsheet size={15} /> },
       { tab: "stream", label: "Stream & Replay", icon: <Radio size={15} /> },
-    ],
-  },
-  {
-    legend: "Examine",
-    entries: [
-      { tab: "events", label: "Events Explorer", icon: <Database size={15} /> },
-      { tab: "sources", label: "Sources", icon: <Radio size={15} /> },
-      { tab: "analysis", label: "Analytics", icon: <BarChart2 size={15} /> },
     ],
   },
   {

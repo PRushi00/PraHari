@@ -45,8 +45,22 @@ def list_sources(db: Database = Depends(get_db)) -> list[TelemetrySource]:
 def create_source(
     req: CreateSourceRequest,
     db: Database = Depends(get_db),
+    _: object = Depends(require_admin_in_central),
 ) -> TelemetrySource:
-    """Register a new telemetry source."""
+    """
+    Register a new telemetry source.
+
+    Administrative in central mode; unrestricted on a loopback
+    deployment, which is unauthenticated by design — the same rule as
+    `set_source_enabled` below.
+
+    It did **not** carry this guard while its sibling did (ADR-118). The
+    gap granted no ingestion rights, because `assert_source_access`
+    governs those separately and a new row adds nothing to a principal's
+    allowed set. What it did allow was a sensor credential populating the
+    registry, the source-health summary and the dashboard, and taking a
+    source id a legitimate producer would then be refused with a 409.
+    """
     existing = db.get_source(req.source_id)
     if existing:
         raise HTTPException(

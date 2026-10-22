@@ -1117,6 +1117,76 @@ body[data-guided="off"] .nav-group {
   gap: 0.2rem;
 }
 
+/* ---- This host / Other devices ----------------------------------------
+   Two peer columns (ADR-118). Deliberately NO traffic column: PraHari
+   does not measure per-device bytes, and a column of blanks invites
+   someone to fill it with plausible numbers. */
+
+.host-devices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.host-devices-col {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-5);
+  min-width: 0;
+}
+
+.host-devices-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  color: var(--accent-cyan);
+}
+
+.host-devices-head h3 {
+  margin: 0;
+  color: var(--text-main);
+}
+
+.host-devices-count {
+  margin-left: auto;
+  font-size: var(--text-xl);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+}
+
+.host-devices-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.host-devices-facts dt {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.host-devices-facts dd {
+  margin: 0;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.host-devices-empty {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  margin-bottom: var(--space-3);
+}
+
 /* ---- Responsive ------------------------------------------------------ */
 
 @media (max-width: 960px) {

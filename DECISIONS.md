@@ -6081,3 +6081,134 @@ is not a claim that PraHari is 98 % of the way to being useful. **Two of
 the four remaining items are §18 definition-of-done criteria**, so by
 the blueprint's own standard the project is not done, and the percentage
 is the least informative true thing that can be said about it.
+
+---
+
+## ADR-118: Monitor and Forecast Are Peers
+
+### Context
+A design proposal arrived to turn PraHari into a host-and-network
+monitoring dashboard: five navigation areas (Overview, Devices, Traffic,
+Connections, System), a device inventory with per-device traffic, and
+DNS evidence from a source other than the cache.
+
+Much of it is right, and one part of it would have cost the project the
+thing that makes it worth building.
+
+### What was adopted
+
+**Forecasting stays a peer, not an "advanced view".**
+
+The proposal moved Feasibility, Threat Forecasting and Investigation out
+of the main navigation. `README.md` defines this system as *"Causal
+Future Threat Forecasting"*, and the problem statement it answers is a
+forecasting problem. Network monitoring dashboards are a crowded,
+well-solved category; **a forecaster with a research gate that refuses
+when the data cannot support a claim is not.** Demoting it would have
+traded the unusual thing for the commodity one.
+
+The navigation is therefore **Monitor** / **Forecast** / **Operate**,
+with the first two as peers. Operate is third because settings and audit
+are a different kind of activity, not a lesser one. No page was removed
+and none became unreachable: the browser verifier still resolves all 13
+routes and 11 aliases.
+
+**A two-column Overview — this host, other devices**, which the proposal
+asked for and which is a genuine improvement: the old Overview never
+distinguished "the machine PraHari runs on" from "everything it has
+records about".
+
+**A device-registration interface** over the source API that already
+existed.
+
+### What was refused, and why it matters
+
+The proposal's own mock-up showed per-device traffic — `OnePlus-Phone
+↑420 MB ↓210 MB`, `Smart-TV ↑310 MB` — for devices with **no agent and
+no sensor**. Its own text forbids exactly that. The picture did it
+anyway, and the reason is worth naming: **an empty column looks like a
+bug, and a plausible number does not.** That is the entire mechanism by
+which dashboards come to lie.
+
+PraHari does not measure per-device bytes. So:
+
+* there is **no traffic column**, in either the populated or the empty
+  branch — a column of blanks invites someone to fill it;
+* an unmonitored network renders an explicit empty state saying
+  *"knowing a device's address is not monitoring it"*;
+* the monitoring method is **derived from `source_type`**, which the
+  adapter registry defines, so a device cannot be described into looking
+  monitored;
+* an imported file is not counted as a device.
+
+`HostAndDevices.test.tsx` pins each of these. The first is
+mutation-verified: adding a `Traffic (24h)` column with `↑420 MB ↓210
+MB` — the proposal's own figures — fails `renders no traffic figure for
+a device` and nothing else.
+
+The registration form has **no IP address field**, which the proposal
+asked for. PraHari does nothing with an address it is told about, and a
+field whose value changes nothing invites the reader to believe it does.
+Its confirmation says what did **not** happen: *"Nothing is collecting
+yet — this device will show as never seen until an authorized agent
+reports under this id."*
+
+### A security gap this work exposed
+
+`PATCH /sources/{id}/enabled` required admin in central mode.
+**`POST /sources` did not.** Building a registration interface over that
+endpoint — which makes it far easier to call — is what surfaced it.
+
+The gap granted **no ingestion rights**: `assert_source_access` governs
+those separately, and a new registry row adds nothing to a principal's
+allowed set. What it did allow was a sensor credential populating the
+registry, the source-health summary and the dashboard, and taking a
+source id a legitimate producer would then be refused with a 409.
+
+`POST /sources` now carries `require_admin_in_central`, which is a no-op
+on a loopback deployment, so the operator's own local mode is unchanged.
+Two tests: a non-admin credential is refused 403, and an admin still
+registers successfully. The first fails against the old code.
+
+### DNS: discovery before collection
+The operator's diagnostic showed the DNS Client service running,
+resolvers configured, and **zero** cached entries. The proposal's
+reading is correct and `enrichment.py` already says it: an empty cache
+does not establish that no DNS occurred. Polling it more often cannot
+fix that.
+
+The next evidence source is the Windows DNS-Client event log — the
+strongest idea in the proposal. **A collector must not be written
+against event fields nobody has confirmed exist**, so
+`scripts/discover_dns_evidence.ps1` reports, on the operator's own
+machine, which providers are present, whether the operational channel is
+enabled, whether the collector's account may read it, and what a real
+record contains field by field.
+
+It is read-only by design. It does **not** enable a disabled channel:
+that is a change to the machine and the operator's decision, so the
+`wevtutil` command is printed instead. It flushes no cache, changes no
+resolver, sends no query and raises no privilege.
+
+### Verification
+Frontend `tsc` 0, **152 passed** (20 files). Backend **1482 passed, 65
+skipped, 0 failed** (no PostgreSQL DSN on this run, so the conformance
+suite skipped rather than passed, as it is designed to).
+`verify_browser_session.py` **31 passed, 0 failed** — the navigation was
+restructured without breaking a route, an alias, a deep link or a
+history move. Nothing renders below the 13px floor (ADR-114) on any of
+the 13 routes.
+
+### Not established
+The discovery script has **never been run**: this container is Linux and
+has no DNS-Client event log. Its correctness against a real Windows
+machine is unverified, and the adapter it exists to inform cannot be
+written until its output comes back.
+
+Per-device traffic remains unmeasured and unscheduled. It needs an
+authorized agent on the device or an observation point that can see its
+traffic, and neither exists.
+
+The registration interface creates a registry row. **It does not install
+an agent, configure a sensor, or begin collecting**, and nothing in this
+ADR makes a registered device a monitored one.
