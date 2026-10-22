@@ -977,6 +977,22 @@ class PostgresStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def recent_dns_observations(
+        self, limit: int = 100, method: Optional[str] = None
+    ) -> list[dict]:
+        """The most recently observed resolutions, newest first (ADR-122)."""
+        sql = """SELECT ip_address, hostname, observed_at, method, ttl_seconds,
+                        source_id
+                 FROM dns_observations"""
+        params: list = []
+        if method:
+            sql += " WHERE method = %s"
+            params.append(method)
+        sql += " ORDER BY observed_at DESC LIMIT %s"
+        params.append(limit)
+        with self.get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
     def get_dns_observations_for_ips(self, ips: list[str]) -> dict[str, list[dict]]:
         if not ips:
             return {}

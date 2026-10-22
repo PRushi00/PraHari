@@ -74,6 +74,25 @@ export const api = {
     }),
 
   // Telemetry Sources
+  getDnsObservations: (params?: {
+    limit?: number;
+    method?: string;
+  }): Promise<import("../types").DnsObservationsPage> => {
+    const sp = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") sp.append(k, String(v));
+    });
+    const q = sp.toString();
+    return request<import("../types").DnsObservationsPage>(
+      `/enrichment/dns/observations${q ? `?${q}` : ""}`
+    );
+  },
+
+  collectDnsEvents: (): Promise<Record<string, unknown>> =>
+    request<Record<string, unknown>>("/enrichment/dns/events/collect", {
+      method: "POST",
+    }),
+
   getSources: (): Promise<TelemetrySource[]> => request<TelemetrySource[]>("/sources"),
   createSource: (data: { source_id: string; name: string; source_type: string; description?: string }): Promise<TelemetrySource> =>
     request<TelemetrySource>("/sources", {
@@ -253,6 +272,7 @@ export const api = {
     process?: string;
     dst_ip?: string;
     hostname?: string;
+    direction?: string;
     include_enrichment?: boolean;
     allow_reverse_dns?: boolean;
     limit?: number;

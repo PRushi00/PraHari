@@ -125,6 +125,71 @@ def refresh_dns_observations(db: Database = Depends(get_db)) -> DnsRefreshResult
     return DnsRefreshResult(**get_enrichment_service(db).refresh_from_dns_cache())
 
 
+class DnsObservationRow(BaseModel):
+    """One recorded resolution, with the evidence that produced it."""
+
+    ip_address: str
+    hostname: str
+    observed_at: str
+    method: str
+    ttl_seconds: Optional[int] = None
+    source_id: Optional[str] = None
+
+
+class DnsObservationsPage(BaseModel):
+    total_stored: int
+    returned: int
+    observations: list[DnsObservationRow] = []
+    method_filter: Optional[str] = None
+    note: str = ""
+
+
+@router.get("/dns/observations", response_model=DnsObservationsPage)
+def list_dns_observations(
+    limit: int = Query(100, ge=1, le=1000),
+    method: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by evidence source, e.g. `dns_query_log` or "
+            "`dns_cache_observation`. They are different kinds of evidence "
+            "and are not merged."
+        ),
+    ),
+    db: Database = Depends(get_db),
+) -> DnsObservationsPage:
+    """
+    The DNS resolutions PraHari has recorded, newest first (ADR-122).
+
+    Each row carries the address, the name, when it was observed and
+    **which evidence source produced it**. A hostname without its
+    address and method is not evidence of anything, so none of the three
+    is omitted.
+
+    This is the store, not a live query: it reports what was collected,
+    and an empty result means nothing has been collected — not that this
+    host resolved nothing. `/dns/diagnose` explains which.
+    """
+    rows = db.recent_dns_observations(limit=limit, method=method)
+    total = db.count_dns_observations()
+    return DnsObservationsPage(
+        total_stored=total,
+        returned=len(rows),
+        observations=[DnsObservationRow(**r) for r in rows],
+        method_filter=method,
+        note=(
+            "Every row is a locally observed resolution with its evidence "
+            "source. An address commonly serves many names, so a row is "
+            "evidence that a name resolved to an address at a moment — not "
+            "that a given connection used that name."
+            if rows
+            else
+            "No DNS evidence has been collected. That is not the same as "
+            "this host resolving nothing: see /enrichment/dns/diagnose for "
+            "which host sources are available and why."
+        ),
+    )
+
+
 @router.post("/dns/events/collect", response_model=DnsEventCollectResult)
 def collect_dns_event_log(
     max_events: int = Query(

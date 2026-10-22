@@ -79,6 +79,14 @@ MODEL_PAIRS = [
     ("DocumentedEvent", "DocumentedEvent"),
     ("IssuedWarning", "IssuedWarning"),
     ("LeadTimeDistribution", "LeadTimeDistribution"),
+    # Traffic Explorer and DNS Activity (§11, ADR-122). Paired on the day
+    # they were added: direction is an inference the dashboard labels as
+    # such, and a drift in `confidence` or `limitations` would turn a
+    # hedged answer into a confident-looking one with nothing to show for
+    # it.
+    ("DirectionAssessment", "DirectionAssessment"),
+    ("DnsObservationRow", "DnsObservationRow"),
+    ("DnsObservationsPage", "DnsObservationsPage"),
 ]
 
 # Interfaces that intentionally have no backend counterpart: purely local
@@ -105,14 +113,21 @@ LOCAL_ONLY_INTERFACES = {
     "EventType",
     "LabelProvenance",
     "QualityFlag",
+    "TrafficDirection",
 }
 
-# Frontend union type -> backend Enum class. Checked by VALUE.
+# Frontend union type -> (backend module, Enum class). Checked by VALUE.
+#
+# The module is explicit because not every enum the dashboard renders lives
+# in `app.schemas.events`: `TrafficDirection` is defined beside the
+# inference that produces it, and hard-coding one module would have meant
+# either moving the enum to suit the test or leaving it unchecked.
 ENUM_PAIRS = [
-    ("DataCategory", "DataCategory"),
-    ("EventType", "EventType"),
-    ("LabelProvenance", "LabelProvenance"),
-    ("QualityFlag", "QualityFlag"),
+    ("DataCategory", "app.schemas.events", "DataCategory"),
+    ("EventType", "app.schemas.events", "EventType"),
+    ("LabelProvenance", "app.schemas.events", "LabelProvenance"),
+    ("QualityFlag", "app.schemas.events", "QualityFlag"),
+    ("TrafficDirection", "app.services.direction", "TrafficDirection"),
 ]
 
 
@@ -335,8 +350,10 @@ def _ts_union_values(source: str, type_name: str) -> set[str] | None:
     return set(re.findall(r'"([^"]+)"', body))
 
 
-@pytest.mark.parametrize("ts_name,enum_name", ENUM_PAIRS)
-def test_enum_unions_match_backend_values(ts_name, enum_name, ts_source):
+@pytest.mark.parametrize("ts_name,module_name,enum_name", ENUM_PAIRS)
+def test_enum_unions_match_backend_values(
+    ts_name, module_name, enum_name, ts_source
+):
     """
     Frontend union types must list exactly the backend enum's values.
 
@@ -345,9 +362,9 @@ def test_enum_unions_match_backend_values(ts_name, enum_name, ts_source):
     collector actually emits. Type erasure means this never crashes, so
     nothing else would catch it.
     """
-    import app.schemas.events as events_module
+    import importlib
 
-    enum_cls = getattr(events_module, enum_name)
+    enum_cls = getattr(importlib.import_module(module_name), enum_name)
     backend_values = {m.value for m in enum_cls}
     ts_values = _ts_union_values(ts_source, ts_name)
 

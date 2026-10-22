@@ -541,3 +541,53 @@ def test_event_breakdown_is_measured_over_the_whole_selection(store):
 
     empty = store.event_breakdown(source_id="src-never-used")
     assert all(empty[k] == {} for k in empty)
+
+
+def test_recent_dns_observations_behaves_identically_on_both_backends(store):
+    """
+    Cross-backend conformance for the DNS list read (ADR-122).
+
+    ADR-104 recorded that `event_breakdown()` was added to the contract
+    and implemented for both backends while **nothing ever called the
+    PostgreSQL implementation**. Adding a member to `contract.py` does
+    not make the conformance suite test it; this test is what does.
+    """
+    store.record_dns_observations(
+        [
+            {
+                "ip_address": "93.184.216.34",
+                "hostname": "example.com",
+                "observed_at": "2026-10-22T12:00:00+00:00",
+                "method": "dns_query_log",
+                "ttl_seconds": None,
+                "source_id": "windows_dns_events",
+            },
+            {
+                "ip_address": "1.1.1.1",
+                "hostname": "one.one.one.one",
+                "observed_at": "2026-10-22T11:00:00+00:00",
+                "method": "dns_cache_observation",
+                "ttl_seconds": 300,
+                "source_id": "windows_dns_cache",
+            },
+        ]
+    )
+
+    rows = store.recent_dns_observations()
+    assert len(rows) == 2
+    # Newest first, on both backends.
+    assert rows[0]["hostname"] == "example.com"
+    # The address travels with the name: a hostname alone is not evidence.
+    assert rows[0]["ip_address"] == "93.184.216.34"
+    assert rows[0]["method"] == "dns_query_log"
+
+    # Filtering by evidence source keeps the two kinds apart.
+    only_events = store.recent_dns_observations(method="dns_query_log")
+    assert [r["hostname"] for r in only_events] == ["example.com"]
+
+    only_cache = store.recent_dns_observations(method="dns_cache_observation")
+    assert [r["hostname"] for r in only_cache] == ["one.one.one.one"]
+    assert only_cache[0]["ttl_seconds"] == 300
+
+    # The limit is honoured rather than ignored.
+    assert len(store.recent_dns_observations(limit=1)) == 1
