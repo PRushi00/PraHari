@@ -5959,6 +5959,17 @@ taken only from the process that generated the load is a claim about
 that process. A row count read out of the database by a different client
 is evidence that the rows exist.
 
+### Verification
+Full backend suite against the same live PostgreSQL 16.15 server:
+**1521 passed, 22 skipped, 0 failed** (4m 05s). Without a DSN the run is
+1475 passed / 65 skipped — the PostgreSQL tests **skip, never pass**, so
+the 43-test difference is the conformance and cross-backend suite
+actually executing. The 22 that remain skipped are Windows-only.
+
+The three new document-consistency tests are part of that count and pass
+on the corrected document; each fails when its original defect is
+restored.
+
 ### Not established
 PostgreSQL ran on `initdb` defaults, on the same host as the
 application, over loopback. A real deployment would separate them and
