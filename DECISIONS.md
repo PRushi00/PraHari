@@ -5498,3 +5498,77 @@ Linux and one browser engine only. The verifier has not been re-run on
 Windows for this revision, so the Windows half of §18 row 1 does not
 cover these pages. Navigation only — no form interaction, no screenshot
 or visual-regression comparison, no reduced viewport.
+
+---
+
+## ADR-113: Resource Consumption Measured, and Performance Broken Down by Scenario
+
+### Context
+Two §16/§10 items were recorded as open after ADR-110 and ADR-111, and I
+had told the operator both needed an input from them. **That was wrong
+in both cases** — neither needed anything but work, and saying otherwise
+would have left two requirements parked for no reason.
+
+### Resource consumption (§16)
+`scripts/benchmark_ingestion.py` now samples the **server** process
+every 50 ms during the load — not the benchmark process, which would
+measure the wrong thing. Measured here:
+
+| | Steady state | Saturation |
+|---|---|---|
+| RSS start → peak | 180.4 → **190.2 MB** | 191.0 → **203.3 MB** |
+| CPU peak / mean while busy | 138.5 % / 95.4 % | 119.1 % / 91.2 % |
+
+`psutil` is **not** added as a runtime dependency. §9.2 prefers small
+dependencies until a measured need justifies more, and this need is a
+verification tool's, not the application's. The import is optional and
+its absence is reported as `available: false` **with the reason** —
+never omitted, never estimated. Verified by running the sampler with
+the module forced absent.
+
+The memory-growth figures are reported and **deliberately not
+interpreted**: each run lasts a second or two, and an allocator that has
+not returned memory to the OS looks identical to one retaining it. A
+leak claim needs a sustained run, which this is not.
+
+### Scenario-level performance (§10)
+`BLUEPRINT_COVERAGE.md` carried this as `PARTIAL — no scenario
+identifiers in the schema`. A separate identifier was **not** added:
+inventing one means guessing which records belong to which campaign. The
+attack **label** is what the corpus actually states, so the event-level
+report now breaks every documented event down by it.
+
+The aggregate cannot answer the question §10 asks. A model that warns
+reliably about one family and never about another reports a respectable
+overall missed-event rate while being useless for half its job; the
+breakdown shows that directly.
+
+**An episode can carry more than one label** — ADR-095 found exactly
+that in this corpus — so an event is counted under **each** of its
+labels, the per-scenario totals can exceed `events_total`, and
+`scenarios_note` says so rather than letting a reader sum the column and
+find a discrepancy.
+
+### A mutation that did not fail, and what it exposed
+Truncating the loop to the first label only — erasing a whole scenario
+from the breakdown — **passed every test**. The synthetic streams never
+produce a mixed episode, so the behaviour the design exists for was
+untested.
+
+A test that builds a genuine two-label episode directly (not through the
+pipeline, because the pipeline's streams cannot produce one) now fails
+under that mutation. This is the third time in two days that a mutation
+has exposed a test exercising something adjacent to the thing it names.
+
+### Verification
+Backend **1518 passed, 22 skipped, 0 failed** (Linux, real PostgreSQL
+16.15). Frontend `tsc` 0, 116 passed, build succeeds. `ScenarioPerformance`
+is paired in `test_frontend_api_contract`, so the breakdown cannot drift
+from the backend.
+
+### Not established
+Resource sampling covers two runs of a second or two on one machine over
+loopback against SQLite — no PostgreSQL, no network, no sustained run,
+and nothing published as a service target. Scenario is the attack label
+and nothing richer: it cannot distinguish two campaigns that share a
+label, which is the defect ADR-095 recorded in this very corpus.

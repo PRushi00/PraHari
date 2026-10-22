@@ -406,3 +406,169 @@ def test_endpoint_writes_an_audit_entry(client):
     assert audit.status_code == status.HTTP_200_OK, audit.text
     actions = [entry["action"] for entry in audit.json()]
     assert "evaluate_event_level" in actions
+
+
+# ──────────────────────────────────────────────────────────────────
+# Per-scenario performance (§10, ADR-113)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _mixed_scenario_stream():
+    """
+    Two attack families on one timeline: a dense burst the windowing can
+    warn about, and a sparse one it cannot. The aggregate hides the
+    difference; the per-scenario breakdown is what shows it.
+    """
+    out: list[NormalizedEvent] = []
+    seq = 0
+
+    def add(offset: float, label: str) -> None:
+        nonlocal seq
+        seq += 1
+        out.append(
+            NormalizedEvent(
+                event_id=f"sc-{seq}",
+                source_id="src-synth",
+                event_type=EventType.NETWORK_FLOW,
+                observed_at=T0 + timedelta(seconds=offset),
+                data_category=DataCategory.SYNTHETIC_DEMO,
+                label=label,
+                label_provenance=LabelProvenance.SYNTHETIC_RULE,
+                src_ip="10.0.0.5", dst_ip="10.0.0.9", dst_port=443,
+                protocol="TCP", packets=10, bytes_total=1200, duration=0.4,
+            )
+        )
+
+    for step in range(0, 14_400, 10):
+        slot = step % 3600
+        if 1680 <= slot < 1800:
+            add(step, "DDoS")
+        elif 3480 <= slot < 3600:
+            add(step, "BruteForce")
+        else:
+            add(step, "Benign")
+    return out
+
+
+@pytest.fixture(scope="module")
+def mixed_report():
+    from app.research.event_level import evaluate_event_level
+
+    pipeline = ThreatForecastingPipeline(
+        window_size_seconds=60.0, lead_time_seconds=30.0,
+        prediction_horizon_seconds=120.0,
+    )
+    events = _mixed_scenario_stream()
+    pipeline.train_and_evaluate_all(events, train_ratio=0.7)
+    held = pipeline.last_holdout
+    mid = "baseline_threshold"
+    return evaluate_event_level(
+        events, held.times_for(mid), held.scores[mid],
+        lead_seconds=30.0, horizon_seconds=120.0, threshold=0.5, model_id=mid,
+    )
+
+
+def test_performance_is_broken_down_by_scenario(mixed_report):
+    """
+    The aggregate missed-event rate cannot say whether a model warns
+    about one family and never the other. This can.
+    """
+    if not mixed_report.available:
+        pytest.skip(f"evaluation refused: {mixed_report.refusal_reason}")
+
+    names = {s.scenario for s in mixed_report.by_scenario}
+    assert names, "a report with events must break them down"
+    assert names <= {"DDoS", "BruteForce", "(unlabelled)"}
+    for s in mixed_report.by_scenario:
+        assert s.events_warned + s.events_missed == s.events_total
+        assert s.missed_event_rate == pytest.approx(
+            s.events_missed / s.events_total, abs=1e-6
+        )
+
+
+def test_every_in_scope_event_appears_under_some_scenario(mixed_report):
+    if not mixed_report.available:
+        pytest.skip(f"evaluation refused: {mixed_report.refusal_reason}")
+
+    # Single-labelled events: the totals must account for all of them.
+    total = sum(s.events_total for s in mixed_report.by_scenario)
+    assert total >= mixed_report.events_total
+
+
+def test_the_note_warns_that_multi_label_events_are_double_counted(mixed_report):
+    """
+    ADR-095 found two distinct attacks sharing one label in the real
+    corpus, so an episode CAN carry several. Counting it under each is
+    right; letting a reader sum the column without warning is not.
+    """
+    if not mixed_report.available:
+        pytest.skip(f"evaluation refused: {mixed_report.refusal_reason}")
+
+    note = mixed_report.scenarios_note
+    assert "more than one label" in note
+    assert "exceed events_total" in note
+    # And it says what a scenario IS, since the schema has no such field.
+    assert "no separate scenario identifier" in note
+
+
+def test_an_episode_with_two_labels_is_counted_under_both():
+    """
+    ADR-095 found two distinct attacks sharing one episode in the real
+    corpus, so this is not hypothetical. Counting such an event once,
+    under whichever label happened to come first, would silently erase
+    one scenario from the breakdown.
+
+    Built directly rather than through the pipeline, because the
+    synthetic streams above never produce a mixed episode — which is
+    exactly why this case needs its own test.
+    """
+    from app.research.event_level import evaluate_event_level
+
+    events: list[NormalizedEvent] = []
+    seq = 0
+
+    def add(offset: float, label: str) -> None:
+        nonlocal seq
+        seq += 1
+        events.append(
+            NormalizedEvent(
+                event_id=f"mix-{seq}",
+                source_id="src-mixed",
+                event_type=EventType.NETWORK_FLOW,
+                observed_at=T0 + timedelta(seconds=offset),
+                data_category=DataCategory.SYNTHETIC_DEMO,
+                label=label,
+                label_provenance=LabelProvenance.SYNTHETIC_RULE,
+            )
+        )
+
+    for step in range(0, 2400, 10):
+        add(step, "Benign")
+    # Two families inside ONE episode: adjacent, well within the 300 s
+    # episode gap, so they merge into a single documented event.
+    for step in range(2400, 2500, 10):
+        add(step, "DDoS")
+    for step in range(2500, 2600, 10):
+        add(step, "BruteForce")
+    for step in range(2600, 4000, 10):
+        add(step, "Benign")
+
+    times = [T0 + timedelta(seconds=t) for t in range(0, 4000, 60)]
+    scores = [0.9 if 2300 <= t < 2700 else 0.1 for t in range(0, 4000, 60)]
+
+    report = evaluate_event_level(
+        events, times, scores,
+        lead_seconds=30.0, horizon_seconds=120.0, threshold=0.5,
+        model_id="handbuilt",
+    )
+    assert report.available, report.refusal_reason
+
+    multi = [e for e in report.events if len(e.labels or []) > 1]
+    assert multi, "the fixture must produce an episode carrying two labels"
+
+    names = {s.scenario for s in report.by_scenario}
+    assert {"DDoS", "BruteForce"} <= names, (
+        f"both labels of a mixed episode must appear; got {names}"
+    )
+    # And the totals exceed events_total precisely because of it.
+    assert sum(s.events_total for s in report.by_scenario) > report.events_total

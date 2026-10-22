@@ -43,17 +43,29 @@ source and against a running instance.
 | 13 | Repository structure and configuration | 7 | `DEVIATES` (layout, keys) |
 | 14 | Installation and operating guide | 2 | `MET` |
 | 15 | Troubleshooting and failure handling | 15 | `MET` — `docs/TROUBLESHOOTING.md` |
-| 16 | Reproducibility, testing, release readiness | 17 | `MET` — benchmark recorded (ADR-110); resource use unmeasured |
+| 16 | Reproducibility, testing, release readiness | 17 | `MET` — benchmark and resource use both measured (ADR-110, ADR-113) |
 | 17 | Research positioning and claims | 6 | `MET` |
 | 18 | Definition of done | 15 | 13 `MET`, 2 `PARTIAL` |
 | 19 | References and decision register | 2 | `MET` |
 
-**≈ 245 of ≈ 249 discrete requirements — about 98 %.**
+**≈ 247 of ≈ 249 discrete requirements — about 99 %.**
 (Was ≈ 222 / 89 % before §15's fifteen rows were written on 21 Oct 2026.)
 
-The missing ~5 % is not evenly trivial. It still contains the thing the
-project exists for: live network-level collection. §15's guide, the other
-half of that sentence until today, is now `docs/TROUBLESHOOTING.md`.
+What remains is **two** requirements, and **both need an input rather
+than work**: one real security-platform export file to target (§5,
+ADR-105), and CIC-IDS2017, whose download sits behind a form asking for
+the operator's own name, organisation and email (§10, ADR-111).
+
+Two items listed here as blocked were not. Resource-consumption sampling
+and scenario-level performance each needed only work, and both are done
+(ADR-113).
+
+**Live network-level collection has been demonstrated but is not yet
+recorded here**: real Zeek 8 into the wired JSON path, 989/989 accepted
+across two distinct sources. That evidence lives on the operator's
+machine and is uncommitted, so §18 row 3 still reads `PARTIAL` on
+`main`. Pushing it is what closes it, not further work in this
+repository.
 
 ---
 
@@ -146,7 +158,7 @@ than a new adapter.
 |---|---|
 | Precision/recall, PR-AUC, FPR, missed-event, **event-level lead time**, data freshness, uncertainty | `MET` |
 | **Calibration** | `MET` — reliability curve with per-bin counts (ADR-107) |
-| **Scenario-level performance** | `PARTIAL` — leave-one-group-out generalization exists; no scenario identifiers in the schema, so it groups by source/category |
+| **Scenario-level performance** | `MET` — the event-level report breaks every documented event down by attack label (ADR-113) |
 | **Inference latency / throughput** | `MET` — measured at the `predict_recent_window` boundary (ADR-106); throughput under load in ADR-110 |
 | Rule: *select thresholds on validation data* | `DEVIATES` — the threshold is fixed at 0.5 and never tuned, so no test data can influence it. Documented as a limitation in the target spec: the operating point may not suit a deployment |
 | Rule: *evaluate cross-dataset generalization* | `PARTIAL` — **cross-period** measured and negative, mean transfer gap 0.4472 (ADR-111). Cross-*dataset* still absent: CIC-IDS2017 needs an operator-submitted registration form |

@@ -195,6 +195,29 @@ class LeadTimeDistribution(BaseModel):
     note: str = ""
 
 
+class ScenarioPerformance(BaseModel):
+    """
+    Warning performance for one attack scenario (§10, ADR-113).
+
+    §10 asks for scenario-level performance, which the overall figures
+    cannot give: a model that warns reliably about one attack family and
+    never about another reports a respectable aggregate missed-event
+    rate while being useless for half its job.
+
+    The scenario is the attack LABEL the documented event carries. The
+    schema has no separate scenario identifier, and inventing one would
+    mean guessing which records belong to which campaign; the label is
+    what the corpus actually states.
+    """
+
+    scenario: str
+    events_total: int = 0
+    events_warned: int = 0
+    events_missed: int = 0
+    missed_event_rate: Optional[float] = None
+    lead_time: LeadTimeDistribution = Field(default_factory=LeadTimeDistribution)
+
+
 class EventLevelReport(BaseModel):
     """Event-level warning performance under one frozen matching protocol."""
 
@@ -234,6 +257,8 @@ class EventLevelReport(BaseModel):
 
     label_provenance: list[str] = Field(default_factory=list)
     events: list[DocumentedEvent] = Field(default_factory=list)
+    by_scenario: list[ScenarioPerformance] = Field(default_factory=list)
+    scenarios_note: str = ""
     warnings_detail: list[IssuedWarning] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
@@ -515,6 +540,43 @@ def evaluate_event_level(
     report.missed_event_rate = round(report.events_missed / report.events_total, 4)
     report.lead_time = _distribution(
         [e.lead_time_seconds for e in in_scope if e.lead_time_seconds is not None]
+    )
+
+    # Per-scenario breakdown (§10, ADR-113). An episode can carry more
+    # than one label — ADR-095 found two distinct attacks sharing one
+    # label in this very corpus — so an event is counted under EACH of
+    # its labels. The per-scenario totals can therefore exceed
+    # events_total, and the note says so rather than letting a reader
+    # add them up and find a discrepancy.
+    by_label: dict[str, list] = {}
+    for ev in in_scope:
+        for label in (ev.labels or ["(unlabelled)"]):
+            by_label.setdefault(label, []).append(ev)
+
+    scenarios: list[ScenarioPerformance] = []
+    for label in sorted(by_label):
+        group = by_label[label]
+        warned = sum(1 for e in group if e.warned)
+        scenarios.append(
+            ScenarioPerformance(
+                scenario=label,
+                events_total=len(group),
+                events_warned=warned,
+                events_missed=len(group) - warned,
+                missed_event_rate=round((len(group) - warned) / len(group), 4),
+                lead_time=_distribution(
+                    [e.lead_time_seconds for e in group
+                     if e.lead_time_seconds is not None]
+                ),
+            )
+        )
+    report.by_scenario = scenarios
+    multi = sum(1 for e in in_scope if len(e.labels or []) > 1)
+    report.scenarios_note = (
+        f"Scenario is the attack label the event carries; the schema has no "
+        f"separate scenario identifier. {multi} of {len(in_scope)} event(s) "
+        "carry more than one label and are counted under each, so these "
+        "totals can exceed events_total."
     )
 
     report.events = documented
