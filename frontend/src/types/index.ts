@@ -717,6 +717,16 @@ export interface LeadTimeDistribution {
   note: string;
 }
 
+/** Per-scenario warning performance (§10, ADR-113). */
+export interface ScenarioPerformance {
+  scenario: string;
+  events_total: number;
+  events_warned: number;
+  events_missed: number;
+  missed_event_rate?: number | null;
+  lead_time: LeadTimeDistribution;
+}
+
 export interface EventLevelReport {
   available: boolean;
   refusal_reason: string | null;
@@ -744,5 +754,7 @@ export interface EventLevelReport {
   label_provenance: string[];
   events: DocumentedEvent[];
   warnings_detail: IssuedWarning[];
+  by_scenario: ScenarioPerformance[];
+  scenarios_note: string;
   limitations: string[];
 }

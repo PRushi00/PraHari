@@ -42,11 +42,11 @@ which exercises the client's retry rather than a sensor's.
 | Measure | Value |
 |---|---|
 | Records offered | 10,000 in 40 batches of 250 |
-| Duration | **1.407 s** |
+| Duration | **1.92 s** |
 | Event rate | **7105.7 records/s** |
 | HTTP statuses | `{'200': 40}` |
 | Stored | **10000** · rejected 0 · duplicate 0 |
-| Request latency (client) | p50 **87.864 ms** · p95 286.27 ms · p99 1287.119 ms · max 1287.119 ms |
+| Request latency (client) | p50 **120.897 ms** · p95 429.347 ms · p99 1070.947 ms · max 1070.947 ms |
 | Processing latency (server) | p50 49.4 ms · p95 183.832 ms · max 724.122 ms |
 | Admitted / refused | 40 / 0 |
 | Queue depth | `null` — there is no queue |
@@ -104,10 +104,36 @@ requests is exactly the fabricated measurement this project refuses.
 
 ## Resource consumption
 
-Not instrumented. The benchmark records CPU count and platform but does
-not sample process memory or CPU during the run, so §16's
-resource-consumption item is **recorded as unmeasured** rather than
-estimated.
+Sampled from the **server** process every 50 ms while the load ran — not
+from the benchmark process, which would measure the wrong thing.
+
+| | Steady state | Saturation |
+|---|---|---|
+| Samples | 38 | 16 |
+| RSS at start | 180.4 MB | 191.0 MB |
+| RSS peak | **190.2 MB** | **203.3 MB** |
+| RSS growth over the run | 9.8 MB | 12.4 MB |
+| CPU peak | 138.5 % | 119.1 % |
+| CPU mean while busy | 95.4 % | 91.2 % |
+
+CPU can exceed 100 % because the host has several cores. **The growth
+figures are not evidence about a leak**: each run lasts a second or two,
+and an allocator that has not returned memory to the OS looks identical
+to one that is retaining it. A leak claim needs a sustained run, which
+this is not.
+
+`psutil` is **not** a runtime dependency of PraHari and was not made one
+— §9.2 prefers small dependencies until a measured need justifies more,
+and this need is a verification tool's, not the application's. Without
+it the report states `available: false` **with the reason**, rather than
+omitting the section or estimating a figure:
+
+```json
+{"available": false, "reason": "psutil is not installed, so resource
+use was not sampled. Install it (pip install psutil) and re-run."}
+```
+
+To measure it: `pip install psutil`, then re-run.
 
 ## What this does not establish
 
@@ -115,7 +141,7 @@ estimated.
   likely thing to change these numbers.
 * **No network.** Loopback removes the transport that a real sensor
   would cross.
-* **No sustained run.** Both scenarios last seconds. Behaviour over
+* **No sustained run.** Both scenarios last a second or two, which is why the memory-growth figures are reported but not interpreted. Behaviour over
   hours — file growth, WAL checkpointing, memory drift — is unmeasured.
 * **`peak_in_flight` is a process-lifetime high-water mark**, not a
   per-run figure, and is labelled as such in the JSON.

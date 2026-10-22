@@ -74,6 +74,7 @@ MODEL_PAIRS = [
     # dashboard's lead-time and missed-event panel cannot drift from what
     # /forecast/event-level actually returns.
     ("EventLevelReport", "EventLevelReport"),
+    ("ScenarioPerformance", "ScenarioPerformance"),
     ("MatchingRules", "MatchingRules"),
     ("DocumentedEvent", "DocumentedEvent"),
     ("IssuedWarning", "IssuedWarning"),

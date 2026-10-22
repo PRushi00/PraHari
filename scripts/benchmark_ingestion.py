@@ -53,11 +53,23 @@ import platform
 import socket
 import statistics
 import sys
+import threading
+from typing import Optional
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+
+# Resource sampling needs psutil, which is NOT a runtime dependency of
+# PraHari and is not added as one: §9.2 prefers small dependencies until
+# a measured need justifies more, and this need is a verification tool's,
+# not the application's. Absent, resource use is reported as UNMEASURED
+# with the reason — never estimated, and never silently omitted.
+try:
+    import psutil  # type: ignore
+except ImportError:  # pragma: no cover - depends on the environment
+    psutil = None  # type: ignore
 
 BENCH_SOURCE = "benchmark_ingestion_synthetic"
 
@@ -80,6 +92,85 @@ def _percentiles(samples_ms: list[float]) -> dict:
         "p99_ms": pct(0.99),
         "max_ms": round(ordered[-1], 3),
     }
+
+
+def _server_pid_on(port: int) -> Optional[int]:
+    """The PID listening on `port`, or None. Resource use must describe
+    the SERVER, not this benchmark process."""
+    if psutil is None:
+        return None
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == port and conn.pid:
+                return conn.pid
+    except (psutil.AccessDenied, PermissionError):
+        return None
+    return None
+
+
+class _ResourceSampler(threading.Thread):
+    """Samples the server process while the load runs."""
+
+    def __init__(self, pid: Optional[int], interval: float = 0.05):
+        super().__init__(daemon=True)
+        self.pid = pid
+        self.interval = interval
+        self.rss_mb: list[float] = []
+        self.cpu_pct: list[float] = []
+        self._stop = threading.Event()
+        self.reason: Optional[str] = None
+
+    def run(self) -> None:
+        if psutil is None:
+            self.reason = (
+                "psutil is not installed, so resource use was not sampled. "
+                "Install it (pip install psutil) and re-run to measure it."
+            )
+            return
+        if self.pid is None:
+            self.reason = (
+                "The server process could not be identified from its port "
+                "(it may be in another container or namespace), so resource "
+                "use was not sampled."
+            )
+            return
+        try:
+            proc = psutil.Process(self.pid)
+            proc.cpu_percent(None)  # prime the interval
+            while not self._stop.is_set():
+                self.rss_mb.append(proc.memory_info().rss / (1024 * 1024))
+                self.cpu_pct.append(proc.cpu_percent(None))
+                self._stop.wait(self.interval)
+        except Exception as exc:  # noqa: BLE001
+            self.reason = f"sampling stopped: {type(exc).__name__}: {exc}"
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def summary(self) -> dict:
+        if not self.rss_mb:
+            return {"available": False, "reason": self.reason or "no samples taken"}
+        busy = [c for c in self.cpu_pct if c > 0]
+        return {
+            "available": True,
+            "pid": self.pid,
+            "samples": len(self.rss_mb),
+            "sample_interval_seconds": self.interval,
+            "rss_mb_start": round(self.rss_mb[0], 1),
+            "rss_mb_peak": round(max(self.rss_mb), 1),
+            "rss_mb_end": round(self.rss_mb[-1], 1),
+            "rss_mb_growth": round(self.rss_mb[-1] - self.rss_mb[0], 1),
+            "cpu_percent_peak": round(max(self.cpu_pct), 1),
+            "cpu_percent_mean_while_busy": (
+                round(sum(busy) / len(busy), 1) if busy else None
+            ),
+            "note": (
+                "Of the SERVER process only, sampled during the load. "
+                "cpu_percent can exceed 100 on a multi-core host. Growth is "
+                "end minus start over one short run and is not evidence "
+                "about a leak."
+            ),
+        }
 
 
 def _post(url: str, payload: dict, timeout: float = 60.0) -> tuple[int, dict, float]:
@@ -170,6 +261,9 @@ def main() -> int:
         f"Ingesting {total_records} records in {args.batches} batches of "
         f"{args.batch_size}, concurrency {args.concurrency}…"
     )
+    port = int(base.rsplit(":", 1)[-1].split("/")[0]) if ":" in base else 80
+    sampler = _ResourceSampler(_server_pid_on(port))
+    sampler.start()
     run_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = [
@@ -186,6 +280,8 @@ def main() -> int:
                 rejected += int(body.get("rejected_records", 0) or 0)
                 duplicates += int(body.get("duplicate_records", 0) or 0)
     wall_seconds = time.perf_counter() - run_started
+    sampler.stop()
+    sampler.join(timeout=2.0)
 
     after = _get(health_url)
 
@@ -269,6 +365,7 @@ def main() -> int:
             "queue_depth_note": ing_after.get("queue_depth_note"),
             "processing_latency": ing_after.get("processing_latency"),
         },
+        "resource_consumption": sampler.summary(),
         "reconnect": {
             "closed_port_refused": reconnect_ok,
             "detail": reconnect_detail,
