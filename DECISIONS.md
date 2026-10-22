@@ -5732,3 +5732,118 @@ read typechecks.
 It claims nothing about appearance. A class can resolve to a rule that
 looks wrong, and no test here would notice; that still needs a person
 looking at the page.
+
+---
+
+## ADR-115: Guided Mode — The Same Data, Explained
+
+### Context
+The operator's words: *"it should be a bit more user-friendly for
+inexperienced people also, so they can use it."*
+
+PraHari is written for someone who already knows what a flow record is.
+Someone who does not opens the Overview and meets **"Persisted Events /
+Normalized canonical flows"**, four more cards in the same register, and
+thirteen flat navigation tabs with nothing to say which to open first or
+that `Feasibility` must come before `Threat Forecasting`.
+
+The obvious move — a "simple view" that shows fewer things — is the
+dangerous one. PraHari's whole posture is that it states what it does
+not know: refusals, `not measured`, collection gaps, "these labels are
+not ground truth". A beginner mode that tucked those behind a chevron
+would make the application *less* honest for exactly the reader least
+able to notice the omission.
+
+### Decision
+
+**Guided mode adds sentences and defers detail. It never changes a
+number, a verdict or a refusal, and it never hides a caveat.**
+
+Four pieces, in `components/GuidedMode.tsx`:
+
+| | What it does |
+|---|---|
+| `<Explain>` | One plain-language sentence saying what the thing above it *is*. Rendered only in guided mode. It explains; it never qualifies. |
+| `<Caption>` | A stat card's caption in one of two registers — `plain` or `expert` — describing **the same number**. A translation, never a second measurement. |
+| `<Advanced>` | A dense diagnostic panel, collapsed in guided mode behind a one-line summary. In expert mode it renders its children with no wrapper at all. |
+| `<NextSteps>` | "What you can do from here". The question a newcomer actually has on arrival is *what do I do now?*, and no amount of relabelling a stat card answers it. |
+
+**Default on.** A newcomer does not know the setting exists. An operator
+turns it off once and the choice sticks in `localStorage`, which can
+throw and can hold anything, so an unreadable value falls back to the
+default rather than propagating.
+
+**The navigation is grouped**, not filtered: Collect / Examine /
+Forecast / Operate. Every tab is present in every mode — this reduces
+what the row makes you *read*, not what it lets you *reach*. The group
+legends are themselves guidance, so they appear with the rest of it.
+
+**What `<Advanced>` may wrap.** Exactly two panels: Live Telemetry's
+ingestion accounting (five counters that mean nothing until you know
+what the collector does with a row) and its source health. Deferring
+them hides no caveat.
+
+**What it may never wrap**, and the reasoning each time:
+
+* **Collection gaps.** A gap is a hole in the evidence — a connection
+  that opened and closed inside one was never observed at all. That is
+  a limit on what any conclusion drawn here can mean.
+* **Capability limits** ("What This Source Can and Cannot See").
+* Any refusal, `not measured`, or "these labels are not ground truth".
+
+### Verification
+`GuidedMode.test.tsx` — 12 tests. Beyond the mechanics (default on,
+toggle, persistence across a remount, storage that throws, expert mode
+rendering an advanced panel with no wrapper to open), two are the point:
+the collection-gap warning and the capability-limits panel are asserted
+present **in both modes**, parameterised over `guided`.
+
+That boundary is verified by mutation. Wrapping the collection-gap panel
+in `<Advanced>` — the exact mistake this ADR exists to prevent — fails
+`shows the collection-gap warning with guided=true` and nothing else.
+
+Two named tests only cover the two panels they name, so the rule is also
+enforced on the **source**. `AdvancedNeverHidesCaveats.test.ts` extracts
+the body of every `<Advanced>` block and fails if it contains any marker
+of a caveat — `refusal_reason`, `capability_notes`, `collection_gaps`,
+`not measured`, a warning badge or banner, `role="alert"`,
+`metric-unavailable`, "not ground truth", "never estimated" — naming the
+file, the marker and why it counts.
+
+**It found a violation on its first run, in my own work.** The rejection
+reasons — the records the collector read and could not use — were inside
+the deferred accounting panel, where they had always been. A rejection is
+not a diagnostic: it is a hole in the record, and whatever those rows
+described is missing from everything else on the page. They now sit in
+their own always-visible panel, "Records This Collector Could Not Use".
+
+The scan is blunt in both directions: it cannot read a caveat written in
+prose with none of these markers, and it will object to a marker used
+innocently. The second is the better failure, because it makes the author
+justify the placement. It is mutation-verified — wrapping the
+capability-limits panel fails it on two markers at once — and carries a
+second assertion that it found at least two `<Advanced>` blocks, so a
+rename of the component cannot make it vacuous.
+
+A second defect surfaced while writing this. Two routing tests broke
+because `screen.getByRole("button", { name: /Events Explorer/i })` now
+matched two elements: the nav tab, and the Overview page's new "Open the
+Events Explorer" step. The tests had always meant *the navigation
+button* and had only ever said *any button*. The navigation now carries
+`aria-label="Primary"` and both tests scope through it.
+
+Frontend `tsc` 0, **139 passed** (18 files). `verify_browser_session.py`
+**31 passed, 0 failed**. Nothing renders below the 13px floor (ADR-114)
+on any of the 13 routes.
+
+### Not established
+This is a comprehension aid, not a usability study. Nobody who is
+actually inexperienced has used it; the wording is a judgement about
+what a newcomer needs, not a finding about what one did. It was measured
+at one viewport width and is not an accessibility audit.
+
+The source scan matches text, not meaning. A caveat written as plain
+prose inside an `<Advanced>` block — no marker, no badge, no role — would
+pass it, and only a reader would notice. What it does guarantee is that
+the markers PraHari actually uses for its refusals and limits cannot be
+deferred without the test naming the file.

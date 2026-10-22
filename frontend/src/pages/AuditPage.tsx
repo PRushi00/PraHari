@@ -11,6 +11,7 @@ import { api } from "../services/api";
 import { AuditLog, SecurityConfig } from "../types";
 
 import { fmtTimeUtc, humanise } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 
 // What the Network Isolation card may claim, from the report alone. Green
 // only when the backend has evidence for it (ADR-089): a null claim, or an
@@ -61,6 +62,11 @@ export const AuditPage: React.FC = () => {
           <p className="page-subtitle">
             Immutable tracking of telemetry actions, model training sessions, and strict loopback boundary enforcement.
           </p>
+          <Explain>
+            A permanent record of every action taken in this system, and the
+            security boundaries it runs inside. Entries are written as things
+            happen and are never edited afterwards.
+          </Explain>
         </div>
         <button
           className="btn btn-secondary"

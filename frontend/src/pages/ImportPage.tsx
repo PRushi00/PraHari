@@ -4,6 +4,7 @@ import { api } from "../services/api";
 import { ImportSummary } from "../types";
 
 import { fmtTime, humanise } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 interface ImportPageProps {
   onImportComplete: () => void;
 }
@@ -100,6 +101,11 @@ export const ImportPage: React.FC<ImportPageProps> = ({ onImportComplete }) => {
         <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
           Validates each record against network protocol standards and maps valid rows into the canonical NormalizedEvent schema.
         </p>
+        <Explain>
+          Load network records from a CSV file. Each row is checked before it
+          is stored, and anything PraHari cannot use is reported back to you
+          rather than quietly dropped.
+        </Explain>
       </div>
 
       {errorMessage && (

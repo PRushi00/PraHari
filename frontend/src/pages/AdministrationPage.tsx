@@ -12,6 +12,7 @@ import {
 import { api } from "../services/api";
 import { humanise } from "../utils/format";
 import { RetentionPolicy, SourceHealthSummary, SourceHealthRecord } from "../types";
+import { Explain } from "../components/GuidedMode";
 
 /**
  * Administration (blueprint §11).
@@ -161,6 +162,11 @@ export const AdministrationPage: React.FC = () => {
             Source and retention management. Changes are audited, validated on
             the server, and confirmed before they are applied.
           </p>
+          <Explain>
+            Operational settings — which sources are switched on, and how long
+            records are kept before being removed. Changes here affect what the
+            rest of the application can see.
+          </Explain>
         </div>
         <button className="btn" onClick={load} disabled={loading}>
           <RefreshCw size={16} className={loading ? "spinning" : ""} /> Refresh

@@ -12,6 +12,7 @@ import { ModelMetrics, PredictionResult, TelemetrySource } from "../types";
 
 import { fmtFixed, fmtInt, fmtPercent, isNum, safeSeries } from "../utils/format";
 import { bestModelId } from "../utils/models";
+import { Explain } from "../components/GuidedMode";
 export const ForecastPage: React.FC = () => {
   const [models, setModels] = useState<Record<string, ModelMetrics>>({});
   const [sources, setSources] = useState<TelemetrySource[]>([]);
@@ -379,6 +380,17 @@ export const ForecastPage: React.FC = () => {
 
   return (
     <div className="page-container">
+      {/* The readiness gate comes first on purpose: it decides whether
+          anything below it means anything. A newcomer meets a dense
+          requirements table with no framing, so the explanation goes
+          above it rather than beside the title further down. */}
+      <Explain>
+        This is the only page that predicts anything. It trains models on the
+        records already collected and asks whether an attack is likely in the
+        near future. The panel below checks first whether there is enough data
+        for that to be worth doing — if there is not, PraHari refuses and says
+        why rather than guessing.
+      </Explain>
       {readinessPanel}
       {blockedPanel}
       {integrityPanel}

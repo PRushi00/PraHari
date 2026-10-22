@@ -15,6 +15,7 @@ import { api } from "../services/api";
 import { ConnectionTable } from "../components/ConnectionTable";
 import { AppLayerPanel } from "../components/AppLayerPanel";
 import { fmtFixed, fmtInt, humanise } from "../utils/format";
+import { Advanced, Explain } from "../components/GuidedMode";
 import {
   CollectorStatus,
   ConnectionDetail,
@@ -196,6 +197,12 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               Genuine TCP connection metadata polled from this host&apos;s Windows
               connection table
             </div>
+            <Explain>
+              PraHari asks Windows, every few seconds, which network
+              connections this computer currently has open, and records what
+              it finds. It reads no message contents and captures no packets —
+              only who was talking to whom, on which port, and when.
+            </Explain>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
@@ -340,7 +347,17 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
         </div>
       </div>
 
-      {/* ── Ingestion accounting ────────────────────────────── */}
+      {/* ── Ingestion accounting ─────────────────────────────
+          Five counters that only mean something once you know what the
+          collector does with a row. Deferred in guided mode (ADR-115);
+          nothing here is a warning or a limit, so deferring it hides no
+          caveat. */}
+      <Advanced
+        title="Ingestion accounting"
+        summary={`${status?.records_observed_total ?? 0} seen · ${
+          status?.events_accepted_total ?? 0
+        } stored`}
+      >
       <div className="glass-panel" style={{ padding: "1.25rem 1.5rem" }}>
         <h3 style={{ marginTop: 0 }}>
           Ingestion Accounting{" "}
@@ -401,19 +418,6 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
           ))}
         </div>
 
-        {status && Object.keys(status.rejection_reasons).length > 0 && (
-          <div style={{ marginTop: "1rem" }}>
-            <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginBottom: "0.4rem" }}>
-              Rejection reasons
-            </div>
-            {Object.entries(status.rejection_reasons).map(([reason, count]) => (
-              <div key={reason} style={{ fontSize: "var(--text-xs)" }}>
-                <span className="badge badge-warning">{count}</span> {humanise(reason)}
-              </div>
-            ))}
-          </div>
-        )}
-
         {lastPoll && (
           <div
             style={{
@@ -431,8 +435,36 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
         )}
       </div>
 
+      </Advanced>
+
+      {/* ── Rejected records ─────────────────────────────────
+          NOT deferred, and moved out of the accounting panel to keep it
+          that way. A rejection is data the collector could not use: it
+          is a hole in the record, not a diagnostic, so guided mode
+          shows it (ADR-115). `AdvancedNeverHidesCaveats.test.ts` found
+          it inside the deferred panel, which is where it had been. */}
+      {status && Object.keys(status.rejection_reasons).length > 0 && (
+        <div className="glass-panel" style={{ padding: "1.25rem 1.5rem" }}>
+          <h3 style={{ marginTop: 0 }}>Records This Collector Could Not Use</h3>
+          <Explain>
+            These rows were read but could not be turned into records, so
+            whatever they described is missing from everything else on this
+            page.
+          </Explain>
+          {Object.entries(status.rejection_reasons).map(([reason, count]) => (
+            <div key={reason} style={{ fontSize: "var(--text-xs)" }}>
+              <span className="badge badge-warning">{count}</span> {humanise(reason)}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ── Source health ───────────────────────────────────── */}
       {source && (
+        <Advanced
+          title="Source health"
+          summary={`${source.event_count} event${source.event_count === 1 ? "" : "s"}`}
+        >
         <div className="glass-panel" style={{ padding: "1.25rem 1.5rem" }}>
           <h3 style={{ marginTop: 0 }}>Source Health</h3>
           <div
@@ -469,9 +501,13 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
             </div>
           </div>
         </div>
+        </Advanced>
       )}
 
-      {/* ── Collection gaps ─────────────────────────────────── */}
+      {/* ── Collection gaps ─────────────────────────────────
+          NOT deferred. A gap is a hole in the evidence — a connection
+          that opened and closed inside one was never seen at all — so
+          it is a limitation, and guided mode never hides one. */}
       {status && status.collection_gaps.length > 0 && (
         <div className="glass-panel" style={{ padding: "1.25rem 1.5rem" }}>
           <h3 style={{ marginTop: 0 }}>Collection Gaps</h3>
@@ -479,6 +515,11 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
             Periods with no successful collection. Connections that opened and closed
             inside a gap were never observed.
           </div>
+          <Explain>
+            Nothing was being recorded during these periods, so this is a hole
+            in the evidence rather than a quiet spell. Treat any conclusion
+            that spans a gap with that in mind.
+          </Explain>
           <div className="table-container">
             <table style={{ width: "100%", fontSize: "var(--text-xs)" }}>
               <thead>

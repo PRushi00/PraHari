@@ -15,6 +15,7 @@ import {
   Search,
 } from "lucide-react";
 import { HealthResponse } from "../types";
+import { GuidedModeToggle, useGuidedMode } from "./GuidedMode";
 
 export type NavTab =
   | "overview"
@@ -39,12 +40,65 @@ interface HeaderProps {
   loadingHealth: boolean;
 }
 
+interface NavEntry {
+  tab: NavTab;
+  label: string;
+  icon: React.ReactNode;
+}
+
+/**
+ * Thirteen flat tabs is a complexity problem of its own: nothing says
+ * which of them a newcomer should open first, or that `Feasibility`
+ * comes before `Threat Forecasting` (ADR-115).
+ *
+ * Grouping labels them by what the operator is trying to do. Every tab
+ * remains present in every mode — this reduces what the row makes you
+ * read, not what it lets you reach.
+ */
+const NAV_GROUPS: { legend: string; entries: NavEntry[] }[] = [
+  {
+    legend: "Collect",
+    entries: [
+      { tab: "overview", label: "Overview", icon: <Activity size={15} /> },
+      { tab: "live", label: "Live Telemetry", icon: <Wifi size={15} /> },
+      { tab: "import", label: "CSV Import", icon: <FileSpreadsheet size={15} /> },
+      { tab: "stream", label: "Stream & Replay", icon: <Radio size={15} /> },
+    ],
+  },
+  {
+    legend: "Examine",
+    entries: [
+      { tab: "events", label: "Events Explorer", icon: <Database size={15} /> },
+      { tab: "sources", label: "Sources", icon: <Radio size={15} /> },
+      { tab: "analysis", label: "Analytics", icon: <BarChart2 size={15} /> },
+    ],
+  },
+  {
+    legend: "Forecast",
+    entries: [
+      { tab: "research", label: "Feasibility", icon: <FileCheck size={15} /> },
+      { tab: "forecast", label: "Threat Forecasting", icon: <TrendingUp size={15} /> },
+      { tab: "investigate", label: "Investigation", icon: <Search size={15} /> },
+    ],
+  },
+  {
+    legend: "Operate",
+    entries: [
+      { tab: "system", label: "System Health", icon: <HeartPulse size={15} /> },
+      { tab: "admin", label: "Administration", icon: <Settings size={15} /> },
+      { tab: "audit", label: "Audit & Security", icon: <Lock size={15} /> },
+    ],
+  },
+];
+
 export const Header: React.FC<HeaderProps> = ({
   activeTab,
   onSelectTab,
   health,
   loadingHealth,
 }) => {
+  const { guided } = useGuidedMode();
+
   return (
     <header className="app-header">
       <div className="brand-section">
@@ -57,105 +111,37 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      <nav className="nav-tabs">
-        <button
-          className={`nav-btn ${activeTab === "overview" ? "active" : ""}`}
-          onClick={() => onSelectTab("overview")}
-        >
-          <Activity size={15} />
-          Overview
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "live" ? "active" : ""}`}
-          onClick={() => onSelectTab("live")}
-        >
-          <Wifi size={15} />
-          Live Telemetry
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "import" ? "active" : ""}`}
-          onClick={() => onSelectTab("import")}
-        >
-          <FileSpreadsheet size={15} />
-          CSV Import
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "stream" ? "active" : ""}`}
-          onClick={() => onSelectTab("stream")}
-        >
-          <Radio size={15} />
-          Stream & Replay
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "events" ? "active" : ""}`}
-          onClick={() => onSelectTab("events")}
-        >
-          <Database size={15} />
-          Events Explorer
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "analysis" ? "active" : ""}`}
-          onClick={() => onSelectTab("analysis")}
-        >
-          <BarChart2 size={15} />
-          Analytics
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "research" ? "active" : ""}`}
-          onClick={() => onSelectTab("research")}
-        >
-          <FileCheck size={15} />
-          Feasibility
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "forecast" ? "active" : ""}`}
-          onClick={() => onSelectTab("forecast")}
-        >
-          <TrendingUp size={15} />
-          Threat Forecasting
-        </button>
-        {/* System Health and Administration existed, typed and routed in
-            the app, but had no entry here, so no user could open them. */}
-        <button
-          className={`nav-btn ${activeTab === "sources" ? "active" : ""}`}
-          onClick={() => onSelectTab("sources")}
-        >
-          <Radio size={15} />
-          Sources
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "investigate" ? "active" : ""}`}
-          onClick={() => onSelectTab("investigate")}
-        >
-          <Search size={15} />
-          Investigation
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "system" ? "active" : ""}`}
-          onClick={() => onSelectTab("system")}
-        >
-          <HeartPulse size={15} />
-          System Health
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "admin" ? "active" : ""}`}
-          onClick={() => onSelectTab("admin")}
-        >
-          <Settings size={15} />
-          Administration
-        </button>
-        <button
-          className={`nav-btn ${activeTab === "audit" ? "active" : ""}`}
-          onClick={() => onSelectTab("audit")}
-        >
-          <Lock size={15} />
-          Audit & Security
-        </button>
+      <nav className="nav-tabs" aria-label="Primary">
+        {NAV_GROUPS.map((group) => (
+          <div className="nav-group" key={group.legend}>
+            {/* The legend is guidance, so it goes with the rest of the
+                guidance. An expert reads the tab names directly. */}
+            {guided && <span className="nav-group-label">{group.legend}</span>}
+            <div className="nav-group-row">
+              {group.entries.map((entry) => (
+                <button
+                  key={entry.tab}
+                  className={`nav-btn ${activeTab === entry.tab ? "active" : ""}`}
+                  onClick={() => onSelectTab(entry.tab)}
+                >
+                  {entry.icon}
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
       </nav>
 
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+        <GuidedModeToggle />
         <div className="status-pill">
-          <span className="status-dot" style={{ backgroundColor: health?.status === "healthy" ? "#10b981" : "#f59e0b" }} />
+          <span
+            className="status-dot"
+            style={{
+              backgroundColor: health?.status === "healthy" ? "#10b981" : "#f59e0b",
+            }}
+          />
           <span>
             {loadingHealth
               ? "CONNECTING..."

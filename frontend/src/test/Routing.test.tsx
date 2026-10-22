@@ -3,11 +3,23 @@
 // back button left the application, and System Health and Administration
 // had no way in at all.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../App";
 import { api } from "../services/api";
 import { ROUTES, normalisePath, pathFor, resolvePath } from "../routing";
+
+/**
+ * The button in the primary navigation, not any button whose text
+ * happens to name a page: the Overview page's own links say things
+ * like "Open the Events Explorer" (ADR-115).
+ */
+function navButton(name: RegExp) {
+  return within(screen.getByRole("navigation", { name: /Primary/i })).getByRole(
+    "button",
+    { name },
+  );
+}
 
 function failAllApiCalls() {
   // Pages must render their own error states; routing must not depend on data.
@@ -76,7 +88,7 @@ describe("App routing", () => {
   it("reaches the two pages that had no navigation entry", async () => {
     visit("/system-health");
     await waitFor(() => expect(activeNavLabel()).toBe("System Health"));
-    fireEvent.click(screen.getByRole("button", { name: /Administration/i }));
+    fireEvent.click(navButton(/Administration/i));
     await waitFor(() => expect(window.location.pathname).toBe("/admin"));
     expect(activeNavLabel()).toBe("Administration");
   });
@@ -85,7 +97,7 @@ describe("App routing", () => {
     visit("/");
     const before = window.history.length;
 
-    fireEvent.click(screen.getByRole("button", { name: /Events Explorer/i }));
+    fireEvent.click(navButton(/Events Explorer/i));
 
     expect(window.location.pathname).toBe("/events");
     expect(window.history.length).toBe(before + 1);
@@ -95,14 +107,14 @@ describe("App routing", () => {
   it("does not add a history entry when the current page is clicked again", async () => {
     visit("/events");
     const before = window.history.length;
-    fireEvent.click(screen.getByRole("button", { name: /Events Explorer/i }));
+    fireEvent.click(navButton(/Events Explorer/i));
     expect(window.history.length).toBe(before);
   });
 
   it("follows the browser's back and forward buttons", async () => {
     visit("/");
-    fireEvent.click(screen.getByRole("button", { name: /Analytics/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Audit & Security/i }));
+    fireEvent.click(navButton(/Analytics/i));
+    fireEvent.click(navButton(/Audit & Security/i));
     expect(activeNavLabel()).toBe("Audit & Security");
 
     await act(async () => { window.history.back(); });
@@ -139,7 +151,7 @@ describe("App routing", () => {
 
   it("survives a refresh on a page: a fresh render of the same URL opens it", async () => {
     visit("/");
-    fireEvent.click(screen.getByRole("button", { name: /Stream & Replay/i }));
+    fireEvent.click(navButton(/Stream & Replay/i));
     const { unmount } = render(<App />); // a second mount reads the address bar
     await waitFor(() =>
       expect(document.querySelectorAll("nav .nav-btn.active")).toHaveLength(2));

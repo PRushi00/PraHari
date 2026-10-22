@@ -5,12 +5,20 @@ import { api } from "../services/api";
 import { EventSummaryStats, HealthResponse, DescriptiveAnalysis } from "../types";
 
 import { UNAVAILABLE, fmtInt, fmtTime, isNum } from "../utils/format";
+import { Caption, Explain, NextSteps } from "../components/GuidedMode";
+import { NavTab } from "../components/Header";
+
 interface OverviewPageProps {
   onNavigateToImport: () => void;
   onRefreshAll: () => void;
+  onNavigate: (tab: NavTab) => void;
 }
 
-export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, onRefreshAll }) => {
+export const OverviewPage: React.FC<OverviewPageProps> = ({
+  onNavigateToImport,
+  onRefreshAll,
+  onNavigate,
+}) => {
   const [stats, setStats] = useState<EventSummaryStats | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [analysis, setAnalysis] = useState<DescriptiveAnalysis | null>(null);
@@ -189,6 +197,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
         </div>
       </div>
 
+      <Explain>
+        This page summarises the network records PraHari currently holds.
+        Nothing here is a prediction — these are counts of what has already
+        been collected or imported. Forecasting lives on the{" "}
+        <strong>Threat Forecasting</strong> page, and it only runs once there
+        is enough data for it to mean anything.
+      </Explain>
+
       {/* Stat Cards */}
       <div className="stat-grid">
         <div className="glass-panel stat-card">
@@ -197,7 +213,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <Network className="stat-icon" size={20} />
           </div>
           <div className="stat-value">{fmtInt(stats?.total_events, "0")}</div>
-          <div className="stat-subtext">Normalized canonical flows</div>
+          <div className="stat-subtext">
+            <Caption
+              plain="Network connections PraHari has recorded and saved"
+              expert="Normalized canonical flows"
+            />
+          </div>
         </div>
 
         <div className="glass-panel stat-card blue">
@@ -206,7 +227,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <Server className="stat-icon" size={20} style={{ color: "var(--accent-blue)" }} />
           </div>
           <div className="stat-value">{stats?.sources_count || "0"}</div>
-          <div className="stat-subtext">Active sensors & import channels</div>
+          <div className="stat-subtext">
+            <Caption
+              plain="Places this data came from — a live collector, or a file you imported"
+              expert="Active sensors & import channels"
+            />
+          </div>
         </div>
 
         <div className="glass-panel stat-card rose">
@@ -227,7 +253,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
                 detected" for traffic that carried no labels at all. */}
             {(stats?.labels || {})["unlabeled"]
               ? `${(stats?.labels || {})["unlabeled"]} events carry no ground-truth label`
-              : "Labelled attack categories present"}
+              : (
+                <Caption
+                  plain="Kinds of attack named in the data itself, not found by PraHari"
+                  expert="Labelled attack categories present"
+                />
+              )}
           </div>
         </div>
 
@@ -237,9 +268,37 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
             <Layers className="stat-icon" size={20} style={{ color: "var(--accent-emerald)" }} />
           </div>
           <div className="stat-value">WAL Mode</div>
-          <div className="stat-subtext">SQLite transaction isolation</div>
+          <div className="stat-subtext">
+            <Caption
+              plain="How the database writes: a crash cannot leave a half-written record"
+              expert="SQLite transaction isolation"
+            />
+          </div>
         </div>
       </div>
+
+      <NextSteps
+        steps={[
+          {
+            label: "Bring in some data",
+            detail:
+              "Import a CSV of network flows, or start the live collector to record this machine's own connections.",
+            onSelect: onNavigateToImport,
+          },
+          {
+            label: "Look at individual records",
+            detail:
+              "Open the Events Explorer to read the actual connections behind these totals, one row at a time.",
+            onSelect: () => onNavigate("events"),
+          },
+          {
+            label: "Check whether forecasting is possible yet",
+            detail:
+              "Feasibility tests the data against what a forecast needs, and says plainly when there is not enough.",
+            onSelect: () => onNavigate("research"),
+          },
+        ]}
+      />
 
       {/* If database is empty, show welcoming prompt */}
       {(!stats || stats.total_events === 0) && (
@@ -278,6 +337,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
           <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
             Distribution of benign vs attack classes across imported telemetry
           </p>
+          <Explain>
+            How much of the stored traffic is ordinary and how much carries an
+            attack label. The labels come with the data; PraHari did not decide
+            them.
+          </Explain>
           <div style={{ height: "260px" }}>
             <ReactECharts option={labelPieOption} style={{ height: "100%", width: "100%" }} />
           </div>
@@ -288,6 +352,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
           <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
             Factual distribution of connection endpoints (e.g. 443, 80, 22, 21)
           </p>
+          <Explain>
+            Which ports the recorded connections were going to. A port is the
+            numbered door a service listens on — 443 is HTTPS, 22 is SSH.
+          </Explain>
           <div style={{ height: "260px" }}>
             {topPorts.length > 0 ? (
               <ReactECharts option={portsBarOption} style={{ height: "100%", width: "100%" }} />

@@ -4,6 +4,7 @@ import { api } from "../services/api";
 import { NormalizedEvent } from "../types";
 
 import { fmtTimeUtc, humanise } from "../utils/format";
+import { Explain } from "../components/GuidedMode";
 export const EventsPage: React.FC = () => {
   const [events, setEvents] = useState<NormalizedEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -49,6 +50,11 @@ export const EventsPage: React.FC = () => {
           <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
             Query normalized telemetry with explicit provenance and quality assurance flags.
           </p>
+          <Explain>
+            Every network connection PraHari has stored, one row at a time. This
+            is the raw material behind every count and chart elsewhere in the
+            application.
+          </Explain>
         </div>
 
         {/* Filter controls */}

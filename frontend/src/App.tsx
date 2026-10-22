@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Header, NavTab } from "./components/Header";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { GuidedModeProvider } from "./components/GuidedMode";
 import { OverviewPage } from "./pages/OverviewPage";
 import { ImportPage } from "./pages/ImportPage";
 import { LiveTelemetryPage } from "./pages/LiveTelemetryPage";
@@ -87,6 +88,7 @@ export const App: React.FC = () => {
   }, []);
 
   return (
+    <GuidedModeProvider>
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <Header
         activeTab={activeTab}
@@ -114,6 +116,7 @@ export const App: React.FC = () => {
           <OverviewPage
             onNavigateToImport={() => setActiveTab("import")}
             onRefreshAll={fetchHealth}
+            onNavigate={setActiveTab}
           />
         )}
         {activeTab === "live" && (
@@ -150,5 +153,6 @@ export const App: React.FC = () => {
         PraHari — The Digital Sentinel &copy; {new Date().getFullYear()} • Canonical Security Telemetry & AI Assurance
       </footer>
     </div>
+    </GuidedModeProvider>
   );
 };

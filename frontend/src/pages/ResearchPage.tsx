@@ -9,6 +9,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "../services/api";
+import { Explain } from "../components/GuidedMode";
 import {
   FeasibilityCheckResult,
   FeasibilityReport,
@@ -135,6 +136,12 @@ export const ResearchPage: React.FC = () => {
             Audits stored telemetry for temporal integrity, label ground truth,
             provenance and data quality before any forecasting claim is made.
           </p>
+          <Explain>
+            Before any forecast is worth believing, the data has to pass some
+            checks: enough records, enough time covered, labels that mean
+            something. This page runs those checks and gives a plain verdict —
+            including “not yet”.
+          </Explain>
         </div>
         <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
           <select

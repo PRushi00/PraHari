@@ -21,6 +21,7 @@ import React, { useCallback, useState } from "react";
 import { AlertTriangle, Search } from "lucide-react";
 import { api } from "../services/api";
 import { EventLevelReport, WarningInvestigation } from "../types";
+import { Explain } from "../components/GuidedMode";
 
 const OUTCOME_COLOUR: Record<string, string> = {
   detection: "#10b981",
@@ -78,6 +79,12 @@ export const InvestigationPage: React.FC = () => {
           {loading ? "Working…" : "Load warnings"}
         </button>
       </div>
+
+      <Explain>
+        When a model issued a warning, this page shows the evidence behind it:
+        the window of time it scored, the records inside that window, and which
+        sources they came from.
+      </Explain>
 
       <div className="card">
         <p style={{ margin: 0 }}>
