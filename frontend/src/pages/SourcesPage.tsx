@@ -25,6 +25,7 @@ import { AlertTriangle, RefreshCw, Radio } from "lucide-react";
 import { api } from "../services/api";
 import { humanise } from "../utils/format";
 import { Explain } from "../components/GuidedMode";
+import { RegisterDevice } from "../components/RegisterDevice";
 import {
   AdapterHealth,
   SourceCapability,
@@ -263,9 +264,12 @@ export const SourcesPage: React.FC = () => {
           or a file you imported. The state column describes PraHari's
           evidence, not whether a remote computer is switched on.
         </Explain>
-        <button className="btn" onClick={fetchAll} disabled={loading}>
-          <RefreshCw size={14} /> {loading ? "Refreshing…" : "Refresh"}
-        </button>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+          <RegisterDevice onRegistered={fetchAll} />
+          <button className="btn" onClick={fetchAll} disabled={loading}>
+            <RefreshCw size={14} /> {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
       {error && (

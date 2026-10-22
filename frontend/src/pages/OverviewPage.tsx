@@ -2,10 +2,16 @@ import React, { useEffect, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import { ShieldAlert, Server, Network, Layers, RefreshCw, UploadCloud, CheckCircle } from "lucide-react";
 import { api } from "../services/api";
-import { EventSummaryStats, HealthResponse, DescriptiveAnalysis } from "../types";
+import {
+  EventSummaryStats,
+  HealthResponse,
+  DescriptiveAnalysis,
+  SourceHealthRecord,
+} from "../types";
 
 import { UNAVAILABLE, fmtInt, fmtTime, isNum } from "../utils/format";
 import { Caption, Explain, NextSteps } from "../components/GuidedMode";
+import { HostAndDevices } from "../components/HostAndDevices";
 import { NavTab } from "../components/Header";
 
 interface OverviewPageProps {
@@ -22,6 +28,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const [stats, setStats] = useState<EventSummaryStats | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [analysis, setAnalysis] = useState<DescriptiveAnalysis | null>(null);
+  const [sources, setSources] = useState<SourceHealthRecord[]>([]);
+  // The collector's own source id, when one is running on this
+  // machine. Absent on a platform with no collector, which is a
+  // state the panel renders rather than hides.
+  const [localSourceId, setLocalSourceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const [seedSuccess, setSeedSuccess] = useState(false);
@@ -29,14 +40,21 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const loadData = async () => {
     setLoading(true);
     try {
-      const [h, s, a] = await Promise.all([
+      const [h, s, a, health, collector] = await Promise.all([
         api.getHealth(),
         api.getEventStats(),
         api.getLatestAnalysis(),
+        // Neither of these should blank the page if it fails: the
+        // two-column panel degrades to its empty state, which is a
+        // truthful render of "PraHari does not know".
+        api.getSourceHealth().catch(() => null),
+        api.getCollectorStatus().catch(() => null),
       ]);
       setHealth(h);
       setStats(s);
       setAnalysis(a);
+      setSources(health?.sources ?? []);
+      setLocalSourceId(collector?.source_id ?? null);
     } catch (err) {
       console.error("Failed to load overview data:", err);
     } finally {
@@ -276,6 +294,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           </div>
         </div>
       </div>
+
+      <HostAndDevices
+        sources={sources}
+        localSourceId={localSourceId}
+        onOpenDevices={() => onNavigate("sources")}
+      />
 
       <NextSteps
         steps={[

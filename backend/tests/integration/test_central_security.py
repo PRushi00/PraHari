@@ -348,3 +348,56 @@ def test_credential_file_is_gitignored():
         Path(__file__).resolve().parents[3] / ".gitignore"
     ).read_text(encoding="utf-8")
     assert "secrets/" in gitignore or "credentials.json" in gitignore
+
+
+# ──────────────────────────────────────────────────────────────────
+# Source registration (ADR-118)
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_registering_a_source_requires_admin_in_central_mode(central):
+    """
+    Creating a source is at least as significant as toggling one.
+
+    `PATCH /sources/{id}/enabled` required admin; `POST /sources` did
+    not, so a sensor credential could register arbitrary source rows in
+    central mode. It granted no ingestion rights — `assert_source_access`
+    governs that separately, and a new row adds nothing to a principal's
+    allowed set — but it let a non-admin populate the registry, the
+    source-health summary and the dashboard, and take a source id a
+    legitimate producer would then be refused with a 409.
+
+    Found while building the device-registration interface over this
+    endpoint, which makes it far easier to call.
+    """
+    client, tokens, _ = central
+
+    res = client.post(
+        "/api/v1/sources",
+        json={
+            "source_id": "sensor-a-invented",
+            "name": "Invented",
+            "source_type": "json_stream",
+        },
+        headers=_auth(tokens["a"]),
+    )
+    assert res.status_code == 403, (
+        "a non-admin credential registered a telemetry source in central mode"
+    )
+
+
+def test_an_admin_may_still_register_a_source(central):
+    """The guard must not close the endpoint to the operator."""
+    client, tokens, _ = central
+
+    res = client.post(
+        "/api/v1/sources",
+        json={
+            "source_id": "lab-sensor-1",
+            "name": "Lab sensor",
+            "source_type": "json_stream",
+        },
+        headers=_auth(tokens["admin"]),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["source_id"] == "lab-sensor-1"
