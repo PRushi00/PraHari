@@ -612,11 +612,32 @@ try { $cacheCount = @(Get-DnsClientCache).Count } catch {}
 $svc = 'unknown'
 try { $svc = [string](Get-Service -Name Dnscache).Status } catch {}
 
+# The DNS-Client event channel is the other place host DNS evidence
+# could come from. Discovery on a stock Windows 11 Home machine found
+# the provider present and the channel DISABLED, which is the default
+# (ADR-119). Reporting cache occupancy without this leaves the reader
+# to assume the cache is the only possibility.
+#
+# Read-only: the channel's state is reported, never changed. Enabling
+# it requires Administrator and is the operator's decision.
+$chanPresent = $false
+$chanEnabled = $false
+$chanRecords = $null
+try {
+    $chan = Get-WinEvent -ListLog 'Microsoft-Windows-DNS-Client/Operational' -ErrorAction Stop
+    $chanPresent = $true
+    $chanEnabled = [bool]$chan.IsEnabled
+    if ($chanEnabled) { $chanRecords = [int]$chan.RecordCount }
+} catch {}
+
 ConvertTo-Json -Compress -Depth 4 -InputObject ([pscustomobject]@{
-    doh_servers      = @($doh)
-    interfaces       = @($ifaces)
-    cache_entries    = $cacheCount
-    dnscache_service = $svc
+    doh_servers           = @($doh)
+    interfaces            = @($ifaces)
+    cache_entries         = $cacheCount
+    dnscache_service      = $svc
+    event_channel_present = $chanPresent
+    event_channel_enabled = $chanEnabled
+    event_channel_records = $chanRecords
 })
 """
 
@@ -646,6 +667,13 @@ def diagnose_dns_visibility(
         "resolvers_in_known_doh_table": [],
         "resolvers_with_doh_auto_upgrade": [],
         "dnscache_service": "unknown",
+        # The DNS-Client event channel, the only other host-side source
+        # of DNS evidence (ADR-119). `None` means the probe did not
+        # report on it — an older agent, or a non-Windows host — which
+        # is kept distinct from "present and disabled".
+        "event_channel_present": None,
+        "event_channel_enabled": None,
+        "event_channel_records": None,
         "likely_causes": [],
         "conclusion": "",
         "error": None,
@@ -685,6 +713,15 @@ def diagnose_dns_visibility(
     result["doh_auto_upgrade_enabled"] = bool(doh_auto)
     result["cache_entries"] = int(data.get("cache_entries") or 0)
     result["dnscache_service"] = str(data.get("dnscache_service") or "unknown")
+    # Absent from the payload means the probe did not report on the
+    # channel at all, which is NOT the same as reporting it absent.
+    if "event_channel_present" in data:
+        result["event_channel_present"] = bool(data.get("event_channel_present"))
+        result["event_channel_enabled"] = bool(data.get("event_channel_enabled"))
+        records = data.get("event_channel_records")
+        result["event_channel_records"] = (
+            int(records) if isinstance(records, (int, float)) else None
+        )
 
     active: list[str] = []
     for iface in data.get("interfaces") or []:
@@ -733,6 +770,28 @@ def diagnose_dns_visibility(
         causes.append(
             "Cached entries may simply have expired before collection ran."
         )
+        # The other host-side source, and its state. Measured on a stock
+        # Windows 11 Home machine: provider present, channel disabled,
+        # which is the Windows default (ADR-119).
+        if result["event_channel_present"] is False:
+            causes.append(
+                "The Microsoft-Windows-DNS-Client provider is not present on "
+                "this host, so there is no event-log alternative to the cache."
+            )
+        elif result["event_channel_enabled"] is False:
+            causes.append(
+                "The Microsoft-Windows-DNS-Client/Operational event channel "
+                "exists but is DISABLED, which is the Windows default. While "
+                "it is off it records nothing, so it offers no evidence the "
+                "cache lacks. Enabling it requires Administrator and is a "
+                "change to the machine; PraHari does not make it. Whether it "
+                "would then carry query names has NOT been established here."
+            )
+        elif result["event_channel_enabled"] and not result["event_channel_records"]:
+            causes.append(
+                "The Microsoft-Windows-DNS-Client/Operational event channel is "
+                "enabled but holds no records yet."
+            )
         result["conclusion"] = (
             "No local DNS evidence is obtainable on this host, so destination "
             "hostnames cannot be attributed and are correctly reported as "

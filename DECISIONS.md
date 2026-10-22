@@ -6212,3 +6212,110 @@ traffic, and neither exists.
 The registration interface creates a registry row. **It does not install
 an agent, configure a sensor, or begin collecting**, and nothing in this
 ADR makes a registered device a monitored one.
+
+---
+
+## ADR-119: There Is No Host DNS Evidence On That Machine
+
+### Context
+`scripts/discover_dns_evidence.ps1` was written in ADR-118 and had never
+been run: this container is Linux and has no DNS-Client event log. It
+has now been run, **unelevated**, on the operator's own machine.
+
+| | |
+|---|---|
+| OS | Windows 11 Home Single Language |
+| PowerShell | 5.1.26100.9711 |
+| User | unelevated |
+| `Dnscache` service | Running |
+| `Get-DnsClientCache` | readable, **0 entries** |
+| `Microsoft-Windows-DNS-Client` | **present** |
+| `…/Operational` channel | **present, `IsEnabled: False`**, circular, 1,052,672 bytes |
+| `Microsoft-Windows-DNSServer` | absent (expected on a client) |
+
+The script completed, changed nothing, and answered the question it was
+written to answer.
+
+### The finding
+
+**On a stock Windows 11 Home machine, PraHari has no host-side DNS
+evidence available at all.**
+
+Both host sources are empty, for different reasons:
+
+* the **cache** holds nothing — and ADR's existing diagnosis already
+  lists five explanations consistent with that, none confirmable
+  read-only;
+* the **event channel** exists but is **off by default**, and while it
+  is off it records nothing.
+
+This is not a collection failure and not a defect. It is what a default
+Windows installation offers, and it is the honest answer to "why are
+there no hostnames".
+
+### Decision
+
+**The diagnosis now reports the channel, not just the cache.**
+`diagnose_dns_visibility()` probes
+`Microsoft-Windows-DNS-Client/Operational` read-only and reports
+present / enabled / record count. Without it, a reader sees an empty
+cache and reasonably concludes PraHari is failing to read something that
+is there. Both halves are needed for the conclusion to be true.
+
+Three states are kept distinct, because collapsing them would fabricate:
+
+| State | Meaning |
+|---|---|
+| `present: False` | no provider — there is no event-log alternative |
+| `present: True, enabled: False` | the measured state; it records nothing while off |
+| `None` | **the probe did not report** — an older agent, or a non-Windows host |
+
+`None` must never collapse to "absent". Claiming there is no event
+channel when nobody looked is the same class of error as drawing
+`not measured` as zero. A test pins it, and it fails when the guard is
+removed.
+
+**What the message may and may not say.** It names the cost — enabling
+the channel needs Administrator and changes the machine, so PraHari does
+not do it — and it explicitly records that **whether the channel would
+then carry query names has NOT been established**, because discovery
+could not inspect a single field while the channel was off. A test fails
+if that caveat is dropped for an encouraging "enable it to collect DNS
+events".
+
+### What this means for the adapter
+The `windows_dns_events` adapter from ADR-118's plan **cannot be
+written**. It needs real event ids and field names; discovery returned
+none, because the channel is disabled. Writing it against documentation
+would be the guesswork the discovery step exists to prevent.
+
+The sequence is unchanged, and now blocked at the same place it was
+designed to block: enable (operator's decision) → re-run discovery →
+map fields → write adapter.
+
+**The operator already has a working alternative.** Zeek is wired into
+the JSON stream path and has accepted 989/989 real records across two
+sources. A sensor observes DNS queries on the wire, which is evidence
+neither host source currently provides — and unlike the event channel,
+it needs no change to the Windows machine.
+
+### Verification
+The script's one real defect, found by running it: a disabled channel
+reports no `RecordCount`, which printed as a blank line and read as a
+missing value rather than an inapplicable one. It now prints
+`not reported (channel disabled)`.
+
+Backend `test_enrichment.py` **31 passed**. Three new tests reproduce
+the exact measured state, and each fails under the mutation it exists to
+catch.
+
+### Not established
+The probe added here has **never executed**: it is PowerShell, and this
+container is Linux. Its tests feed the parser synthetic payloads, which
+proves the parsing and the wording, **not** that
+`Get-WinEvent -ListLog` returns what the script expects on a real
+machine. That needs one more run on Windows.
+
+Nothing here establishes what the Operational channel would contain if
+enabled. It is a default-off channel whose contents this project has
+never observed.
