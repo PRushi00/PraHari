@@ -97,7 +97,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
     tooltip: { trigger: "item", formatter: "{b}: {c} events ({d}%)" },
     legend: {
       bottom: 0,
-      textStyle: { color: "#94a3b8", fontSize: 11 },
+      textStyle: { color: "#94a3b8", fontSize: 13 },
     },
     series: [
       {
@@ -133,12 +133,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
     xAxis: {
       type: "category",
       data: topPorts.map((p) => `Port ${p.port}`),
-      axisLabel: { color: "#94a3b8", fontSize: 11 },
+      axisLabel: { color: "#94a3b8", fontSize: 13 },
       axisLine: { lineStyle: { color: "#334155" } },
     },
     yAxis: {
       type: "value",
-      axisLabel: { color: "#94a3b8", fontSize: 11 },
+      axisLabel: { color: "#94a3b8", fontSize: 13 },
       splitLine: { lineStyle: { color: "rgba(51, 65, 85, 0.4)" } },
     },
     series: [
@@ -169,10 +169,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
       {/* Top action row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
         <div>
-          <h1 style={{ fontSize: "1.6rem", fontWeight: 700, letterSpacing: "-0.02em" }}>
+          <h1 style={{ fontSize: "var(--text-xl)", letterSpacing: "-0.02em" }}>
             SOC Monitoring & Analytics Dashboard
           </h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginTop: "0.2rem" }}>
+          <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
             Verified Ingestion Pipeline • Canonical Schema v{health?.schema_version || "1.0.0"} • SQLite Persistence
           </p>
         </div>
@@ -253,8 +253,8 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
           }}
         >
           <div style={{ maxWidth: "560px", margin: "0 auto" }}>
-            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>Telemetry Store is Currently Empty</h2>
-            <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
+            <h2 style={{ fontSize: "var(--text-lg)", marginBottom: "0.5rem" }}>Telemetry Store is Currently Empty</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginBottom: "1.5rem" }}>
               The PraHari ingest pipeline is ready to validate, normalize, and audit network flows. You can load our
               curated 45-row CIC-IDS2018 test fixture with 1-click or upload your own CSV file.
             </p>
@@ -274,8 +274,8 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
       {/* Charts Row */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.5rem" }}>Security Label Breakdown</h3>
-          <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+          <h3 style={{ fontSize: "var(--text-md)", marginBottom: "0.5rem" }}>Security Label Breakdown</h3>
+          <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
             Distribution of benign vs attack classes across imported telemetry
           </p>
           <div style={{ height: "260px" }}>
@@ -284,8 +284,8 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
         </div>
 
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.5rem" }}>Top Destination Ports</h3>
-          <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+          <h3 style={{ fontSize: "var(--text-md)", marginBottom: "0.5rem" }}>Top Destination Ports</h3>
+          <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
             Factual distribution of connection endpoints (e.g. 443, 80, 22, 21)
           </p>
           <div style={{ height: "260px" }}>
@@ -299,7 +299,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
                   alignItems: "center",
                   justifyContent: "center",
                   color: "var(--text-dim)",
-                  fontSize: "0.85rem",
+                  fontSize: "var(--text-xs)",
                 }}
               >
                 No port distribution data available yet
@@ -314,9 +314,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
             <div>
-              <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Descriptive Analysis Summary</h3>
-              <p style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>
-                Computed at {fmtTime(analysis.computed_at, "—")} • Scope: {analysis.source_id}
+              <h3 style={{ fontSize: "var(--text-md)" }}>Descriptive Analysis Summary</h3>
+              <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>
+                Computed at {fmtTime(analysis.computed_at, "—")} • Scope:{" "}
+                <code>{analysis.source_id}</code>
               </p>
             </div>
             <span className="badge badge-info">Factual Statistics Only (No Forecast)</span>
@@ -324,28 +325,28 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigateToImport, 
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem" }}>
             <div style={{ background: "rgba(15, 23, 42, 0.5)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Unique Source IPs</div>
-              <div style={{ fontSize: "1.3rem", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
+              <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>Unique Source IPs</div>
+              <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
                 {analysis.unique_src_ips}
               </div>
             </div>
             <div style={{ background: "rgba(15, 23, 42, 0.5)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Unique Destination IPs</div>
-              <div style={{ fontSize: "1.3rem", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
+              <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>Unique Destination IPs</div>
+              <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
                 {analysis.unique_dst_ips}
               </div>
             </div>
             <div style={{ background: "rgba(15, 23, 42, 0.5)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Avg Flow Duration</div>
-              <div style={{ fontSize: "1.3rem", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
+              <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>Avg Flow Duration</div>
+              <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
                 {isNum(analysis.avg_duration)
                   ? `${(analysis.avg_duration / 1000).toFixed(1)} ms`
                   : UNAVAILABLE}
               </div>
             </div>
             <div style={{ background: "rgba(15, 23, 42, 0.5)", padding: "1rem", borderRadius: "8px" }}>
-              <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Records With Warnings</div>
-              <div style={{ fontSize: "1.3rem", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
+              <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>Records With Warnings</div>
+              <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, fontFamily: "var(--font-mono)", marginTop: "0.25rem" }}>
                 {analysis.records_with_warnings}
               </div>
             </div>

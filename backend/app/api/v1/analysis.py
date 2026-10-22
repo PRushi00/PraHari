@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.api.auth import require_admin_in_central
 from app.api.deps import get_db
 from app.core.config import AppConfig, get_config
+from app.research.label_policy import describe_breakdown
 from app.services.analysis import compute_descriptive_analysis
 from app.services.enrichment import get_enrichment_service
 from app.storage.database import Database
@@ -95,7 +96,8 @@ def run_analysis(
         resource_id=analysis.analysis_id,
         details=(
             f"Computed analysis across {analysis.total_events} events for "
-            f"{analysis.source_id} (categories={analysis.data_categories})"
+            f"{analysis.source_id} "
+            f"(categories: {describe_breakdown(analysis.data_categories)})"
         ),
     )
     return analysis

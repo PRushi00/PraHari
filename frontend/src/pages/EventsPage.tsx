@@ -3,7 +3,7 @@ import { Filter, Eye, X, ChevronLeft, ChevronRight, ShieldCheck, AlertOctagon } 
 import { api } from "../services/api";
 import { NormalizedEvent } from "../types";
 
-import { fmtTimeUtc } from "../utils/format";
+import { fmtTimeUtc, humanise } from "../utils/format";
 export const EventsPage: React.FC = () => {
   const [events, setEvents] = useState<NormalizedEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -43,10 +43,10 @@ export const EventsPage: React.FC = () => {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
         <div>
-          <h1 style={{ fontSize: "1.6rem", fontWeight: 700, letterSpacing: "-0.02em" }}>
+          <h1 style={{ fontSize: "var(--text-xl)", letterSpacing: "-0.02em" }}>
             Canonical Security Events
           </h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginTop: "0.2rem" }}>
+          <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
             Query normalized telemetry with explicit provenance and quality assurance flags.
           </p>
         </div>
@@ -112,21 +112,21 @@ export const EventsPage: React.FC = () => {
                       </td>
                       <td>
                         {ev.quality_flags.length > 0 ? (
-                          <div style={{ display: "flex", gap: "0.3rem" }}>
+                          <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
                             {ev.quality_flags.map((qf) => (
                               <span key={qf} className="badge badge-warning">
-                                {qf}
+                                {humanise(qf)}
                               </span>
                             ))}
                           </div>
                         ) : (
-                          <span style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>Clean</span>
+                          <span style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>Clean</span>
                         )}
                       </td>
                       <td style={{ textAlign: "right" }}>
                         <button
                           className="btn btn-secondary"
-                          style={{ padding: "0.25rem 0.6rem", fontSize: "0.75rem" }}
+                          style={{ padding: "0.25rem 0.6rem", fontSize: "var(--text-2xs)" }}
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedEvent(ev);
@@ -160,7 +160,7 @@ export const EventsPage: React.FC = () => {
             borderTop: "1px solid var(--border-subtle)",
           }}
         >
-          <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
+          <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
             Showing {Math.min(offset + 1, total)} to {Math.min(offset + limit, total)} of {total} events
           </div>
 
@@ -192,7 +192,7 @@ export const EventsPage: React.FC = () => {
         <div className="drawer-backdrop" onClick={() => setSelectedEvent(null)}>
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-              <h2 style={{ fontSize: "1.2rem", fontWeight: 700 }}>Canonical Event Inspector</h2>
+              <h2 style={{ fontSize: "var(--text-lg)" }}>Canonical Event Inspector</h2>
               <button
                 onClick={() => setSelectedEvent(null)}
                 style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
@@ -202,38 +202,38 @@ export const EventsPage: React.FC = () => {
             </div>
 
             <div style={{ marginBottom: "1.5rem" }}>
-              <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Event ID</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem", wordBreak: "break-all", marginTop: "0.2rem" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", textTransform: "uppercase" }}>Event ID</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)", wordBreak: "break-all", marginTop: "0.2rem" }}>
                 {selectedEvent.event_id}
               </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem" }}>
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>Schema Version</div>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>Schema Version</div>
                 <div style={{ fontWeight: 600 }}>{selectedEvent.schema_version}</div>
               </div>
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>Data Category</div>
-                <div style={{ fontWeight: 600 }}>{selectedEvent.data_category}</div>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>Data Category</div>
+                <div style={{ fontWeight: 600 }}>{humanise(selectedEvent.data_category)}</div>
               </div>
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>Observed Timestamp</div>
-                <div style={{ fontSize: "0.8rem", fontFamily: "var(--font-mono)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>Observed Timestamp</div>
+                <div style={{ fontSize: "var(--text-xs)", fontFamily: "var(--font-mono)" }}>
                   {new Date(selectedEvent.observed_at).toISOString()}
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>Ingested Timestamp</div>
-                <div style={{ fontSize: "0.8rem", fontFamily: "var(--font-mono)" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>Ingested Timestamp</div>
+                <div style={{ fontSize: "var(--text-xs)", fontFamily: "var(--font-mono)" }}>
                   {new Date(selectedEvent.ingested_at).toISOString()}
                 </div>
               </div>
             </div>
 
             <div style={{ marginBottom: "1.5rem", background: "rgba(15, 23, 42, 0.6)", padding: "1rem", borderRadius: "8px" }}>
-              <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>Flow Endpoints</h4>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem" }}>
+              <h4 style={{ fontSize: "var(--text-md)", color: "var(--text-muted)", marginBottom: "0.5rem" }}>Flow Endpoints</h4>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)" }}>
                 <div>Src: {selectedEvent.src_ip || "N/A"}:{selectedEvent.src_port ?? "N/A"}</div>
                 <div>Dst: {selectedEvent.dst_ip || "N/A"}:{selectedEvent.dst_port ?? "N/A"}</div>
                 <div>Protocol: {selectedEvent.protocol}</div>
@@ -244,20 +244,20 @@ export const EventsPage: React.FC = () => {
             </div>
 
             <div style={{ marginBottom: "1.5rem" }}>
-              <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginBottom: "0.4rem" }}>Raw Audit Reference</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.8rem", color: "#38bdf8" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginBottom: "0.4rem" }}>Raw Audit Reference</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)", color: "#38bdf8" }}>
                 {selectedEvent.raw_reference || "None"}
               </div>
             </div>
 
             <div>
-              <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginBottom: "0.5rem" }}>Full Canonical JSON</div>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginBottom: "0.5rem" }}>Full Canonical JSON</div>
               <pre
                 style={{
                   background: "#080c14",
                   padding: "1rem",
                   borderRadius: "8px",
-                  fontSize: "0.75rem",
+                  fontSize: "var(--text-2xs)",
                   fontFamily: "var(--font-mono)",
                   overflowX: "auto",
                   border: "1px solid var(--border-subtle)",

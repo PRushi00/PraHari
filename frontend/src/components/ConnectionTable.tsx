@@ -54,7 +54,7 @@ const HostnameCell: React.FC<{ attribution: DomainAttribution | null }> = ({ att
       <span
         style={{
           marginLeft: "0.4rem",
-          fontSize: "0.62rem",
+          fontSize: "var(--text-2xs)",
           padding: "0.05rem 0.3rem",
           borderRadius: "3px",
           border: `1px solid ${color}`,
@@ -129,7 +129,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
 
   if (connections.length === 0) {
     return (
-      <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-dim)", fontSize: "0.85rem" }}>
+      <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>
         No connections match the current filters.
       </div>
     );
@@ -137,7 +137,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
 
   return (
     <div className="table-container">
-      <table style={{ width: "100%", fontSize: "0.76rem" }}>
+      <table style={{ width: "100%", fontSize: "var(--text-2xs)" }}>
         <thead>
           <tr>
             <th style={{ width: "1.5rem" }} />
@@ -259,7 +259,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
                               )}
                             </>
                           ) : (
-                            <div style={{ color: "var(--text-dim)", fontSize: "0.72rem" }}>
+                            <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)" }}>
                               No hostname could be attributed.
                             </div>
                           )}
@@ -268,7 +268,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
                               style={{
                                 margin: "0.5rem 0 0",
                                 paddingLeft: "1rem",
-                                fontSize: "0.68rem",
+                                fontSize: "var(--text-2xs)",
                                 color: "var(--text-dim)",
                               }}
                             >
@@ -297,7 +297,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
                               <Detail label="Protocol" value={e.app_protocol ?? "—"} />
                             </>
                           ) : (
-                            <div style={{ color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.6 }}>
+                            <div style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", lineHeight: 1.6 }}>
                               Not observed by this source. A destination port
                               is not evidence of an application protocol, and
                               HTTP status codes are not TCP states. These
@@ -306,7 +306,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
                             </div>
                           )}
 
-                          <div style={{ marginTop: "0.6rem", fontSize: "0.68rem", color: "var(--text-dim)" }}>
+                          <div style={{ marginTop: "0.6rem", fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
                             <strong>Unavailable from this source:</strong>{" "}
                             {c.unsupported_fields.join(", ") || "none"}
                           </div>
@@ -325,7 +325,7 @@ export const ConnectionTable: React.FC<Props> = ({ connections, loading }) => {
 };
 
 const Detail: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <div style={{ display: "flex", gap: "0.5rem", fontSize: "0.72rem", marginBottom: "0.2rem" }}>
+  <div style={{ display: "flex", gap: "0.5rem", fontSize: "var(--text-2xs)", marginBottom: "0.2rem" }}>
     <span style={{ color: "var(--text-dim)", minWidth: "8.5rem" }}>{label}</span>
     <span style={{ wordBreak: "break-all" }}>{value}</span>
   </div>

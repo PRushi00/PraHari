@@ -64,7 +64,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             gap: "0.6rem",
             color: "#fca5a5",
             fontWeight: 600,
-            fontSize: "1.05rem",
+            fontSize: "var(--text-lg)",
           }}
         >
           <AlertTriangle size={20} />
@@ -74,7 +74,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
         <p
           style={{
             marginTop: "0.9rem",
-            fontSize: "0.85rem",
+            fontSize: "var(--text-xs)",
             lineHeight: 1.6,
             color: "var(--text-muted)",
           }}
@@ -92,7 +92,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             border: "1px solid var(--border-subtle)",
             borderRadius: "6px",
             fontFamily: "monospace",
-            fontSize: "0.74rem",
+            fontSize: "var(--text-2xs)",
             color: "var(--text-dim)",
             wordBreak: "break-word",
           }}
@@ -103,14 +103,14 @@ export class ErrorBoundary extends React.Component<Props, State> {
         {info?.componentStack && (
           <details style={{ marginTop: "0.75rem" }}>
             <summary
-              style={{ cursor: "pointer", fontSize: "0.76rem", color: "var(--text-dim)" }}
+              style={{ cursor: "pointer", fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}
             >
               Component stack
             </summary>
             <pre
               style={{
                 marginTop: "0.5rem",
-                fontSize: "0.68rem",
+                fontSize: "var(--text-2xs)",
                 color: "var(--text-dim)",
                 whiteSpace: "pre-wrap",
                 maxHeight: "14rem",

@@ -14,7 +14,7 @@ import {
 import { api } from "../services/api";
 import { ConnectionTable } from "../components/ConnectionTable";
 import { AppLayerPanel } from "../components/AppLayerPanel";
-import { fmtFixed, fmtInt } from "../utils/format";
+import { fmtFixed, fmtInt, humanise } from "../utils/format";
 import {
   CollectorStatus,
   ConnectionDetail,
@@ -192,7 +192,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               <Radio size={20} style={{ color: style.color }} />
               Live Windows Telemetry
             </h2>
-            <div style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: "0.35rem" }}>
+            <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)", marginTop: "0.35rem" }}>
               Genuine TCP connection metadata polled from this host&apos;s Windows
               connection table
             </div>
@@ -207,7 +207,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               <span>{style.label}</span>
             </div>
 
-            <label style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
+            <label style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
               Interval
               <input
                 type="number"
@@ -301,7 +301,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
             <span className="stat-label">Last Successful Poll</span>
             <Activity className="stat-icon" size={18} style={{ color: "var(--accent-blue)" }} />
           </div>
-          <div className="stat-value" style={{ fontSize: "1.35rem" }}>
+          <div className="stat-value" style={{ fontSize: "var(--text-lg)" }}>
             {relativeSeconds(status?.last_success_at ?? null)}
           </div>
           <div className="stat-subtext">
@@ -318,7 +318,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               style={{ color: "var(--accent-emerald)" }}
             />
           </div>
-          <div className="stat-value" style={{ fontSize: "1.35rem" }}>
+          <div className="stat-value" style={{ fontSize: "var(--text-lg)" }}>
             {relativeSeconds(status?.latest_event_observed_at ?? null)}
           </div>
           <div className="stat-subtext">Newest connection start time seen</div>
@@ -344,11 +344,11 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
       <div className="glass-panel" style={{ padding: "1.25rem 1.5rem" }}>
         <h3 style={{ marginTop: 0 }}>
           Ingestion Accounting{" "}
-          <span style={{ fontSize: "0.72rem", fontWeight: 400, color: "var(--text-dim)" }}>
+          <span style={{ fontSize: "var(--text-2xs)", fontWeight: 400, color: "var(--text-dim)" }}>
             (this collector process)
           </span>
         </h3>
-        <div style={{ color: "var(--text-dim)", fontSize: "0.78rem", marginBottom: "0.75rem" }}>
+        <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)", marginBottom: "0.75rem" }}>
           Every observed record falls into exactly one outcome, so{" "}
           <strong>observed = accepted + repeats + filtered + rejected</strong>.
         </div>
@@ -357,7 +357,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
         <div
           style={{
             color: "var(--text-dim)",
-            fontSize: "0.72rem",
+            fontSize: "var(--text-2xs)",
             lineHeight: 1.7,
             marginBottom: "1rem",
             paddingLeft: "0.75rem",
@@ -391,10 +391,10 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               "Failed validation — genuinely unusable data."],
           ].map(([label, value, color, help]) => (
             <div key={label as string} title={help as string}>
-              <div style={{ fontSize: "1.6rem", fontWeight: 600, color: color as string }}>
+              <div style={{ fontSize: "var(--text-xl)", fontWeight: 600, color: color as string }}>
                 {value as number}
               </div>
-              <div style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>
+              <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
                 {label as string}
               </div>
             </div>
@@ -403,12 +403,12 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
 
         {status && Object.keys(status.rejection_reasons).length > 0 && (
           <div style={{ marginTop: "1rem" }}>
-            <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginBottom: "0.4rem" }}>
+            <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginBottom: "0.4rem" }}>
               Rejection reasons
             </div>
             {Object.entries(status.rejection_reasons).map(([reason, count]) => (
-              <div key={reason} style={{ fontSize: "0.78rem" }}>
-                <span className="badge badge-warning">{count}</span> {reason}
+              <div key={reason} style={{ fontSize: "var(--text-xs)" }}>
+                <span className="badge badge-warning">{count}</span> {humanise(reason)}
               </div>
             ))}
           </div>
@@ -420,7 +420,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               marginTop: "1rem",
               paddingTop: "1rem",
               borderTop: "1px solid var(--border-subtle)",
-              fontSize: "0.8rem",
+              fontSize: "var(--text-xs)",
             }}
           >
             <strong>Most recent manual poll</strong> ({fmtTime(lastPoll.polled_at)}): observed{" "}
@@ -440,16 +440,16 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               display: "grid",
               gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
               gap: "0.9rem",
-              fontSize: "0.82rem",
+              fontSize: "var(--text-xs)",
             }}
           >
             <div>
               <div style={{ color: "var(--text-dim)" }}>Source ID</div>
-              <div>{source.source_id}</div>
+              <div><code>{source.source_id}</code></div>
             </div>
             <div>
               <div style={{ color: "var(--text-dim)" }}>Collection method</div>
-              <div>{source.source_type}</div>
+              <div><code>{source.source_type}</code></div>
             </div>
             <div>
               <div style={{ color: "var(--text-dim)" }}>Status</div>
@@ -475,12 +475,12 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
       {status && status.collection_gaps.length > 0 && (
         <div className="glass-panel" style={{ padding: "1.25rem 1.5rem" }}>
           <h3 style={{ marginTop: 0 }}>Collection Gaps</h3>
-          <div style={{ color: "var(--text-dim)", fontSize: "0.78rem", marginBottom: "0.75rem" }}>
+          <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)", marginBottom: "0.75rem" }}>
             Periods with no successful collection. Connections that opened and closed
             inside a gap were never observed.
           </div>
           <div className="table-container">
-            <table style={{ width: "100%", fontSize: "0.78rem" }}>
+            <table style={{ width: "100%", fontSize: "var(--text-xs)" }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left" }}>From</th>
@@ -513,7 +513,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               display: "grid",
               gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
               gap: "0.9rem",
-              fontSize: "0.8rem",
+              fontSize: "var(--text-xs)",
             }}
           >
             <div>
@@ -553,7 +553,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
                 background: "rgba(0,0,0,0.2)",
                 border: "1px solid var(--border-subtle)",
                 borderRadius: "6px",
-                fontSize: "0.74rem",
+                fontSize: "var(--text-2xs)",
                 lineHeight: 1.7,
               }}
             >
@@ -613,7 +613,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
             style={{
               margin: "0.9rem 0 0",
               paddingLeft: "1.1rem",
-              fontSize: "0.72rem",
+              fontSize: "var(--text-2xs)",
               color: "var(--text-dim)",
               lineHeight: 1.7,
             }}
@@ -638,13 +638,13 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
         >
           <h3 style={{ marginTop: 0, marginBottom: 0 }}>
             Observed Connections{" "}
-            <span style={{ fontSize: "0.75rem", color: "var(--text-dim)", fontWeight: 400 }}>
+            <span style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", fontWeight: 400 }}>
               (showing {returnedCount} of {eventTotal} stored)
             </span>
           </h3>
           <label
             style={{
-              fontSize: "0.72rem",
+              fontSize: "var(--text-2xs)",
               color: "var(--text-dim)",
               display: "flex",
               alignItems: "center",
@@ -677,7 +677,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
             ["Port", filterPort, setFilterPort, "443"],
             ["State", filterState, setFilterState, "Established"],
           ].map(([label, value, setter, placeholder]) => (
-            <label key={label as string} style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>
+            <label key={label as string} style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)" }}>
               {label as string}
               <input
                 value={value as string}
@@ -691,7 +691,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
                   border: "1px solid var(--border-subtle)",
                   borderRadius: "4px",
                   color: "inherit",
-                  fontSize: "0.74rem",
+                  fontSize: "var(--text-2xs)",
                 }}
               />
             </label>
@@ -704,7 +704,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               padding: "2rem",
               textAlign: "center",
               color: "var(--text-dim)",
-              fontSize: "0.85rem",
+              fontSize: "var(--text-xs)",
             }}
           >
             {eventTotal === 0
@@ -717,7 +717,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
           <ConnectionTable connections={connections} />
         )}
 
-        <div style={{ marginTop: "0.9rem", fontSize: "0.7rem", color: "var(--text-dim)", lineHeight: 1.7 }}>
+        <div style={{ marginTop: "0.9rem", fontSize: "var(--text-2xs)", color: "var(--text-dim)", lineHeight: 1.7 }}>
           Click a row for full detail and evidence. <strong>TCP</strong> is the
           transport; a destination port does not establish which application
           protocol was used, and HTTP status codes are application-layer values
@@ -733,11 +733,11 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
         <h3 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <Info size={16} /> What This Source Can and Cannot See
         </h3>
-        <div style={{ color: "var(--text-dim)", fontSize: "0.78rem", marginBottom: "0.75rem" }}>
+        <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)", marginBottom: "0.75rem" }}>
           These limits are reported by the collector itself. Fields this source cannot
           provide are stored as null and flagged, never estimated.
         </div>
-        <ul style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.8rem", lineHeight: 1.75 }}>
+        <ul style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "var(--text-xs)", lineHeight: 1.75 }}>
           {(status?.capability_notes ?? []).map((note, i) => (
             <li key={i}>{note}</li>
           ))}
@@ -748,7 +748,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
               marginTop: "1rem",
               paddingTop: "0.9rem",
               borderTop: "1px solid var(--border-subtle)",
-              fontSize: "0.76rem",
+              fontSize: "var(--text-2xs)",
               color: "var(--text-dim)",
             }}
           >
@@ -757,7 +757,7 @@ export const LiveTelemetryPage: React.FC<{ onDataChanged?: () => void }> = ({
             Loopback-only connections:{" "}
             {status.include_loopback ? "included" : "excluded from collection scope"}
             <br />
-            Data category: <strong>{status.data_category}</strong> — kept distinct from
+            Data category: <strong>{humanise(status.data_category)}</strong> — kept distinct from
             historical imports, replays and test fixtures.
           </div>
         )}

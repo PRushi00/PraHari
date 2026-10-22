@@ -113,3 +113,53 @@ export function fmtElapsed(
 export function safeSeries(values: unknown[]): number[] {
   return values.filter(isNum);
 }
+
+/* ──────────────────────────────────────────────────────────────────
+   Labels versus identifiers (ADR-114)
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Turn an underscore-separated VALUE into readable prose.
+ *
+ * Use this only for values that **describe a condition** — a source
+ * state, a data category, a quality flag, a rejection reason. Those are
+ * prose wearing an underscore, and `timestamp_uncertainty` reads far
+ * better as "Timestamp uncertainty".
+ *
+ * Do **NOT** use it on an identifier: a `source_id`, `model_id`,
+ * `event_id`, schema field name or feature name. Those are keys the
+ * system matches on exactly, and rendering `windows_local_host` as
+ * "Windows Local Host" would invent a second spelling for one thing —
+ * an operator comparing the screen with a config file or an API
+ * response would then find no match. Identifiers belong in `<code>`,
+ * which the stylesheet renders in mono so the difference is visible.
+ *
+ * Acronyms the project uses are preserved rather than title-cased into
+ * nonsense ("Dns" and "Ip" help nobody).
+ */
+const KEEP_UPPER = new Set([
+  "ip", "tcp", "udp", "dns", "http", "https", "url", "uri", "id", "ids",
+  "api", "cpu", "rss", "csv", "json", "ndjson", "utc", "sql", "xss",
+  "pr", "auc", "roc", "ddos", "dos", "ftp", "ssh", "tls", "ssl", "os",
+]);
+
+export function humanise(value: unknown, fallback: string = UNAVAILABLE): string {
+  if (typeof value !== "string" || value.trim() === "") return fallback;
+
+  const words = value
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .split(" ");
+
+  return words
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      if (KEEP_UPPER.has(lower)) return lower.toUpperCase();
+      // Only the first word is capitalised: sentence case reads as prose,
+      // Title Case Reads As A Heading And Is Harder To Scan.
+      if (index === 0) return lower.charAt(0).toUpperCase() + lower.slice(1);
+      return lower;
+    })
+    .join(" ");
+}

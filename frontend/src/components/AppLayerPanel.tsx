@@ -106,7 +106,7 @@ export const AppLayerPanel: React.FC = () => {
             background: "rgba(0,0,0,0.2)",
             border: "1px solid var(--border-subtle)",
             borderRadius: "6px",
-            fontSize: "0.78rem",
+            fontSize: "var(--text-xs)",
             lineHeight: 1.75,
           }}
         >
@@ -143,7 +143,7 @@ export const AppLayerPanel: React.FC = () => {
           <div
             style={{
               marginTop: "0.75rem",
-              fontSize: "0.74rem",
+              fontSize: "var(--text-2xs)",
               color: "var(--text-dim)",
               lineHeight: 1.7,
             }}
@@ -155,7 +155,7 @@ export const AppLayerPanel: React.FC = () => {
           </div>
 
           <div className="table-container" style={{ marginTop: "0.9rem" }}>
-            <table style={{ width: "100%", fontSize: "0.76rem" }}>
+            <table style={{ width: "100%", fontSize: "var(--text-2xs)" }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left" }}>Observed</th>
@@ -207,7 +207,7 @@ export const AppLayerPanel: React.FC = () => {
             marginTop: "1rem",
             paddingTop: "0.9rem",
             borderTop: "1px solid var(--border-subtle)",
-            fontSize: "0.72rem",
+            fontSize: "var(--text-2xs)",
             color: "var(--text-dim)",
             lineHeight: 1.75,
           }}

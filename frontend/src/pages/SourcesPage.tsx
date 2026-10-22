@@ -23,6 +23,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw, Radio } from "lucide-react";
 import { api } from "../services/api";
+import { humanise } from "../utils/format";
 import {
   AdapterHealth,
   SourceCapability,
@@ -68,15 +69,17 @@ const SourceCard: React.FC<SourceCardProps> = ({ record, adapter, capability }) 
     >
       <div>
         <h3 style={{ margin: 0 }}>{record.name}</h3>
-        <code style={{ fontSize: "0.85em", opacity: 0.8 }}>{record.source_id}</code>
-        <span style={{ marginLeft: "0.6rem", opacity: 0.7 }}>{record.source_type}</span>
+        <code style={{ opacity: 0.8 }}>{record.source_id}</code>
+        <span style={{ marginLeft: "0.5rem", opacity: 0.75 }}>
+          <code>{record.source_type}</code>
+        </span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
         <span
           className="status-dot"
           style={{ backgroundColor: stateColour(record.state) }}
         />
-        <strong>{record.state}</strong>
+        <strong>{humanise(record.state)}</strong>
         {!record.enabled && (
           <span style={{ color: "#f59e0b" }}>· ingestion disabled</span>
         )}
@@ -284,7 +287,7 @@ export const SourcesPage: React.FC = () => {
             </strong>{" "}
             ·{" "}
             {Object.entries(summary.counts_by_state)
-              .map(([state, n]) => `${n} ${state}`)
+              .map(([state, n]) => `${n} ${humanise(state).toLowerCase()}`)
               .join(" · ")}{" "}
             · evaluated {new Date(summary.evaluated_at).toISOString()}
             <ul style={{ marginTop: "0.5rem" }}>

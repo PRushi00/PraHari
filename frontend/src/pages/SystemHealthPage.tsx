@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { SystemHealthReport, HealthBlock } from "../types";
-import { fmtTime } from "../utils/format";
+import { fmtTime, humanise } from "../utils/format";
 
 /**
  * System Health (blueprint §11).
@@ -234,7 +234,7 @@ export const SystemHealthPage: React.FC = () => {
                   <div className="metric-grid">
                     {Object.entries(d.counts_by_state ?? {}).map(([state, n]) => (
                       <div className="metric" key={state}>
-                        <span className="metric-label">{state}</span>
+                        <span className="metric-label">{humanise(state)}</span>
                         <Measured value={n as number} />
                       </div>
                     ))}
@@ -252,11 +252,11 @@ export const SystemHealthPage: React.FC = () => {
                     <tbody>
                       {(d.sources ?? []).map((s: any) => (
                         <tr key={s.source_id}>
-                          <td>{s.name || s.source_id}</td>
-                          <td>{s.source_type}</td>
+                          <td>{s.name || <code>{s.source_id}</code>}</td>
+                          <td><code>{s.source_type}</code></td>
                           <td>
                             <span className={`badge badge-${s.state}`}>
-                              {s.state}
+                              {humanise(s.state)}
                             </span>
                           </td>
                           <td>{s.event_count?.toLocaleString() ?? "—"}</td>
@@ -326,7 +326,7 @@ export const SystemHealthPage: React.FC = () => {
                   <Measured value={d.journal_mode} />
                 </div>
                 <div className="metric">
-                  <span className="metric-label">received_at migration</span>
+                  <span className="metric-label">Received-at column</span>
                   <span className="metric-value">
                     {d.received_at_column_present ? "applied" : "not applied"}
                   </span>

@@ -3,7 +3,7 @@ import { RefreshCw, AlertCircle, Info } from "lucide-react";
 import { api } from "../services/api";
 import { DescriptiveAnalysis } from "../types";
 
-import { UNAVAILABLE, fmtFixed, fmtInt, fmtTime, isNum } from "../utils/format";
+import { UNAVAILABLE, fmtFixed, fmtInt, fmtTime, isNum, humanise } from "../utils/format";
 export const AnalysisPage: React.FC = () => {
   const [analysis, setAnalysis] = useState<DescriptiveAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,10 +63,10 @@ export const AnalysisPage: React.FC = () => {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
         <div>
-          <h1 style={{ fontSize: "1.6rem", fontWeight: 700, letterSpacing: "-0.02em" }}>
+          <h1 style={{ fontSize: "var(--text-xl)", letterSpacing: "-0.02em" }}>
             Descriptive Historical Analysis
           </h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginTop: "0.2rem" }}>
+          <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", marginTop: "0.2rem" }}>
             Objective statistical profiling of ingested network telemetry.
           </p>
         </div>
@@ -92,10 +92,10 @@ export const AnalysisPage: React.FC = () => {
       >
         <Info size={22} color="#38bdf8" style={{ flexShrink: 0, marginTop: "0.2rem" }} />
         <div>
-          <h4 style={{ fontSize: "0.95rem", fontWeight: 600, color: "#38bdf8", marginBottom: "0.25rem" }}>
+          <h4 style={{ fontSize: "var(--text-md)", color: "#38bdf8", marginBottom: "0.25rem" }}>
             Research Feasibility Guardrail Active
           </h4>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", lineHeight: 1.5 }}>
+          <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", lineHeight: 1.5 }}>
             This service computes strictly factual retrospective statistics summarizing observed telemetry. In compliance
             with the Master Engineering Specification, predictive machine-learning forecasting models will not be enabled
             until the formal dataset audit and research gate criteria are fully passed.
@@ -110,8 +110,8 @@ export const AnalysisPage: React.FC = () => {
       ) : !analysis || analysis.total_events === 0 ? (
         <div className="glass-panel" style={{ padding: "3rem", textAlign: "center" }}>
           <AlertCircle size={36} color="#94a3b8" style={{ margin: "0 auto 1rem" }} />
-          <h3 style={{ fontSize: "1.2rem", marginBottom: "0.5rem" }}>No Analysis Available</h3>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", maxWidth: "480px", margin: "0 auto 1.5rem" }}>
+          <h3 style={{ fontSize: "var(--text-lg)", marginBottom: "0.5rem" }}>No Analysis Available</h3>
+          <p style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)", maxWidth: "480px", margin: "0 auto 1.5rem" }}>
             Import or seed events first to calculate factual statistical profiles across IP addresses, ports, and protocols.
           </p>
           <button className="btn btn-primary" onClick={handleRecompute} disabled={recomputing}>
@@ -165,10 +165,10 @@ export const AnalysisPage: React.FC = () => {
 
           {/* Provenance — derived from the analyzed events, not declared */}
           <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "2rem" }}>
-            <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+            <h3 style={{ fontSize: "var(--text-md)", marginBottom: "0.25rem" }}>
               Data Provenance
             </h3>
-            <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+            <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
               Derived from the records actually summarized, so live telemetry,
               historical imports and synthetic fixtures stay distinguishable.
             </p>
@@ -180,50 +180,50 @@ export const AnalysisPage: React.FC = () => {
               }}
             >
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
                   By data category
                 </div>
                 {Object.entries(analysis.data_categories || {}).map(([cat, count]) => (
-                  <div key={cat} style={{ fontSize: "0.8rem", marginBottom: "0.2rem" }}>
+                  <div key={cat} style={{ fontSize: "var(--text-xs)", marginBottom: "0.2rem" }}>
                     <span
                       className={cat === "live_telemetry" ? "badge badge-benign" : "badge badge-info"}
                     >
-                      {cat}
+                      {humanise(cat)}
                     </span>{" "}
                     {count}
                   </div>
                 ))}
                 {Object.keys(analysis.data_categories || {}).length === 0 && (
-                  <div style={{ color: "var(--text-dim)", fontSize: "0.8rem" }}>No events.</div>
+                  <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>No events.</div>
                 )}
               </div>
 
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
                   By source
                 </div>
                 {Object.entries(analysis.source_breakdown || {}).map(([src, count]) => (
-                  <div key={src} style={{ fontSize: "0.8rem", marginBottom: "0.2rem" }}>
-                    {src}: {count}
+                  <div key={src} style={{ fontSize: "var(--text-xs)", marginBottom: "0.2rem" }}>
+                    <code>{src}</code> {count}
                   </div>
                 ))}
               </div>
 
               <div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
                   Observation window
                 </div>
-                <div style={{ fontSize: "0.78rem" }}>
+                <div style={{ fontSize: "var(--text-xs)" }}>
                   {fmtTime(analysis.time_range_start, "—")}
                 </div>
-                <div style={{ fontSize: "0.78rem" }}>
+                <div style={{ fontSize: "var(--text-xs)" }}>
                   to{" "}
                   {fmtTime(analysis.time_range_end, "—")}
                 </div>
                 {(analysis.implausible_timestamp_events ?? 0) > 0 && (
                   <div
                     style={{
-                      fontSize: "0.7rem",
+                      fontSize: "var(--text-2xs)",
                       color: "#f59e0b",
                       marginTop: "0.4rem",
                       lineHeight: 1.5,
@@ -235,7 +235,7 @@ export const AnalysisPage: React.FC = () => {
                     window. Including one would imply a span of centuries.
                   </div>
                 )}
-                <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginTop: "0.4rem" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.4rem" }}>
                   Computed {fmtTime(analysis.computed_at, "—")}
                 </div>
               </div>
@@ -243,14 +243,14 @@ export const AnalysisPage: React.FC = () => {
 
             {(analysis.source_limitations || []).length > 0 && (
               <div style={{ marginTop: "1.25rem" }}>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
                   Limits of the contributing sources
                 </div>
                 <ul
                   style={{
                     margin: 0,
                     paddingLeft: "1.1rem",
-                    fontSize: "0.72rem",
+                    fontSize: "var(--text-2xs)",
                     color: "var(--text-dim)",
                     lineHeight: 1.7,
                   }}
@@ -266,8 +266,8 @@ export const AnalysisPage: React.FC = () => {
           {/* Top Talkers Tables */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
             <div className="glass-panel" style={{ padding: "1.5rem" }}>
-              <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.25rem" }}>Top Source IP Addresses</h3>
-              <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+              <h3 style={{ fontSize: "var(--text-md)", marginBottom: "0.25rem" }}>Top Source IP Addresses</h3>
+              <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
                 Identified origin nodes in the dataset
               </p>
               <div className="table-container">
@@ -291,8 +291,8 @@ export const AnalysisPage: React.FC = () => {
             </div>
 
             <div className="glass-panel" style={{ padding: "1.5rem" }}>
-              <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.25rem" }}>Top Destination IP Addresses</h3>
-              <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+              <h3 style={{ fontSize: "var(--text-md)", marginBottom: "0.25rem" }}>Top Destination IP Addresses</h3>
+              <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
                 Target infrastructure and internal endpoints
               </p>
               <div className="table-container">
@@ -318,16 +318,16 @@ export const AnalysisPage: React.FC = () => {
 
           {/* Data Quality and Missing Fields Audit */}
           <div className="glass-panel" style={{ padding: "1.5rem" }}>
-            <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+            <h3 style={{ fontSize: "var(--text-md)", marginBottom: "0.25rem" }}>
               Data Quality Assurance & Missing Fields Audit
             </h3>
-            <p style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginBottom: "1rem" }}>
+            <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "1rem" }}>
               Audit results generated during normalization pipeline
             </p>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
               <div>
-                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+                <h4 style={{ fontSize: "var(--text-md)", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
                   Quality Flag Frequencies
                 </h4>
                 {Object.keys(analysis.quality_flag_counts).length > 0 ? (
@@ -346,7 +346,7 @@ export const AnalysisPage: React.FC = () => {
                               <span className="badge badge-warning" style={{ marginRight: "0.5rem" }}>
                                 FLAG
                               </span>
-                              {flag}
+                              {humanise(flag)}
                             </td>
                             <td style={{ textAlign: "right" }}>{count}</td>
                           </tr>
@@ -355,15 +355,15 @@ export const AnalysisPage: React.FC = () => {
                     </table>
                   </div>
                 ) : (
-                  <div style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>No quality flags recorded.</div>
+                  <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>No quality flags recorded.</div>
                 )}
               </div>
 
               <div>
-                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>
+                <h4 style={{ fontSize: "var(--text-md)", color: "var(--text-muted)", marginBottom: "0.25rem" }}>
                   Fields Unavailable From the Source
                 </h4>
-                <p style={{ color: "var(--text-dim)", fontSize: "0.72rem", marginBottom: "0.5rem" }}>
+                <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "0.5rem" }}>
                   These are structural limits of the telemetry source, not data
                   defects. The source cannot measure them, so they are stored as
                   null rather than estimated.
@@ -380,7 +380,7 @@ export const AnalysisPage: React.FC = () => {
                       <tbody>
                         {Object.entries(analysis.unsupported_field_counts).map(([field, count]) => (
                           <tr key={field}>
-                            <td>{field}</td>
+                            <td><code>{field}</code></td>
                             <td style={{ textAlign: "right" }}>{count}</td>
                           </tr>
                         ))}
@@ -388,15 +388,15 @@ export const AnalysisPage: React.FC = () => {
                     </table>
                   </div>
                 ) : (
-                  <div style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginBottom: "1.25rem" }}>
+                  <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)", marginBottom: "1.25rem" }}>
                     All canonical fields are supported by the contributing sources.
                   </div>
                 )}
 
-                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>
+                <h4 style={{ fontSize: "var(--text-md)", color: "var(--text-muted)", marginBottom: "0.25rem" }}>
                   Genuinely Missing Fields
                 </h4>
-                <p style={{ color: "var(--text-dim)", fontSize: "0.72rem", marginBottom: "0.5rem" }}>
+                <p style={{ color: "var(--text-dim)", fontSize: "var(--text-2xs)", marginBottom: "0.5rem" }}>
                   Fields the source <em>does</em> support but did not provide —
                   these are real gaps worth investigating.
                 </p>
@@ -412,7 +412,7 @@ export const AnalysisPage: React.FC = () => {
                       <tbody>
                         {Object.entries(analysis.missing_field_counts).map(([field, count]) => (
                           <tr key={field}>
-                            <td>{field}</td>
+                            <td><code>{field}</code></td>
                             <td style={{ textAlign: "right" }}>{count}</td>
                           </tr>
                         ))}
@@ -420,7 +420,7 @@ export const AnalysisPage: React.FC = () => {
                     </table>
                   </div>
                 ) : (
-                  <div style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                  <div style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>
                     No unexplained gaps: every field the sources support was populated.
                   </div>
                 )}

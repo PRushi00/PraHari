@@ -10,7 +10,7 @@ import {
 import { api } from "../services/api";
 import { AuditLog, SecurityConfig } from "../types";
 
-import { fmtTimeUtc } from "../utils/format";
+import { fmtTimeUtc, humanise } from "../utils/format";
 
 // What the Network Isolation card may claim, from the report alone. Green
 // only when the backend has evidence for it (ADR-089): a null claim, or an
@@ -86,7 +86,7 @@ export const AuditPage: React.FC = () => {
         {/* Loopback Status */}
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textTransform: "uppercase" }}>
+            <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", textTransform: "uppercase" }}>
               Network Isolation
             </span>
             <Lock size={18} style={{ color: binding.color }} />
@@ -96,11 +96,11 @@ export const AuditPage: React.FC = () => {
               "127.0.0.1:8000" when the report was missing. */}
           <div
             data-testid="network-isolation-status"
-            style={{ fontSize: "1.2rem", fontWeight: 700, color: binding.color }}
+            style={{ fontSize: "var(--text-lg)", fontWeight: 700, color: binding.color }}
           >
             {binding.label}
           </div>
-          <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "0.25rem" }}>
             {config ? (
               <>
                 Configured: <code>{`${config.host_binding}:${config.port}`}</code>
@@ -113,7 +113,7 @@ export const AuditPage: React.FC = () => {
             )}
           </div>
           {config?.binding_evidence && (
-            <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "0.35rem" }}>
+            <div style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", marginTop: "0.35rem" }}>
               {config.binding_evidence}
             </div>
           )}
@@ -122,17 +122,17 @@ export const AuditPage: React.FC = () => {
         {/* Sniffing Disabled */}
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textTransform: "uppercase" }}>
+            <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", textTransform: "uppercase" }}>
               Packet Sniffing Boundary
             </span>
             <CheckCircle size={18} style={{ color: "#10b981" }} />
           </div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#10b981" }}>
+          <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, color: "#10b981" }}>
             {config?.security_boundaries?.["packet_capture_in_use"] === false
               ? "NO PACKET CAPTURE"
               : "PACKET CAPTURE STATE UNKNOWN"}
           </div>
-          <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "0.25rem" }}>
             No raw socket or host interface modification permitted
           </div>
         </div>
@@ -140,17 +140,17 @@ export const AuditPage: React.FC = () => {
         {/* Offline Eval Mode */}
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textTransform: "uppercase" }}>
+            <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", textTransform: "uppercase" }}>
               Evaluation Mode
             </span>
             <Activity size={18} style={{ color: "var(--accent-cyan)" }} />
           </div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "var(--accent-cyan)" }}>
+          <div style={{ fontSize: "var(--text-lg)", fontWeight: 700, color: "var(--accent-cyan)" }}>
             {String(
               config?.security_boundaries?.["live_collector_state"] ?? "unknown"
             ).toUpperCase()}
           </div>
-          <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "0.25rem" }}>
             {/* Reported by the backend rather than hardcoded: the previous
                 fixed list omitted the live Windows source entirely. */}
             {String(
@@ -165,11 +165,11 @@ export const AuditPage: React.FC = () => {
       <div className="glass-panel" style={{ padding: "1.75rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", flexWrap: "wrap", gap: "1rem" }}>
           <div>
-            <h2 style={{ fontSize: "1.1rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <h2 style={{ fontSize: "var(--text-lg)", display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <FileText size={20} style={{ color: "var(--accent-cyan)" }} />
               Immutable Audit Action Log
             </h2>
-            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.2rem" }}>
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "0.2rem" }}>
               Every ingestion, model training, evaluation, and research audit is logged with timestamp and resource ID.
             </p>
           </div>
@@ -215,7 +215,7 @@ export const AuditPage: React.FC = () => {
               <tbody>
                 {logs.map((log) => (
                   <tr key={log.id}>
-                    <td style={{ fontSize: "0.8rem", fontFamily: "var(--font-mono)", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                    <td style={{ fontSize: "var(--text-xs)", fontFamily: "var(--font-mono)", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                       {fmtTimeUtc(log.timestamp, "—")}
                     </td>
                     <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>
@@ -223,13 +223,13 @@ export const AuditPage: React.FC = () => {
                     </td>
                     <td>
                       <span className="badge" style={{ background: "rgba(255,255,255,0.06)", color: "var(--text-main)" }}>
-                        {log.resource_type}
+                        {humanise(log.resource_type)}
                       </span>
                     </td>
-                    <td style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
+                    <td style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>
                       {log.resource_id || "—"}
                     </td>
-                    <td style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                    <td style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
                       {log.details || "—"}
                     </td>
                   </tr>
