@@ -194,10 +194,29 @@ class DomainEnrichmentService:
 
     # ──────────────── collection ────────────────
 
+    #: Where the event-log bookmark lives, so it survives a restart
+    #: (ADR-127). `system_settings` is already the durable key/value
+    #: store and is covered by the storage contract on both backends.
+    BOOKMARK_KEY = "dns_event_log.last_record_id"
+
+    def read_bookmark(self) -> int:
+        """The RecordId last safely processed, or 0 for a cold start."""
+        raw = self.db.get_setting(self.BOOKMARK_KEY)
+        try:
+            return max(0, int(raw)) if raw is not None else 0
+        except (TypeError, ValueError):
+            # A corrupt bookmark must not wedge collection for ever.
+            logger.warning("DNS bookmark %r is not an integer; cold starting", raw)
+            return 0
+
+    def _advance_bookmark(self, record_id: int) -> None:
+        self.db.set_setting(self.BOOKMARK_KEY, str(int(record_id)), updated_by="dns_collector")
+
     def collect_from_dns_event_log(
         self,
         max_events: int = 500,
         source_id: str = "windows_dns_events",
+        incremental: bool = False,
     ) -> dict[str, Any]:
         """
         Snapshot the Windows DNS-Client event log into the observation store.
@@ -216,6 +235,8 @@ class DomainEnrichmentService:
             collect_dns_observations,
         )
 
+        bookmark = self.read_bookmark() if incremental else 0
+
         result: dict[str, Any] = {
             "succeeded": False,
             "error": None,
@@ -228,12 +249,39 @@ class DomainEnrichmentService:
             "uninterpreted_by_event_id": {},
             "notes": [],
             "collected_at": None,
+            # Bookmark accounting, so the operator can see collection
+            # moving rather than having to infer it from row counts.
+            "incremental": incremental,
+            "bookmark_before": bookmark,
+            "bookmark_after": bookmark,
+            "more_available": False,
+            "log_was_reset": False,
         }
 
         try:
-            rows, report = collect_dns_observations(
-                source_id=source_id, max_events=max_events
+            rows, report, read = collect_dns_observations(
+                source_id=source_id,
+                max_events=max_events,
+                after_record_id=bookmark,
             )
+            if incremental and read.log_was_reset:
+                # The channel was cleared: RecordId restarted below our
+                # bookmark. Filtering on it would read nothing for ever
+                # while DNS activity carried on, so start again from the
+                # newest window and say that this happened.
+                logger.warning(
+                    "DNS event log appears cleared (newest RecordId %d is below "
+                    "bookmark %d); restarting from the newest window",
+                    read.newest_record_id,
+                    bookmark,
+                )
+                self._advance_bookmark(0)
+                rows, report, read = collect_dns_observations(
+                    source_id=source_id, max_events=max_events, after_record_id=0
+                )
+                result["log_was_reset"] = True
+                bookmark = 0
+                result["bookmark_before"] = 0
         except DnsEventLogUnavailable as exc:
             # Not a failure of PraHari: a statement about what this host
             # offers. Reported verbatim so the operator knows which of the
@@ -244,7 +292,18 @@ class DomainEnrichmentService:
             result["error"] = f"{type(exc).__name__}: {exc}"
             return result
 
+        # Storage first. The bookmark advances only after the rows it
+        # covers are durable, so a crash between the two re-reads the
+        # batch (the UNIQUE constraint absorbs it) rather than skipping
+        # it. The reverse order would lose events silently.
         recorded = self.db.record_dns_observations(rows)
+
+        if incremental:
+            advanced_to = read.max_record_id
+            if advanced_to > bookmark:
+                self._advance_bookmark(advanced_to)
+                result["bookmark_after"] = advanced_to
+            result["more_available"] = read.batch_was_full
 
         result.update(
             succeeded=True,

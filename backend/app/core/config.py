@@ -138,6 +138,16 @@ class AppConfig(BaseSettings):
         default=["/api/v1/health", "/docs", "/redoc", "/openapi.json"]
     )
 
+    # ── Continuous DNS event-log collection (ADR-127) ──
+    # Off by default. Enabling starts a background loop that reads the
+    # Windows DNS-Client Operational channel on an interval. It enables
+    # no channel and changes no Windows configuration; where the channel
+    # is off or the platform is not Windows it collects nothing and says
+    # so. Collection can also be started and stopped at runtime.
+    dns_collector_enabled: bool = False
+    dns_collector_interval_seconds: float = 8.0
+    dns_collector_batch_size: int = 500
+
     # ── Optional application-layer telemetry ──
     # Disabled by default. Enabling only opens an ingestion endpoint for an
     # authorized producer the operator runs themselves; PraHari never

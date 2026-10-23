@@ -1558,3 +1558,13 @@ body[data-guided="off"] .nav-group {
 
 .pill-ok { color: var(--accent-emerald); }
 .pill-idle { color: var(--text-dim); }
+
+/* Collection state strip on DNS Activity (ADR-127). Without it a live
+   page and a stuck one look identical. */
+.collector-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}

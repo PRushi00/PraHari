@@ -91,6 +91,11 @@ MODEL_PAIRS = [
     # it feeds shows two different uptimes, and a field drifting between
     # them is exactly the confusion the endpoint exists to prevent.
     ("HostIdentity", "HostIdentity"),
+    # Continuous DNS collection (ADR-127). Paired on the day it was
+    # added: the page reads `state` and `interval_seconds` to decide
+    # whether and how often to poll, so a drift there stops the live
+    # view updating with no error anywhere.
+    ("DnsCollectorStatus", "DnsCollectorStatus"),
 ]
 
 # Interfaces that intentionally have no backend counterpart: purely local

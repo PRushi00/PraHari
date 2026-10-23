@@ -33,7 +33,7 @@ source and against a running instance.
 | 3 | Architecture and invariants | 6 | `MET` |
 | 4 | Local and central deployment | 20 | `MET` (central loopback-only) |
 | 5 | Pluggable adapter architecture | 27 | `PARTIAL` — no security-platform adapter, by decision (ADR-105) |
-| 6 | Ingestion and data quality | 7 | `MET` — the persisted poll summary reconciles, and a poll that stores no new event still records one (ADR-123) |
+| 6 | Ingestion and data quality | 7 | `MET` — the persisted poll summary reconciles (ADR-123); DNS evidence is collected continuously against a durable event-log bookmark (ADR-127) |
 | 7 | Forecasting task and label semantics | 7 | `MET` |
 | 8 | Dataset strategy and leakage controls | 13 | `MET` |
 | 9 | Models, technology stack, lifecycle | 27 | `PARTIAL` / 3 `DEVIATES` |

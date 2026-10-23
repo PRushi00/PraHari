@@ -361,7 +361,10 @@ def test_collect_returns_storage_rows_and_the_report_together(monkeypatch):
     )
     monkeypatch.setattr(sp, "run", lambda *a, **k: _proc(payload))
 
-    rows, report = collect_dns_observations(source_id="windows_dns_events")
+    # Three values since ADR-127: the read itself travels too, because
+    # advancing a bookmark needs the batch's RecordId range and whether
+    # the limit truncated it — neither is derivable from the rows.
+    rows, report, read = collect_dns_observations(source_id="windows_dns_events")
 
     assert len(rows) == 1
     assert rows[0]["method"] == "dns_query_log"
@@ -370,6 +373,7 @@ def test_collect_returns_storage_rows_and_the_report_together(monkeypatch):
     assert report.uninterpreted_by_event_id == {3006: 1}
     assert report.skipped_failed_query == 1
     assert report.reconciles()
+    assert len(read.records) == 3
 
 
 # ──────────────────────────────────────────────────────────────────

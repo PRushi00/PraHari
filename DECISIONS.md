@@ -7128,3 +7128,136 @@ These were tested and are recorded as passing, not assumed:
   filesystem layout.
 * `POST /retention/preview` is reachable by a non-admin and reports
   candidate counts across all sources.
+
+---
+
+## ADR-127: Continuous DNS Collection, and the Bookmark That Makes It Safe
+
+### Context
+ADR-120 and ADR-121 made the Windows DNS-Client Operational channel
+readable. ADR-122 gave it a page. Neither made it *continuous*: an
+operator pressed a button and PraHari read "the newest 500 records".
+
+That has two faults, and they pull in opposite directions. The same
+window is re-read on every press, so most of the work is thrown away by
+the UNIQUE constraint. And the channel is **circular** — anything that
+scrolls past between presses is overwritten and gone. The operator's
+own run read 500 records to record 164 observations; whatever happened
+before those 500 was unrecoverable.
+
+### Decision
+A managed background loop with a **durable bookmark** on the event
+log's `RecordId`.
+
+Three pieces had to change together:
+
+1. **The PowerShell query now returns `RecordId`** and filters on it:
+   `*[System[EventRecordID>N]]`, evaluated by the event-log service
+   rather than by us after the fact.
+2. **The batch is sorted ascending and truncated to the OLDEST N.**
+   This is the part that is easy to get wrong. Taking the *newest* N of
+   the matching set — which is what `-MaxEvents` does on its own —
+   leaves an unread hole between the bookmark and the batch, and
+   advancing past that hole loses events with nothing to show for it.
+   Ascending makes the batch contiguous with the bookmark, so advancing
+   to its maximum is exactly right.
+3. **Storage happens before the bookmark moves.** A crash between the
+   two re-reads the batch, which the UNIQUE constraint absorbs. The
+   reverse order would skip it silently. The bookmark also never moves
+   backwards, so a stale or out-of-order batch cannot rewind progress.
+
+The bookmark lives in `system_settings`, which is already covered by
+the storage contract on both backends, so it survives a restart without
+new schema.
+
+**Cold start seeds rather than drains.** With no bookmark, the first
+run reads the newest window and records where it got to. The circular
+log may hold far more history than anyone wants imported, and silently
+ingesting all of it on first launch would be a surprise. The run says
+so rather than implying it caught everything.
+
+**A cleared log is detected, not ignored.** Windows restarts `RecordId`
+at 1 when the channel is cleared. A bookmark above the newest record
+would filter out everything, for ever, while DNS activity carried on —
+a collector that looks healthy and collects nothing. `newest_record_id`
+is read separately for exactly this, and a bookmark above it triggers a
+restart from the newest window with `log_was_reset` reported.
+
+**A full batch polls again immediately** instead of sleeping, so a
+burst drains at once rather than one interval at a time.
+
+### Where this can run
+The channel is readable only by a process on that Windows host, through
+PowerShell. So the loop collects only where PraHari itself runs on the
+machine being observed. Anywhere else it reports `unsupported`, starts
+nothing, and says why — in the API, and in a banner on the page.
+
+A central deployment watching several Windows hosts needs an agent on
+each, which is the sensor path that already exists. A remote backend
+cannot read another machine's event log, and the interface says that
+rather than offering a button that can only fail.
+
+### What it will not do
+* **Never enable, disable or reconfigure the channel.** That needs
+  Administrator and is the operator's decision (ADR-121). Where the
+  channel is off, collection reports it and stops.
+* **Never run two collections at once.** A poll that overruns its
+  interval is skipped, not queued: two readers racing on one bookmark
+  would both advance it.
+* **Never retry for ever.** Ten consecutive failures stop the loop. A
+  disabled channel does not start reporting because it was asked nine
+  hundred times, and the log noise buries anything real.
+* **Never claim a lookup proves a connection.** Unchanged from ADR-122,
+  and restated on the page.
+
+The one-shot button is kept and deliberately does **not** touch the
+bookmark. It is a snapshot of the newest window; if it moved the
+bookmark, pressing it would make continuous collection skip everything
+older than that snapshot.
+
+### The page
+DNS Activity polls **only while collection is running** — a stopped
+collector produces nothing new, so refreshing against it is traffic
+that cannot change the answer. Refreshes are quiet: no spinner over a
+table someone is reading, and an in-flight request blocks a second
+being stacked behind it. The evidence-source filter survives a refresh,
+asserted by a test, because a timer that quietly dropped back to an
+unfiltered query would be worse than no refresh.
+
+The strip shows collection state, when observations last changed, the
+last successful poll, and the bookmark. Without it a live page and a
+stuck one look identical. Manual refresh stays as the fallback and as
+the way to re-read after a failure, and a failed refresh keeps the last
+good rows while saying it is a collection failure, not an empty host.
+
+### Verification
+| | |
+|---|---|
+| Backend tests | **1613 passed**, 66 skipped |
+| Frontend tests | **218 passed**, 26 files |
+| `tsc --noEmit` | 0 errors |
+| Production build | clean |
+| Real-browser verifier | 35/35, no page errors |
+
+22 new backend tests, **mutation-verified**: advancing the bookmark
+unconditionally and ignoring the clear-detection fails three of them.
+
+### Not established
+**Nothing here has run against a real Windows event log.** The
+PowerShell read is stubbed in every test that executes in this
+environment. `tests/integration/test_dns_collector_windows_live.py`
+covers the real path and is **skipped on every platform but Windows**;
+it has never run. What the green suite proves is the bookkeeping around
+the read — which record the bookmark lands on, when it refuses to move,
+what the loop does with a failure — not that `Get-WinEvent` returns
+what the adapter expects. In particular **the `EventRecordID` XPath
+filter and the ascending sort are unverified against a real channel**
+and are the first thing to check on the host.
+
+**Only event id 3008 is interpreted**, unchanged. 3006 and 1001 are
+counted and reported, never parsed, because no field of either has been
+observed.
+
+**The interval is not tuned.** 8 seconds is a starting point chosen
+against the cost of spawning a PowerShell process per poll, not a
+measurement of how fast this channel fills on a real desktop.
