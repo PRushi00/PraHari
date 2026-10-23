@@ -6884,3 +6884,119 @@ been observed using either layout. The claim defended here is only the
 narrow one: fifteen links in a persistent three-row header is an
 inventory rather than a navigation, and the pages are all still
 reachable, which is tested.
+
+---
+
+## ADR-125: The Host Card, and Two Uptimes
+
+### Context
+The reference design's host card shows hostname, local IP address,
+operating system, collector state and uptime. ADR-124 shipped without
+it, on the stated grounds that "the backend exposes none of them".
+
+That was wrong, and the record should say so plainly. `psutil` was
+already installed, `socket.gethostname()` and `platform.system()` are
+standard library, and `/proc/uptime` is a two-line read. What actually
+happened is that the work stopped at the frontend boundary and asked
+for permission three times instead of writing the thirty lines behind
+it. The operator asked why they could not have the interface they had
+asked for repeatedly; the honest answer was not "the data does not
+exist" but "nobody went and got it".
+
+Only one figure in that card was genuinely missing, and it was the
+dangerous one.
+
+### The two uptimes
+`HealthResponse.uptime_seconds` is the **API process's** uptime. The
+machine's is a different quantity, usually larger by hours. A card
+showing the process's under a label reading "Uptime", between a
+hostname and an IP address, is read as the machine's — and would have
+reported a freshly restarted backend as a freshly booted host, which
+is a claim about the operator's machine that PraHari never measured.
+
+So: `GET /api/v1/system/host` returns both, named apart.
+`host_uptime_seconds` is the machine's and is **null with a reason**
+where it cannot be read. `process_uptime_seconds` is this backend's and
+is always present. The card labels them "Host uptime" and "PraHari
+uptime"; a bare "Uptime" appears nowhere, and a test asserts it.
+
+When the machine's uptime is unreadable the row says so. It does not
+fall back to the number in the row beneath it, which is the specific
+failure the split exists to make impossible.
+
+### What the endpoint will not claim
+* **It sends nothing.** `local_ip` comes from an unconnected UDP socket
+  `connect()`ed to a reserved TEST-NET address, which fixes a route
+  without transmitting. A test wraps `socket` and asserts no `send`,
+  `sendall` or `sendto` occurs — identifying the host must never become
+  PraHari contacting a third party to render a card.
+* **An address is not a capability.** The source address of an outbound
+  route says nothing about what that interface can observe, and the
+  response carries that limitation rather than leaving the inference to
+  the reader.
+* **It is not a scan.** It identifies the one machine PraHari runs on.
+* **`psutil` stays optional.** It is not a declared dependency, so the
+  uptime path falls back to `/proc/uptime` and then to null.
+
+### Network activity
+Connections per minute, counted from the `observed_at` of stored
+records. Nothing is interpolated, smoothed or extrapolated: `smooth` is
+off because a curve drawn between two points invents the values
+between them, and a minute with no record is plotted as zero because
+zero is what was recorded for that minute.
+
+The window follows the data, not the clock. A fixed "last 30 minutes"
+over a store whose newest record is three days old draws an empty chart
+and implies a quiet network; the chart spans the minutes the store
+actually covers and names that range in its header. Only directions
+actually present get a series — a flat zero line labelled "Inbound"
+over a store containing none would read as a measurement.
+
+A record whose timestamp will not parse is skipped, never bucketed as
+zero. Where every record is unparseable the panel says there is nothing
+to plot, and says that this is a statement about the store.
+
+### Two panels, one heading
+Adding `HostCard` beside ADR-118's panel put two sections titled "This
+host" on the same screen — one naming the machine, one counting its
+events. Two views, but read as a duplicate. `HostAndDevices` gained a
+`showHost` prop, defaulting to true so its existing use and tests are
+unchanged, and Overview turns its host column off.
+
+### Verification
+| | |
+|---|---|
+| Frontend `tsc --noEmit` | 0 errors |
+| Frontend tests | **213 passed**, 26 files (was 200/25) |
+| Backend tests | 1572 passed, 66 skipped |
+| Production build | clean |
+| Real-Chromium verifier | 35 passed, 0 failed |
+| Uncaught page errors | none |
+
+Two defects were caught by looking at the rendered page rather than at
+the tests: the duplicated "This host" heading, and a chart header
+reading **"N/A – N/A"** because epoch milliseconds were handed to a
+formatter that takes ISO strings. Both now have tests.
+
+The `HostIdentity` interface is paired in the frontend contract suite,
+which failed on it the moment it was added — working exactly as ADR-122
+intended.
+
+### Not established
+**Nothing here measures the network.** Hostname, address, OS and uptime
+describe the machine PraHari runs on, read from inside it. No
+interface is counted, no packet is seen.
+
+**The reference design's remaining figures still have nothing behind
+them.** "Security findings: 2 / 1 needs review" has no corresponding
+concept in this system; per-device traffic needs an agent or an
+observation point; and a device's online/offline state is not known —
+what exists is *evidence freshness*, which says when a source last
+reported, not whether a machine is powered on. These were not
+approximated with something close.
+
+**The chart's `unknown` series is honest but uninformative** on the
+present data, because synthetic and imported records have no local
+perspective and direction is undecidable for all of them (ADR-122). It
+will separate into inbound and outbound only once the host collector
+runs on a supported platform.

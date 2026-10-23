@@ -107,6 +107,30 @@ export function fmtElapsed(
 }
 
 /**
+ * A duration in seconds, as a person would say it: "3h 24m", "12m 5s".
+ *
+ * Distinct from `fmtElapsed`, which takes two timestamps. A null or
+ * non-finite input returns the fallback rather than "0s", because an
+ * unmeasured uptime and a machine that just booted are different
+ * claims (ADR-125).
+ */
+export function fmtDuration(
+  seconds: unknown,
+  fallback: string = UNAVAILABLE
+): string {
+  if (!isNum(seconds) || seconds < 0) return fallback;
+  const total = Math.floor(seconds);
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+/**
  * Chart-safe numeric series: drops non-finite entries so a charting
  * library is never handed NaN or null.
  */

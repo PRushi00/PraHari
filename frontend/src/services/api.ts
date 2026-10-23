@@ -73,6 +73,9 @@ export const api = {
   // System Health
   getHealth: (): Promise<HealthResponse> => request<HealthResponse>("/health"),
 
+  getHostIdentity: (): Promise<import("../types").HostIdentity> =>
+    request<import("../types").HostIdentity>("/system/host"),
+
   getSystemHealth: (): Promise<SystemHealthReport> =>
     request<SystemHealthReport>("/system/health"),
 

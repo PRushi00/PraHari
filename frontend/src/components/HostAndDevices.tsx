@@ -55,12 +55,21 @@ interface Props {
   /** The collector's own source id, when a collector is running here. */
   localSourceId: string | null;
   onOpenDevices: () => void;
+  /**
+   * Render this component's own "This host" column.
+   *
+   * False where `HostCard` is already on the page (ADR-125): two
+   * panels under the same heading, one counting events and one naming
+   * the machine, read as a duplicate rather than as two views.
+   */
+  showHost?: boolean;
 }
 
 export const HostAndDevices: React.FC<Props> = ({
   sources,
   localSourceId,
   onOpenDevices,
+  showHost = true,
 }) => {
   const local = localSourceId
     ? sources.find((s) => s.source_id === localSourceId) ?? null
@@ -82,6 +91,7 @@ export const HostAndDevices: React.FC<Props> = ({
 
   return (
     <div className="host-devices">
+      {showHost && (
       <section className="host-devices-col">
         <header className="host-devices-head">
           <Monitor size={18} />
@@ -122,6 +132,7 @@ export const HostAndDevices: React.FC<Props> = ({
           </p>
         )}
       </section>
+      )}
 
       <section className="host-devices-col">
         <header className="host-devices-head">

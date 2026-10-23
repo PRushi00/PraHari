@@ -37,12 +37,15 @@ import {
   DnsObservationRow,
   EventSummaryStats,
   HealthResponse,
+  HostIdentity,
   SourceHealthRecord,
 } from "../types";
 
 import { fmtInt, fmtTime, humanise } from "../utils/format";
 import { Caption, Explain } from "../components/GuidedMode";
 import { HostAndDevices } from "../components/HostAndDevices";
+import { HostCard } from "../components/HostCard";
+import { ActivityChart } from "../components/ActivityChart";
 import { NavTab } from "../components/Header";
 
 interface OverviewPageProps {
@@ -80,8 +83,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const [sources, setSources] = useState<SourceHealthRecord[]>([]);
   const [collector, setCollector] = useState<CollectorStatus | null>(null);
   const [connections, setConnections] = useState<ConnectionDetail[]>([]);
+  /** A wider slice, timestamps only, for the activity chart. */
+  const [timeline, setTimeline] = useState<ConnectionDetail[]>([]);
+  const [timelineTotal, setTimelineTotal] = useState(0);
   const [dnsRows, setDnsRows] = useState<DnsObservationRow[]>([]);
   const [dnsTotal, setDnsTotal] = useState<number | null>(null);
+  const [host, setHost] = useState<HostIdentity | null>(null);
   // The collector's own source id, when one is running on this machine.
   // Absent on a platform with no collector, which the panel renders
   // rather than hides.
@@ -107,8 +114,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
     try {
       // Every panel is independent. One failing endpoint must not blank
       // the others, so each settles on its own.
-      const [h, s, a, sourceHealth, collectorStatus, conns, dns] =
-        await Promise.all([
+      const [
+        h, s, a, sourceHealth, collectorStatus, conns, dns, hostInfo, recent,
+      ] = await Promise.all([
           api.getHealth().catch(() => null),
           api.getEventStats().catch(() => null),
           api.getLatestAnalysis().catch(() => null),
@@ -116,6 +124,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           api.getCollectorStatus().catch(() => null),
           api.getConnections({ limit: 6 }).catch(() => null),
           api.getDnsObservations({ limit: 6 }).catch(() => null),
+          api.getHostIdentity().catch(() => null),
+          // Enrichment off: the chart needs timestamps and direction,
+          // not hostname attribution, and resolving 400 of them would
+          // cost far more than the panel is worth.
+          api
+            .getConnections({ limit: 400, include_enrichment: false })
+            .catch(() => null),
         ]);
 
       if (h) setHealth(h);
@@ -130,6 +145,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
       if (dns) {
         setDnsRows(dns.observations ?? []);
         setDnsTotal(dns.total_stored);
+      }
+      if (hostInfo) setHost(hostInfo);
+      if (recent) {
+        setTimeline(recent.connections ?? []);
+        setTimelineTotal(recent.total);
       }
       setUpdatedAt(new Date().toISOString());
     } finally {
@@ -358,12 +378,27 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         </MetricCard>
       </div>
 
-      {/* ---- This host / other devices (ADR-118, reused) ------------ */}
-      <HostAndDevices
-        sources={sources}
-        localSourceId={localSourceId}
-        onOpenDevices={() => onNavigate("sources")}
-      />
+      {storedEvents > 0 && (
+        <ActivityChart
+          connections={timeline}
+          totalStored={timelineTotal}
+          loading={loading}
+        />
+      )}
+
+      {/* ---- This host / other devices ----------------------------- */}
+      <div className="split-grid">
+        <HostCard host={host} collector={collector} loading={loading} />
+        {/* ADR-118's devices panel, reused unchanged: it already keeps
+            registered and monitored apart, which is the claim that
+            matters most on this page. */}
+        <HostAndDevices
+          sources={sources}
+          localSourceId={localSourceId}
+          onOpenDevices={() => onNavigate("sources")}
+          showHost={false}
+        />
+      </div>
 
       {/* ---- Recent connections and recent DNS, side by side -------- */}
       <div className="split-grid">
