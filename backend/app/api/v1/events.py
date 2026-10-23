@@ -27,6 +27,15 @@ from app.schemas.events import (
     SourceCapability,
 )
 
+#: Upper bound on `offset` (ADR-126).
+#:
+#: `limit` was bounded and `offset` was not, so a value above SQLite's
+#: 64-bit INTEGER range reached the driver and raised an unhandled
+#: OverflowError — HTTP 500 plus a traceback, from an input every other
+#: numeric parameter rejected with a clean 422. 2**31-1 is far beyond any
+#: realistic row count and is representable on every supported backend.
+MAX_OFFSET = 2**31 - 1
+
 router = APIRouter(prefix="/events", tags=["Normalized Events"])
 
 
@@ -102,7 +111,9 @@ def list_events(
         default=None, description="Filter by provenance category (e.g. live_telemetry)"
     ),
     limit: int = Query(default=50, ge=1, le=500, description="Page limit"),
-    offset: int = Query(default=0, ge=0, description="Page offset"),
+    offset: int = Query(
+        default=0, ge=0, le=MAX_OFFSET, description="Page offset"
+    ),
     request: Request = None,  # type: ignore[assignment]
     db: Database = Depends(get_db),
 ) -> PaginatedEventsResponse:
@@ -161,7 +172,7 @@ def list_connections(
         ),
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     request: Request = None,  # type: ignore[assignment]
     db: Database = Depends(get_db),
 ) -> PaginatedConnectionsResponse:

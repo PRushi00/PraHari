@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.api.auth import require_admin_in_central
 from app.api.deps import get_db
 from app.services.collector import (
     CollectorStatus,
@@ -44,6 +45,10 @@ def get_collector_status(db: Database = Depends(get_db)) -> CollectorStatus:
 async def start_collector(
     req: StartCollectorRequest,
     db: Database = Depends(get_db),
+    # Admin-only in central mode (ADR-126). Collection control is a
+    # fleet-wide operation: a sensor credential could stop the
+    # operator's own host collector and blind the deployment.
+    _: object = Depends(require_admin_in_central),
 ) -> CollectorStatus:
     """Start background collection of live Windows connection telemetry."""
     collector = get_collector(db)
@@ -59,13 +64,25 @@ async def start_collector(
 
 
 @router.post("/stop", response_model=CollectorStatus)
-async def stop_collector(db: Database = Depends(get_db)) -> CollectorStatus:
+async def stop_collector(
+    db: Database = Depends(get_db),
+    # Admin-only in central mode (ADR-126). Collection control is a
+    # fleet-wide operation: a sensor credential could stop the
+    # operator's own host collector and blind the deployment.
+    _: object = Depends(require_admin_in_central),
+) -> CollectorStatus:
     """Stop background collection cleanly, releasing the polling task."""
     return await get_collector(db).stop()
 
 
 @router.post("/poll", response_model=PollResult)
-async def poll_collector_once(db: Database = Depends(get_db)) -> PollResult:
+async def poll_collector_once(
+    db: Database = Depends(get_db),
+    # Admin-only in central mode (ADR-126). Collection control is a
+    # fleet-wide operation: a sensor credential could stop the
+    # operator's own host collector and blind the deployment.
+    _: object = Depends(require_admin_in_central),
+) -> PollResult:
     """
     Execute exactly one collection poll synchronously.
 

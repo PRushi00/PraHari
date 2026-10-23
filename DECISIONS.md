@@ -7000,3 +7000,131 @@ present data, because synthetic and imported records have no local
 perspective and direction is undecidable for all of them (ADR-122). It
 will separate into inbound and outbound only once the host collector
 runs on a supported platform.
+
+---
+
+## ADR-126: Three Defects an Independent Audit Found
+
+### Context
+An independent audit was run over the merged application with the
+instruction to find failures rather than confirm success. The existing
+suite — 1572 backend tests, 213 frontend tests, a 35-check real-browser
+verifier, all green — had not caught any of the three defects below.
+
+All three were found by **exercising the running application**: minting
+real central-mode credentials and calling the API as a low-privilege
+sensor, and feeding boundary values to every numeric parameter. None is
+visible by reading the code in isolation, and two of them are invisible
+in local mode entirely, which is the only mode the test suite had
+exercised for these routes.
+
+### AUDIT-01 — the irreversible operation was the unprotected one (P1)
+`PUT /retention/policy` carried `require_admin_in_central`.
+`POST /retention/enforce` did not.
+
+So the *reversible settings change* was admin-only, while the
+*irreversible deletion it configures* was reachable by any
+authenticated credential. An `ingest` credential — the kind issued to a
+remote sensor — was observed executing it and receiving `200`, with the
+response reporting `candidates`, `deleted` and `retained_newer_than_cutoff`
+across **every source**, not only the caller's own. The endpoint's own
+docstring reads "Irreversible."
+
+Retention deletes on a cutoff the caller cannot change without admin,
+which bounds the damage — but on any deployment running longer than its
+retention window, a sensor credential could delete the fleet's history.
+
+### AUDIT-02 — a sensor could blind the deployment (P2)
+`POST /collector/{start,stop,poll}` carried no guard. An `ingest`
+credential stopped the host collector; `GET /collector/status` then
+reported `state: stopped`.
+
+For a system whose purpose is to observe a host, an authenticated
+client being able to switch that observation off is an integrity
+problem rather than a convenience one. Collection control is
+deployment-wide: it is not scoped to the caller's source, so
+`scope_source` — which correctly confines reads — never applied.
+
+### AUDIT-03 — one numeric parameter was bounded on one side (P2)
+`limit` was `ge=1, le=500`. `offset` was `ge=0` and nothing else.
+
+A value above SQLite's 64-bit INTEGER range therefore passed validation,
+reached the driver, and raised `OverflowError: Python int too large to
+convert to SQLite INTEGER` — an unhandled exception, HTTP 500, and a
+traceback in the log, from an input shape every other numeric parameter
+rejected with a clean 422. The boundary is exact: `2**63 - 1` returned
+200, `2**63` returned 500. Three endpoints were affected: `/events`,
+`/events/connections`, `/audit/logs`.
+
+### Decision
+`require_admin_in_central` on `/retention/enforce` and on all three
+collector routes. It is a documented no-op in local mode, so a
+single-machine install is unaffected — asserted by its own test rather
+than assumed.
+
+`offset` is bounded by `MAX_OFFSET = 2**31 - 1` on all three paginated
+endpoints: far beyond any realistic row count, and representable on
+every supported backend.
+
+### The shared root cause
+`require_admin_in_central` exists because of exactly this mistake. Its
+docstring records that "a sensor's credential cannot read the audit
+log" was *a property of the design, not of the code* — nothing called
+`require_admin`, so an ingest credential could read the whole fleet's
+audit trail.
+
+That fix was applied to the routes that were noticed. These were the
+same omission on routes that were not. The security model is written
+down in `app/core/security.py` and enforced per-route by hand, so a new
+route is unguarded by default and nothing fails when it is.
+
+**What is still not established:** nothing enforces that a new
+deployment-wide mutating route carries a guard. A test asserting that
+every such route either scopes to a source or requires admin would turn
+this class of defect from "found by audit" into "cannot be merged". It
+is not written here, and the 26 unguarded mutating routes that remain
+were judged individually rather than by rule — most are legitimately
+source-scoped or read-only-in-effect, but that judgement is not
+mechanically checked.
+
+### Verification
+| | Before | After |
+|---|---|---|
+| Backend tests | 1572 passed | **1590 passed**, 66 skipped |
+| Frontend tests | 213 passed | 213 passed |
+| `tsc --noEmit` | 0 | 0 |
+| Real-browser verifier | 35/35 | 35/35 |
+
+18 regression tests, **mutation-verified**: reverting the guards and the
+bound fails 9 of them. The 9 that still pass are the ones that were
+never broken — the anonymous-caller refusals, local-mode behaviour, and
+ordinary paging — which is the correct result and the reason they are
+there.
+
+Local mode was explicitly re-verified against the running server after
+the change: `POST /collector/{start,poll,stop}` all return 200 on a
+loopback deployment.
+
+### Audited and found sound
+These were tested and are recorded as passing, not assumed:
+
+* Central mode **refuses to start** without credentials.
+* Unauthenticated access returns 401 on every non-public route.
+* Forged, tampered, truncated and wrong-scheme bearer tokens are refused.
+* Cross-source read isolation holds: a sensor asking for another
+  source's events receives 403, not filtered results.
+* `PUT /retention/policy`, `POST /sources`, `PATCH /sources/{id}/enabled`
+  and `POST /analysis/prune` correctly refuse a non-admin credential.
+* Path traversal and SQL metacharacters in path parameters are handled
+  safely; identifiers are parameterised.
+* No database, credential file or secret is tracked in version control.
+
+### Hardening noted, not fixed
+* `/docs`, `/redoc` and `/openapi.json` are reachable unauthenticated in
+  central mode by documented configuration (`central_public_paths`), so
+  the whole API surface is enumerable before authenticating.
+* A refusal body can contain the absolute database path. In local mode
+  the caller is the operator; in central mode it discloses server
+  filesystem layout.
+* `POST /retention/preview` is reachable by a non-admin and reports
+  candidate counts across all sources.
