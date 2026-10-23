@@ -13,6 +13,37 @@ import {
 
 const BASE_URL = "/api/v1";
 
+/**
+ * A refusal, in words a person can act on.
+ *
+ * The backend refuses with a structured body — `{error, message,
+ * remedy}` — because the remedy is the useful part. This was being
+ * passed through `JSON.stringify`, so what reached the screen was one
+ * unbroken line of braces and quotes with the remedy buried in it.
+ */
+function formatDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    const parts = [d.message, d.remedy].filter(
+      (x): x is string => typeof x === "string" && x.length > 0,
+    );
+    if (parts.length) return parts.join(" ");
+    // A validation error arrives as a list of per-field problems.
+    if (Array.isArray(detail)) {
+      const msgs = detail
+        .map((item) =>
+          item && typeof item === "object"
+            ? (item as Record<string, unknown>).msg
+            : null,
+        )
+        .filter((x): x is string => typeof x === "string");
+      if (msgs.length) return msgs.join("; ");
+    }
+  }
+  return fallback;
+}
+
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     ...options,
@@ -27,7 +58,7 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     try {
       const errJson = await res.json();
       if (errJson.detail) {
-        errorDetail = typeof errJson.detail === "string" ? errJson.detail : JSON.stringify(errJson.detail);
+        errorDetail = formatDetail(errJson.detail, errorDetail);
       }
     } catch {
       // ignore
