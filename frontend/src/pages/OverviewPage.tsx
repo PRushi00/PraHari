@@ -16,7 +16,7 @@
 //   * **No chart without data behind it.** Where there is nothing to
 //     plot the panel says what is missing and what to do about it.
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import {
   Activity,
@@ -89,6 +89,15 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const [dnsRows, setDnsRows] = useState<DnsObservationRow[]>([]);
   const [dnsTotal, setDnsTotal] = useState<number | null>(null);
   const [host, setHost] = useState<HostIdentity | null>(null);
+  /**
+   * Whether DNS collection is running (ADR-128).
+   *
+   * Overview showed "No DNS evidence collected" and kept showing it
+   * while the collector filled the store behind it. The panel reflects
+   * event-log evidence as it arrives, not only on a manual refresh.
+   */
+  const [dnsCollecting, setDnsCollecting] = useState(false);
+  const dnsTimer = useRef<number | null>(null);
   // The collector's own source id, when one is running on this machine.
   // Absent on a platform with no collector, which the panel renders
   // rather than hides.
@@ -116,6 +125,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
       // the others, so each settles on its own.
       const [
         h, s, a, sourceHealth, collectorStatus, conns, dns, hostInfo, recent,
+        dnsCollector,
       ] = await Promise.all([
           api.getHealth().catch(() => null),
           api.getEventStats().catch(() => null),
@@ -131,6 +141,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           api
             .getConnections({ limit: 400, include_enrichment: false })
             .catch(() => null),
+          api.getDnsCollectorStatus().catch(() => null),
         ]);
 
       if (h) setHealth(h);
@@ -151,6 +162,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         setTimeline(recent.connections ?? []);
         setTimelineTotal(recent.total);
       }
+      setDnsCollecting(dnsCollector?.state === "running");
       setUpdatedAt(new Date().toISOString());
     } finally {
       setLoading(false);
@@ -160,6 +172,32 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Refresh only the DNS panel, and only while collection is running.
+  // Reloading the whole page on a timer would re-fetch 400 connections
+  // and redraw every chart to update one table.
+  useEffect(() => {
+    if (dnsTimer.current) {
+      window.clearInterval(dnsTimer.current);
+      dnsTimer.current = null;
+    }
+    if (!dnsCollecting) return;
+    dnsTimer.current = window.setInterval(() => {
+      api
+        .getDnsObservations({ limit: 6 })
+        .then((next) => {
+          setDnsRows(next.observations ?? []);
+          setDnsTotal(next.total_stored);
+        })
+        .catch(() => {
+          // A failed refresh leaves the last good rows alone; the DNS
+          // Activity page is where the failure is explained.
+        });
+    }, 8000);
+    return () => {
+      if (dnsTimer.current) window.clearInterval(dnsTimer.current);
+    };
+  }, [dnsCollecting]);
 
   const handleSeedSampleData = async () => {
     setSeeding(true);

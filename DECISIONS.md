@@ -7261,3 +7261,110 @@ observed.
 **The interval is not tuned.** 8 seconds is a starting point chosen
 against the cost of spawning a PowerShell process per poll, not a
 measurement of how fast this channel fills on a real desktop.
+
+---
+
+## ADR-128: Why Automatic DNS Collection Never Ran
+
+### Context
+ADR-127 built a managed DNS collection loop, a durable bookmark and a
+live page. On the operator's Windows 11 machine the dashboard reported
+**"Not collecting", 0 of 0 resolutions** — while a manual
+`POST /enrichment/dns/events/collect` from PowerShell returned 156
+observations from real traffic (`ab.chatgpt.com`, `google.com`,
+`inference.wisprflow.com`).
+
+Two faults, one behind the other. The second is the dangerous one,
+because fixing only the first would have produced a collector that
+looks healthy and collects nothing.
+
+### Root cause 1 — it was opt-in, and nobody opted in
+`dns_collector_enabled` defaulted to **False**, and neither
+`start_prahari.bat` nor `start_prahari.ps1` sets
+`PRAHARI_DNS_COLLECTOR_ENABLED`. So `lifespan` skipped the start block
+on every normal launch. Nothing ran; the dashboard was telling the
+truth.
+
+Rejected on evidence while looking: both launchers run a **single**
+uvicorn process with no `--reload` and no `--workers`, so neither "the
+worker is in another process" nor "multiple workers each hold a
+singleton" applies.
+
+The default is now **True**. A feature whose whole purpose is
+continuous collection, gated behind an environment variable nobody
+sets, is the same as not having the feature. It costs nothing where it
+cannot work: the loop refuses to start off Windows, and reports a
+disabled or absent channel rather than retrying blindly.
+
+### Root cause 2 — the incremental query could fail silently
+Incremental reads used
+`Get-WinEvent -FilterXPath "*[System[EventRecordID>N]]"` with
+**`-ErrorAction SilentlyContinue`**. That query had never executed on
+Windows (ADR-127 said so). If the XPath were wrong or unsupported, the
+error was swallowed, `$events` came back empty, every poll "succeeded"
+having read nothing, and the bookmark never moved — while manual
+collection, which takes the unfiltered `else` branch, kept working.
+
+That is precisely the reported symptom. Whether or not it is what
+happened on this host, it is a mechanism by which continuous collection
+fails invisibly, and it sat directly behind the first fault.
+
+**Continuous collection no longer depends on an unverified query.** The
+read that is *proven* on the operator's machine — newest N, no filter,
+the one that produced 156 observations — is now the fallback, and the
+bookmark filter is applied **in Python on every path**:
+
+* `xpath` — the event-log service filtered. Cheap.
+* `fallback_window` — the filtered query failed; the proven read ran
+  instead and `new_records()` discarded everything at or below the
+  bookmark. Correct, just less efficient.
+
+The error is reported, never swallowed, and the status says which path
+each poll used.
+
+### What the fallback cannot do, said out loud
+A window read can only see the newest N records. If more than N new
+events arrive between polls, the events in between scroll out of the
+circular channel and are gone. `possible_gap` is true exactly when the
+fallback filled its batch *and* its oldest record is already past the
+bookmark, and the page says so and suggests a shorter interval or a
+larger batch. The filtered path cannot miss the middle, so it never
+raises it.
+
+### The failure mode that looks healthiest
+A collector polling successfully and reading zero records every time is
+indistinguishable from a quiet network. It now has its own banner after
+three such polls, and `empty_polls` is reported separately from never
+having run. "The backend answers HTTP" was never evidence that
+collection works, and the status model no longer implies it.
+
+Cache evidence and event-log evidence stay separate, as in ADR-120: the
+cache reporting zero is not a statement about the event-log collector,
+and the Overview DNS panel reads stored observations by method rather
+than cache health.
+
+### Verification
+| | |
+|---|---|
+| Backend tests | **1619 passed**, 71 skipped |
+| Frontend tests | 218 passed, 26 files |
+| `tsc --noEmit` | 0 errors |
+| Production build | clean |
+| Real-browser verifier | 35/35 |
+| Autostart at launch | fires, and logs its outcome |
+
+Mutation-verified: restoring the `False` default, and dropping the
+bookmark filter from the fallback path, each fail their own test.
+
+### Not established
+**Still not run against a real Windows event log.** Every test that
+executes here stubs the PowerShell read. What changed is that a failure
+of the unverified query now degrades to a read that *is* proven on the
+operator's machine, and says that it did — rather than collecting
+nothing in silence.
+
+The first thing to check on the host is `filter_mode` in
+`GET /enrichment/dns/collector/status`. `xpath` means the efficient
+path works. `fallback_window` means it does not, and `filter_error`
+says why — collection is still correct either way, which is the point
+of this change.

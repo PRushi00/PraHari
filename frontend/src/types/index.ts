@@ -829,6 +829,14 @@ export interface DnsCollectorStatus {
   /** RecordId last safely processed; survives restarts. */
   bookmark: number;
   log_resets_seen: number;
+  /** "xpath" | "fallback_window" | "cold_start" — which query ran. */
+  filter_mode: string | null;
+  /** Why the filtered read was abandoned, if it was. */
+  filter_error: string | null;
+  /** A window read could not reach back to the bookmark. */
+  possible_gap_seen: boolean;
+  /** Successful polls that found nothing new — the healthy idle case. */
+  empty_polls: number;
   last_error: string | null;
   notes: string[];
 }

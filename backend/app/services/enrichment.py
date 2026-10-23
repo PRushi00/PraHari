@@ -256,6 +256,12 @@ class DomainEnrichmentService:
             "bookmark_after": bookmark,
             "more_available": False,
             "log_was_reset": False,
+            # Which query produced the batch, and why a filtered read was
+            # abandoned if it was. A filter that silently matches nothing
+            # looks exactly like a quiet network (ADR-128).
+            "filter_mode": None,
+            "filter_error": None,
+            "possible_gap": False,
         }
 
         try:
@@ -297,6 +303,21 @@ class DomainEnrichmentService:
         # batch (the UNIQUE constraint absorbs it) rather than skipping
         # it. The reverse order would lose events silently.
         recorded = self.db.record_dns_observations(rows)
+
+        result["filter_mode"] = read.filter_mode
+        result["filter_error"] = read.filter_error or None
+        result["possible_gap"] = read.possible_gap
+        if read.filter_error:
+            logger.warning(
+                "DNS event-log filter fell back to a window read: %s",
+                read.filter_error,
+            )
+        if read.possible_gap:
+            logger.warning(
+                "DNS window read may not reach back to bookmark %d "
+                "(oldest in batch is newer); some events may have scrolled out",
+                bookmark,
+            )
 
         if incremental:
             advanced_to = read.max_record_id

@@ -142,6 +142,46 @@ class EventLogRead:
     newest_record_id: int = 0
     requested_after: int = 0
     batch_limit: int = 0
+    #: Which query produced this batch: "xpath" (the event-log service
+    #: filtered), "fallback_window" (the proven newest-N read, filtered
+    #: here instead) or "cold_start".
+    filter_mode: str = "cold_start"
+    #: Why the filtered query was abandoned, when it was. Reported
+    #: rather than swallowed: a filter that silently matches nothing
+    #: looks exactly like a quiet network (ADR-128).
+    filter_error: str = ""
+
+    def new_records(self) -> list[dict[str, Any]]:
+        """
+        Records strictly newer than the bookmark.
+
+        Applied on every path, not only the fallback. Correctness must
+        not depend on the event-log filter having worked — if the XPath
+        is wrong the window read still yields exactly the new records,
+        and if it is right this drops nothing (ADR-128).
+        """
+        if self.requested_after <= 0:
+            return list(self.records)
+        return [
+            r
+            for r in self.records
+            if (_as_int(r.get("RecordId")) or 0) > self.requested_after
+        ]
+
+    @property
+    def possible_gap(self) -> bool:
+        """
+        The window read may not reach back to the bookmark.
+
+        Only the fallback can lose events, and only when it filled its
+        batch and its oldest record is already past the bookmark: the
+        events in between scrolled out of the window between polls. Said
+        out loud rather than left as a silent hole.
+        """
+        if self.filter_mode != "fallback_window" or not self.batch_was_full:
+            return False
+        ids = [_as_int(r.get("RecordId")) or 0 for r in self.records]
+        return bool(ids) and min(ids) > self.requested_after + 1
 
     @property
     def max_record_id(self) -> int:
@@ -434,6 +474,8 @@ if (-not $log.IsEnabled) {{
 }}
 $after = {after_record_id}
 $newestId = 0
+$mode = 'cold_start'
+$filterError = ''
 try {{
     $newest = @(Get-WinEvent -LogName '{channel}' -MaxEvents 1 -ErrorAction Stop)
     if ($newest.Count -gt 0) {{ $newestId = [int64] $newest[0].RecordId }}
@@ -441,20 +483,41 @@ try {{
     # An empty channel is not an error: it reports nothing yet.
     $newestId = 0
 }}
-try {{
-    if ($after -gt 0) {{
+$events = @()
+if ($after -gt 0) {{
+    # Preferred: let the event-log service do the filtering. This is the
+    # cheap path, but it has never been proven on a real channel, so a
+    # failure here must NOT silently read nothing — it falls back to the
+    # window read that is known to work, and says which was used.
+    try {{
         $filter = "*[System[EventRecordID>$after]]"
-        $events = @(Get-WinEvent -LogName '{channel}' -FilterXPath $filter `
-            -ErrorAction SilentlyContinue |
+        $events = @(Get-WinEvent -LogName '{channel}' -FilterXPath $filter -ErrorAction Stop |
             Sort-Object -Property RecordId |
             Select-Object -First {max_events})
-    }} else {{
-        $events = @(Get-WinEvent -LogName '{channel}' -MaxEvents {max_events} -ErrorAction Stop)
+        $mode = 'xpath'
+    }} catch {{
+        $msg = $_.Exception.Message
+        if ($msg -match 'No events were found') {{
+            # Not a failure: the filter worked and nothing is newer.
+            $events = @()
+            $mode = 'xpath'
+        }} else {{
+            $filterError = ($msg -replace '"', "'")
+            $mode = 'fallback_window'
+        }}
     }}
-}} catch {{
-    Write-Output ('{{"error":"channel_unreadable","detail":"' +
-        ($_.Exception.Message -replace '"', "'") + '"}}')
-    exit 0
+}}
+if ($mode -ne 'xpath') {{
+    # The proven read: newest N, no filter. The caller drops anything at
+    # or below its bookmark, so this stays incremental in effect.
+    try {{
+        $events = @(Get-WinEvent -LogName '{channel}' -MaxEvents {max_events} -ErrorAction Stop)
+        if ($after -gt 0) {{ $events = @($events | Sort-Object -Property RecordId) }}
+    }} catch {{
+        Write-Output ('{{"error":"channel_unreadable","detail":"' +
+            ($_.Exception.Message -replace '"', "'") + '"}}')
+        exit 0
+    }}
 }}
 $rows = @()
 foreach ($e in $events) {{
@@ -474,6 +537,7 @@ foreach ($e in $events) {{
 }}
 ConvertTo-Json -Compress -Depth 4 -InputObject @{{
     records = @($rows); newest_record_id = $newestId
+    filter_mode = $mode; filter_error = $filterError
 }}
 """
 
@@ -567,6 +631,8 @@ def read_dns_events(
         newest_record_id=_as_int(payload.get("newest_record_id")) or 0,
         requested_after=max(0, int(after_record_id)),
         batch_limit=int(max_events),
+        filter_mode=str(payload.get("filter_mode") or "cold_start"),
+        filter_error=str(payload.get("filter_error") or ""),
     )
 
 
@@ -586,7 +652,10 @@ def collect_dns_observations(
     read = read_dns_events(
         max_events=max_events, after_record_id=after_record_id, **kwargs
     )
-    report = parse_dns_events(read.records)
+    # Parse only what the bookmark has not already covered. On the
+    # fallback path this is what keeps the read incremental; on the
+    # filtered path it is a no-op.
+    report = parse_dns_events(read.new_records())
     return (
         [obs.as_observation(source_id) for obs in report.observations],
         report,
