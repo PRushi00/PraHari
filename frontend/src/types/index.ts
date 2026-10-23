@@ -790,3 +790,20 @@ export interface EventLevelReport {
   scenarios_note: string;
   limitations: string[];
 }
+
+/** What this machine is (ADR-125). Every field nullable with a reason. */
+export interface HostIdentity {
+  hostname: string | null;
+  hostname_reason: string | null;
+  local_ip: string | null;
+  local_ip_reason: string | null;
+  operating_system: string | null;
+  /** Seconds since the MACHINE booted. Never the process's uptime. */
+  host_uptime_seconds: number | null;
+  host_uptime_reason: string | null;
+  host_uptime_source: string | null;
+  /** Seconds since this API process started. A different quantity. */
+  process_uptime_seconds: number;
+  measured_at: string;
+  limitations: string[];
+}

@@ -87,6 +87,10 @@ MODEL_PAIRS = [
     ("DirectionAssessment", "DirectionAssessment"),
     ("DnsObservationRow", "DnsObservationRow"),
     ("DnsObservationsPage", "DnsObservationsPage"),
+    # Host identity (ADR-125). Paired on the day it was added: the card
+    # it feeds shows two different uptimes, and a field drifting between
+    # them is exactly the confusion the endpoint exists to prevent.
+    ("HostIdentity", "HostIdentity"),
 ]
 
 # Interfaces that intentionally have no backend counterpart: purely local

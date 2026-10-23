@@ -304,3 +304,137 @@ def runtime_info(config: AppConfig = Depends(get_config)) -> dict:
         "host_telemetry_supported": sys.platform == "win32"
         or sys.platform.startswith("linux"),
     }
+
+
+# ---------------------------------------------------------------------
+# Host identity (ADR-125)
+# ---------------------------------------------------------------------
+
+
+class HostIdentity(BaseModel):
+    """
+    What this machine is, as far as the process can tell from inside it.
+
+    Every field is nullable with a reason, for the same reason the rest
+    of this module is: the dashboard's host card previously had to show
+    the **API process's** uptime because nothing reported the machine's,
+    and a wrong number wearing the right label is worse than a blank.
+
+    None of this is a network measurement. `local_ip` is the address the
+    kernel would source from for a route to a public address; it is read
+    from an unconnected UDP socket, which sends no packet, and it says
+    nothing about what that interface can see.
+    """
+
+    hostname: Optional[str] = None
+    hostname_reason: Optional[str] = None
+
+    local_ip: Optional[str] = None
+    local_ip_reason: Optional[str] = None
+
+    operating_system: Optional[str] = None
+
+    #: Seconds since the machine booted. Null when it cannot be read —
+    #: never the process uptime, which is a different quantity.
+    host_uptime_seconds: Optional[float] = None
+    host_uptime_reason: Optional[str] = None
+    host_uptime_source: Optional[str] = None
+
+    #: Seconds since THIS API process started. Always available, and
+    #: kept under a name that cannot be mistaken for the machine's.
+    process_uptime_seconds: float
+
+    measured_at: datetime
+    limitations: list[str] = Field(default_factory=list)
+
+
+def _read_hostname() -> tuple[Optional[str], Optional[str]]:
+    import socket
+
+    try:
+        name = socket.gethostname()
+    except OSError as exc:
+        return None, f"gethostname failed: {type(exc).__name__}"
+    return (name, None) if name else (None, "the host reports an empty name")
+
+
+def _read_local_ip() -> tuple[Optional[str], Optional[str]]:
+    """
+    The address this host would use to reach the outside world.
+
+    An unconnected UDP socket is `connect()`ed to a public address to
+    make the kernel choose a route. UDP connect sends nothing — no
+    packet leaves the machine, and nothing is contacted.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("198.51.100.1", 9))  # TEST-NET-3, reserved, unroutable
+        return sock.getsockname()[0], None
+    except OSError as exc:
+        # No default route, or no network at all. Both are real states.
+        return None, f"no route could be resolved: {type(exc).__name__}"
+    finally:
+        sock.close()
+
+
+def _read_host_uptime() -> tuple[Optional[float], Optional[str], Optional[str]]:
+    """Seconds since boot, by whichever means this platform offers."""
+    try:
+        import psutil  # type: ignore[import-untyped]
+
+        return round(time.time() - psutil.boot_time(), 3), None, "psutil.boot_time"
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        return None, f"psutil could not read boot time: {type(exc).__name__}", None
+
+    # psutil is not a declared dependency, so Linux gets a stdlib path.
+    try:
+        with open("/proc/uptime", "r", encoding="ascii") as handle:
+            return round(float(handle.read().split()[0]), 3), None, "/proc/uptime"
+    except (OSError, ValueError, IndexError):
+        pass
+
+    return (
+        None,
+        "no boot time is readable here: psutil is not installed and "
+        "/proc/uptime does not exist on this platform",
+        None,
+    )
+
+
+@router.get("/host", response_model=HostIdentity)
+def host_identity() -> HostIdentity:
+    """
+    Identify the machine PraHari runs on.
+
+    Read-only and local: it opens no connection, sends no packet, and
+    changes nothing.
+    """
+    hostname, hostname_reason = _read_hostname()
+    local_ip, local_ip_reason = _read_local_ip()
+    uptime, uptime_reason, uptime_source = _read_host_uptime()
+
+    limitations = [
+        "Identifies the machine PraHari runs on. It is not a network scan "
+        "and says nothing about any other device.",
+        "local_ip is the address the kernel would source from for an "
+        "outbound route. The host may hold other addresses on other "
+        "interfaces, and this one is not evidence of what it can observe.",
+    ]
+
+    return HostIdentity(
+        hostname=hostname,
+        hostname_reason=hostname_reason,
+        local_ip=local_ip,
+        local_ip_reason=local_ip_reason,
+        operating_system=f"{platform.system()} {platform.release()}".strip() or None,
+        host_uptime_seconds=uptime,
+        host_uptime_reason=uptime_reason,
+        host_uptime_source=uptime_source,
+        process_uptime_seconds=round(time.time() - _PROCESS_STARTED, 3),
+        measured_at=datetime.now(timezone.utc),
+        limitations=limitations,
+    )
