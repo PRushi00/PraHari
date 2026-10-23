@@ -127,6 +127,54 @@ class DnsEventObservation:
 
 
 @dataclass
+class EventLogRead:
+    """
+    One read of the channel, with what a caller needs to move a bookmark
+    safely (ADR-127).
+
+    `records` is the batch. `newest_record_id` is the highest RecordId
+    the channel currently holds, read separately — it is how a cleared
+    log is detected, because Windows restarts RecordId at 1 after a
+    clear and a bookmark above it is therefore stale.
+    """
+
+    records: list[dict[str, Any]]
+    newest_record_id: int = 0
+    requested_after: int = 0
+    batch_limit: int = 0
+
+    @property
+    def max_record_id(self) -> int:
+        """Highest RecordId in this batch, or 0 when it is empty."""
+        ids = [_as_int(r.get("RecordId")) or 0 for r in self.records]
+        return max(ids) if ids else 0
+
+    @property
+    def batch_was_full(self) -> bool:
+        """
+        The limit truncated the batch, so unread events remain.
+
+        The caller should poll again promptly rather than sleep, or a
+        burst would drain one interval at a time.
+        """
+        return self.batch_limit > 0 and len(self.records) >= self.batch_limit
+
+    @property
+    def log_was_reset(self) -> bool:
+        """
+        The bookmark sits above the newest record the channel holds.
+
+        That happens when the log is cleared: RecordId restarts at 1.
+        Continuing to filter on the stale bookmark would read nothing,
+        for ever, while DNS activity carried on.
+        """
+        return (
+            self.requested_after > 0
+            and 0 < self.newest_record_id < self.requested_after
+        )
+
+
+@dataclass
 class DnsEventParseReport:
     """
     What a batch of records yielded, and what it refused.
@@ -354,6 +402,24 @@ def parse_dns_events(records: list[dict[str, Any]]) -> DnsEventParseReport:
 #: Read-only. It enables nothing, clears nothing, and sends no query.
 #: `-MaxEvents` bounds the read so a full circular log cannot be pulled
 #: into memory in one call.
+#: Read the channel, optionally only what is newer than a bookmark.
+#:
+#: Two modes, because they need different guarantees (ADR-127):
+#:
+#: * **Cold start** (`after_record_id` = 0): the newest `max_events`,
+#:   newest-first. The channel is circular and may already hold more
+#:   history than anyone wants imported, so the first run seeds the
+#:   bookmark instead of draining the backlog — and says so.
+#: * **Incremental**: `EventRecordID > N` filtered **in the event-log
+#:   query itself**, then sorted ascending and truncated to the OLDEST
+#:   `max_events`. Sorting ascending is what makes the batch contiguous
+#:   with the bookmark: taking the newest N of the matching set would
+#:   leave an unread hole between the bookmark and the batch, and
+#:   advancing past that hole would lose events silently.
+#:
+#: `newest_record_id` is reported separately so the caller can detect a
+#: cleared or rolled log: Windows restarts RecordId at 1 after a clear,
+#: so a newest id BELOW the bookmark means the bookmark is stale.
 _PS_READ_EVENTS = r"""
 $ErrorActionPreference = 'Stop'
 try {{
@@ -366,8 +432,25 @@ if (-not $log.IsEnabled) {{
     Write-Output '{{"error":"channel_disabled"}}'
     exit 0
 }}
+$after = {after_record_id}
+$newestId = 0
 try {{
-    $events = @(Get-WinEvent -LogName '{channel}' -MaxEvents {max_events} -ErrorAction Stop)
+    $newest = @(Get-WinEvent -LogName '{channel}' -MaxEvents 1 -ErrorAction Stop)
+    if ($newest.Count -gt 0) {{ $newestId = [int64] $newest[0].RecordId }}
+}} catch {{
+    # An empty channel is not an error: it reports nothing yet.
+    $newestId = 0
+}}
+try {{
+    if ($after -gt 0) {{
+        $filter = "*[System[EventRecordID>$after]]"
+        $events = @(Get-WinEvent -LogName '{channel}' -FilterXPath $filter `
+            -ErrorAction SilentlyContinue |
+            Sort-Object -Property RecordId |
+            Select-Object -First {max_events})
+    }} else {{
+        $events = @(Get-WinEvent -LogName '{channel}' -MaxEvents {max_events} -ErrorAction Stop)
+    }}
 }} catch {{
     Write-Output ('{{"error":"channel_unreadable","detail":"' +
         ($_.Exception.Message -replace '"', "'") + '"}}')
@@ -377,6 +460,7 @@ $rows = @()
 foreach ($e in $events) {{
     $row = @{{
         Id          = $e.Id
+        RecordId    = [int64] $e.RecordId
         TimeCreated = $e.TimeCreated.ToUniversalTime().ToString('o')
         ProcessId   = $e.ProcessId
     }}
@@ -388,7 +472,9 @@ foreach ($e in $events) {{
     }} catch {{ }}
     $rows += [pscustomobject]$row
 }}
-ConvertTo-Json -Compress -Depth 4 -InputObject @{{ records = @($rows) }}
+ConvertTo-Json -Compress -Depth 4 -InputObject @{{
+    records = @($rows); newest_record_id = $newestId
+}}
 """
 
 
@@ -397,7 +483,8 @@ def read_dns_events(
     timeout_seconds: float = 30.0,
     powershell_path: str = "powershell",
     channel: str = CHANNEL,
-) -> list[dict[str, Any]]:
+    after_record_id: int = 0,
+) -> "EventLogRead":
     """
     Read raw records from the DNS-Client event channel.
 
@@ -412,7 +499,11 @@ def read_dns_events(
     if max_events < 1:
         raise ValueError("max_events must be at least 1")
 
-    script = _PS_READ_EVENTS.format(channel=channel, max_events=int(max_events))
+    script = _PS_READ_EVENTS.format(
+        channel=channel,
+        max_events=int(max_events),
+        after_record_id=max(0, int(after_record_id)),
+    )
     try:
         proc = subprocess.run(
             [powershell_path, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -471,14 +562,20 @@ def read_dns_events(
         raise DnsEventLogUnavailable(
             f"Reading {channel} returned no record list"
         )
-    return [r for r in records if isinstance(r, dict)]
+    return EventLogRead(
+        records=[r for r in records if isinstance(r, dict)],
+        newest_record_id=_as_int(payload.get("newest_record_id")) or 0,
+        requested_after=max(0, int(after_record_id)),
+        batch_limit=int(max_events),
+    )
 
 
 def collect_dns_observations(
     source_id: Optional[str] = None,
     max_events: int = 500,
+    after_record_id: int = 0,
     **kwargs: Any,
-) -> tuple[list[dict[str, Any]], DnsEventParseReport]:
+) -> tuple[list[dict[str, Any]], DnsEventParseReport, "EventLogRead"]:
     """
     Read and parse in one call, returning storage-shaped observations.
 
@@ -486,9 +583,12 @@ def collect_dns_observations(
     also surfacing what was skipped would present a partial read as a
     complete one.
     """
-    records = read_dns_events(max_events=max_events, **kwargs)
-    report = parse_dns_events(records)
+    read = read_dns_events(
+        max_events=max_events, after_record_id=after_record_id, **kwargs
+    )
+    report = parse_dns_events(read.records)
     return (
         [obs.as_observation(source_id) for obs in report.observations],
         report,
+        read,
     )

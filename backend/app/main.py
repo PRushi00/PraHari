@@ -42,6 +42,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db = get_db(config)
     db.initialize()
     logger.info("PraHari database ready at %s", config.store_descriptor())
+
+    # Continuous DNS collection, only when the operator asked for it
+    # (ADR-127). A failure to start must not stop the API coming up:
+    # DNS evidence is supplementary, and a backend that refuses to serve
+    # because an optional collector could not start is worse than one
+    # that serves and reports the reason.
+    if config.dns_collector_enabled:
+        try:
+            from app.services.dns_collector import get_dns_collector
+
+            status = await get_dns_collector(db).start(
+                interval_seconds=config.dns_collector_interval_seconds,
+                batch_size=config.dns_collector_batch_size,
+            )
+            if status.state == "running":
+                logger.info(
+                    "DNS event collector running every %.1fs", status.interval_seconds
+                )
+            else:
+                logger.warning(
+                    "DNS event collector not started (%s): %s",
+                    status.state,
+                    status.last_error or "see /enrichment/dns/collector/status",
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning("Error while starting DNS event collector", exc_info=True)
+
     yield
     logger.info("PraHari backend shutting down...")
 
@@ -56,6 +83,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await collector.stop()
     except Exception:  # noqa: BLE001
         logger.warning("Error while stopping telemetry collector", exc_info=True)
+
+    # Same for DNS collection: cancel the task and wait for it to unwind
+    # before the database closes under it.
+    try:
+        from app.services.dns_collector import get_dns_collector
+
+        dns_collector = get_dns_collector(db)
+        if dns_collector.is_running:
+            logger.info("Stopping DNS event collector...")
+            await dns_collector.stop()
+    except Exception:  # noqa: BLE001
+        logger.warning("Error while stopping DNS event collector", exc_info=True)
 
     db.close()
 

@@ -112,7 +112,7 @@ describe("DNS activity", () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("example.com")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: /Collect from event log/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Collect once/i }));
 
     await waitFor(() => {
       const status = screen.getByRole("status");
@@ -131,10 +131,133 @@ describe("DNS activity", () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("example.com")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: /Collect from event log/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Collect once/i }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/is disabled/);
     });
+  });
+
+  it("refreshes observations on its own while collection is running", async () => {
+    // The point of ADR-127: evidence appears without a button press.
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(api, "getDnsCollectorStatus").mockResolvedValue({
+        state: "running",
+        platform_supported: true,
+        platform_name: "Windows 11",
+        interval_seconds: 5,
+        batch_size: 500,
+        started_at: null, stopped_at: null, last_poll_at: null,
+        last_success_at: "2026-10-22T12:00:00.000Z",
+        polls_attempted: 3, polls_succeeded: 3, polls_failed: 0,
+        consecutive_failures: 0, records_read_total: 40,
+        observations_recorded_total: 12, skipped_failed_query_total: 1,
+        bookmark: 4821, log_resets_seen: 0, last_error: null, notes: [],
+      } as never);
+      const get = vi.spyOn(api, "getDnsObservations").mockResolvedValue(page([ROW]) as never);
+
+      renderPage();
+      await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(1));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not poll while collection is stopped", async () => {
+    // A stopped collector produces nothing new, so refreshing against
+    // it is traffic that cannot change the answer.
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(api, "getDnsCollectorStatus").mockResolvedValue({
+        state: "stopped", platform_supported: true, platform_name: "Windows 11",
+        interval_seconds: 5, batch_size: 500,
+        started_at: null, stopped_at: null, last_poll_at: null, last_success_at: null,
+        polls_attempted: 0, polls_succeeded: 0, polls_failed: 0,
+        consecutive_failures: 0, records_read_total: 0,
+        observations_recorded_total: 0, skipped_failed_query_total: 0,
+        bookmark: 0, log_resets_seen: 0, last_error: null, notes: [],
+      } as never);
+      const get = vi.spyOn(api, "getDnsObservations").mockResolvedValue(page([ROW]) as never);
+
+      renderPage();
+      await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the evidence-source filter across an automatic refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(api, "getDnsCollectorStatus").mockResolvedValue({
+        state: "running", platform_supported: true, platform_name: "Windows 11",
+        interval_seconds: 5, batch_size: 500,
+        started_at: null, stopped_at: null, last_poll_at: null, last_success_at: null,
+        polls_attempted: 1, polls_succeeded: 1, polls_failed: 0,
+        consecutive_failures: 0, records_read_total: 1,
+        observations_recorded_total: 1, skipped_failed_query_total: 0,
+        bookmark: 10, log_resets_seen: 0, last_error: null, notes: [],
+      } as never);
+      const get = vi.spyOn(api, "getDnsObservations").mockResolvedValue(page([ROW]) as never);
+
+      renderPage();
+      await vi.waitFor(() => expect(get).toHaveBeenCalled());
+
+      fireEvent.change(screen.getByLabelText(/Evidence source/i), {
+        target: { value: "dns_cache_observation" },
+      });
+      await vi.waitFor(() =>
+        expect(get).toHaveBeenLastCalledWith(
+          expect.objectContaining({ method: "dns_cache_observation" }),
+        ),
+      );
+
+      // The timer must not quietly drop back to an unfiltered query.
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.waitFor(() =>
+        expect(get).toHaveBeenLastCalledWith(
+          expect.objectContaining({ method: "dns_cache_observation" }),
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("explains that continuous collection needs Windows", async () => {
+    // A Linux backend cannot read a Windows host's event log, and the
+    // page must say that rather than offering a button that fails.
+    vi.spyOn(api, "getDnsCollectorStatus").mockResolvedValue({
+      state: "unsupported", platform_supported: false, platform_name: "Linux 6.18",
+      interval_seconds: 8, batch_size: 500,
+      started_at: null, stopped_at: null, last_poll_at: null, last_success_at: null,
+      polls_attempted: 0, polls_succeeded: 0, polls_failed: 0,
+      consecutive_failures: 0, records_read_total: 0,
+      observations_recorded_total: 0, skipped_failed_query_total: 0,
+      bookmark: 0, log_resets_seen: 0, last_error: null, notes: [],
+    } as never);
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Continuous collection needs Windows/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /Collect continuously/i })).toBeDisabled();
+  });
+
+  it("distinguishes a failed refresh from an empty host", async () => {
+    vi.spyOn(api, "getDnsObservations").mockRejectedValue(new Error("backend down"));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("backend down"));
+    expect(
+      screen.getByText(/not a statement that this host resolved nothing/i),
+    ).toBeInTheDocument();
   });
 });

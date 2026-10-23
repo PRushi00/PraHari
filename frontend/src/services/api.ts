@@ -122,6 +122,24 @@ export const api = {
     );
   },
 
+  getDnsCollectorStatus: (): Promise<import("../types").DnsCollectorStatus> =>
+    request<import("../types").DnsCollectorStatus>("/enrichment/dns/collector/status"),
+
+  startDnsCollector: (body?: {
+    interval_seconds?: number;
+    batch_size?: number;
+  }): Promise<import("../types").DnsCollectorStatus> =>
+    request<import("../types").DnsCollectorStatus>("/enrichment/dns/collector/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    }),
+
+  stopDnsCollector: (): Promise<import("../types").DnsCollectorStatus> =>
+    request<import("../types").DnsCollectorStatus>("/enrichment/dns/collector/stop", {
+      method: "POST",
+    }),
+
   collectDnsEvents: (): Promise<Record<string, unknown>> =>
     request<Record<string, unknown>>("/enrichment/dns/events/collect", {
       method: "POST",

@@ -12,10 +12,10 @@
 //   * **The two evidence sources are never merged.** Cache and event
 //     log are different kinds of evidence; they are filterable apart.
 
-import React, { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Download, Globe, RefreshCw } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, Download, Globe, Pause, Play, RefreshCw } from "lucide-react";
 import { api } from "../services/api";
-import { DnsObservationsPage } from "../types";
+import { DnsCollectorStatus, DnsObservationsPage } from "../types";
 import { Explain } from "../components/GuidedMode";
 import { fmtTime, humanise } from "../utils/format";
 
@@ -32,22 +32,102 @@ export const DnsPage: React.FC = () => {
   const [collecting, setCollecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [collector, setCollector] = useState<DnsCollectorStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  /**
+   * Guards against overlapping loads (ADR-127).
+   *
+   * The auto-refresh fires on a timer while collection runs. A slow
+   * request must not have a second stacked behind it, and an in-flight
+   * response arriving after a newer one would show stale rows.
+   */
+  const inFlight = useRef(false);
+  const timer = useRef<number | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  /**
+   * Fetch observations.
+   *
+   * `quiet` is the auto-refresh path: it must not flip the page into a
+   * loading state, because a spinner every few seconds over a table the
+   * operator is reading is worse than no refresh at all.
+   */
+  const load = useCallback(
+    async (quiet = false) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      if (!quiet) setLoading(true);
+      try {
+        const next = await api.getDnsObservations({
+          method: method || undefined,
+          limit: 200,
+        });
+        setPage(next);
+        setUpdatedAt(new Date().toISOString());
+        // A refresh that succeeds clears a stale failure banner; one
+        // that fails below leaves the last good rows on screen.
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        inFlight.current = false;
+        if (!quiet) setLoading(false);
+      }
+    },
+    [method],
+  );
+
+  const refreshStatus = useCallback(async () => {
     try {
-      setPage(await api.getDnsObservations({ method: method || undefined, limit: 200 }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
+      setCollector(await api.getDnsCollectorStatus());
+    } catch {
+      // The collector endpoint failing is not the page failing: the
+      // stored observations are still worth showing.
+      setCollector(null);
     }
-  }, [method]);
+  }, []);
 
   useEffect(() => {
     load();
-  }, [load]);
+    refreshStatus();
+  }, [load, refreshStatus]);
+
+  // Poll only while collection is actually running. A stopped collector
+  // produces nothing new, so refreshing against it would be traffic
+  // that cannot change the answer.
+  useEffect(() => {
+    if (timer.current) {
+      window.clearInterval(timer.current);
+      timer.current = null;
+    }
+    if (collector?.state === "running") {
+      const ms = Math.max(2000, (collector.interval_seconds || 8) * 1000);
+      timer.current = window.setInterval(() => {
+        load(true);
+        refreshStatus();
+      }, ms);
+    }
+    return () => {
+      if (timer.current) window.clearInterval(timer.current);
+    };
+  }, [collector?.state, collector?.interval_seconds, load, refreshStatus]);
+
+  const toggleCollector = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next =
+        collector?.state === "running"
+          ? await api.stopDnsCollector()
+          : await api.startDnsCollector();
+      setCollector(next);
+      if (next.state !== "running" && next.last_error) setError(next.last_error);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [collector?.state]);
 
   const collect = useCallback(async () => {
     setCollecting(true);
@@ -99,19 +179,109 @@ export const DnsPage: React.FC = () => {
             of its own.
           </Explain>
         </div>
-        <div style={{ display: "flex", gap: "0.75rem" }}>
-          <button className="btn btn-primary" onClick={collect} disabled={collecting}>
-            <Download size={14} /> {collecting ? "Collecting…" : "Collect from event log"}
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+          {collector && (
+            <button
+              className={`btn ${collector.state === "running" ? "" : "btn-primary"}`}
+              onClick={toggleCollector}
+              disabled={busy || !collector.platform_supported}
+              title={
+                collector.platform_supported
+                  ? "Poll the Windows DNS-Client channel continuously"
+                  : `The DNS-Client channel is a Windows facility; this backend runs on ${collector.platform_name}.`
+              }
+            >
+              {collector.state === "running" ? (
+                <>
+                  <Pause size={14} /> Stop collecting
+                </>
+              ) : (
+                <>
+                  <Play size={14} /> Collect continuously
+                </>
+              )}
+            </button>
+          )}
+          <button className="btn" onClick={collect} disabled={collecting}>
+            <Download size={14} /> {collecting ? "Collecting…" : "Collect once"}
           </button>
-          <button className="btn" onClick={load} disabled={loading}>
+          {/* Manual refresh stays, as the fallback when nothing is
+              polling — and as the way to re-read after a failure. */}
+          <button className="btn" onClick={() => load()} disabled={loading}>
             <RefreshCw size={14} className={loading ? "spin" : ""} /> Refresh
           </button>
         </div>
       </div>
 
+      {/* Collection state and when the view last changed. Without this
+          a live page and a stuck one look identical. */}
+      <div className="collector-bar">
+        <span className={`pill ${collector?.state === "running" ? "pill-ok" : "pill-idle"}`}>
+          <span
+            className="status-dot"
+            style={{
+              backgroundColor:
+                collector?.state === "running"
+                  ? "#10b981"
+                  : collector?.state === "error"
+                  ? "#f43f5e"
+                  : "#64748b",
+            }}
+          />
+          {collector?.state === "running"
+            ? `Collecting every ${collector.interval_seconds}s`
+            : collector?.state === "unsupported"
+            ? "Continuous collection unavailable on this platform"
+            : collector?.state === "error"
+            ? "Collection stopped after repeated failures"
+            : "Not collecting"}
+        </span>
+        {updatedAt && (
+          <span className="panel-meta">Observations updated {fmtTime(updatedAt)}</span>
+        )}
+        {collector?.last_success_at && (
+          <span className="panel-meta">
+            Last successful poll {fmtTime(collector.last_success_at)}
+          </span>
+        )}
+        {collector && collector.bookmark > 0 && (
+          <span
+            className="panel-meta"
+            title="The event-log RecordId last safely processed. It survives a restart, so collection resumes where it stopped."
+          >
+            bookmark #{collector.bookmark}
+          </span>
+        )}
+      </div>
+
       {error && (
         <div className="status-banner status-error" role="alert">
-          <AlertTriangle size={16} /> {error}
+          <AlertTriangle size={16} />
+          <div>
+            {error}
+            {/* A failure to collect is not an empty host. Saying so
+                stops a broken reader reading as a quiet network. */}
+            <div className="banner-note">
+              This is a collection failure, not a statement that this host
+              resolved nothing.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {collector?.state === "unsupported" && (
+        <div className="status-banner status-warn" role="status">
+          <AlertTriangle size={16} />
+          <div>
+            <strong>Continuous collection needs Windows.</strong>
+            <div className="banner-note">
+              The DNS-Client Operational channel is readable only by a process
+              on the Windows host itself, and this backend runs on{" "}
+              {collector.platform_name}. Run PraHari on that machine, or give
+              it a sensor agent — a remote backend cannot read another
+              machine&apos;s event log.
+            </div>
+          </div>
         </div>
       )}
       {notice && (

@@ -17,6 +17,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.api.auth import require_admin_in_central
+from app.services.dns_collector import (
+    MAX_INTERVAL_SECONDS,
+    MIN_INTERVAL_SECONDS,
+    DnsCollectorStatus,
+    get_dns_collector,
+)
 from app.api.deps import get_db
 from app.schemas.events import DomainAttribution
 from app.services.enrichment import (
@@ -291,3 +298,64 @@ def submit_dns_observations(
         details=f"Recorded {recorded} of {len(observations)} submitted observations",
     )
     return {"submitted": len(observations), "recorded": recorded}
+
+
+# ---------------------------------------------------------------------
+# Continuous DNS collection (ADR-127)
+# ---------------------------------------------------------------------
+
+
+class DnsCollectorControl(BaseModel):
+    """Start parameters. Both optional; omitted means keep current."""
+
+    interval_seconds: Optional[float] = Field(
+        default=None,
+        ge=MIN_INTERVAL_SECONDS,
+        le=MAX_INTERVAL_SECONDS,
+        description="Seconds between polls of the DNS-Client channel.",
+    )
+    batch_size: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=5000,
+        description="Records read per poll. A full batch polls again at once.",
+    )
+
+
+@router.get("/dns/collector/status", response_model=DnsCollectorStatus)
+def dns_collector_status(db: Database = Depends(get_db)) -> DnsCollectorStatus:
+    """
+    What continuous DNS collection is doing, and on what evidence.
+
+    Read-only. Reports `unsupported` rather than an error where the
+    channel is not a thing this platform has.
+    """
+    return get_dns_collector(db).status()
+
+
+@router.post("/dns/collector/start", response_model=DnsCollectorStatus)
+async def start_dns_collector(
+    req: DnsCollectorControl,
+    db: Database = Depends(get_db),
+    # Admin-only in central mode (ADR-126). Collection control is a
+    # deployment-wide operation, not one scoped to a caller's source.
+    _: object = Depends(require_admin_in_central),
+) -> DnsCollectorStatus:
+    """
+    Begin polling the DNS-Client channel on an interval.
+
+    Enables no channel and changes no Windows configuration: where the
+    channel is off, this reports that and collects nothing (ADR-121).
+    """
+    return await get_dns_collector(db).start(
+        interval_seconds=req.interval_seconds, batch_size=req.batch_size
+    )
+
+
+@router.post("/dns/collector/stop", response_model=DnsCollectorStatus)
+async def stop_dns_collector(
+    db: Database = Depends(get_db),
+    _: object = Depends(require_admin_in_central),
+) -> DnsCollectorStatus:
+    """Stop polling cleanly, releasing the task. Safe when not running."""
+    return await get_dns_collector(db).stop()

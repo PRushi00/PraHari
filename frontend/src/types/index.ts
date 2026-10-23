@@ -807,3 +807,28 @@ export interface HostIdentity {
   measured_at: string;
   limitations: string[];
 }
+
+/** Continuous DNS event-log collection (ADR-127). */
+export interface DnsCollectorStatus {
+  state: "running" | "stopped" | "unsupported" | "error";
+  platform_supported: boolean;
+  platform_name: string;
+  interval_seconds: number;
+  batch_size: number;
+  started_at: string | null;
+  stopped_at: string | null;
+  last_poll_at: string | null;
+  last_success_at: string | null;
+  polls_attempted: number;
+  polls_succeeded: number;
+  polls_failed: number;
+  consecutive_failures: number;
+  records_read_total: number;
+  observations_recorded_total: number;
+  skipped_failed_query_total: number;
+  /** RecordId last safely processed; survives restarts. */
+  bookmark: number;
+  log_resets_seen: number;
+  last_error: string | null;
+  notes: string[];
+}
