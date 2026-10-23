@@ -3,23 +3,18 @@
 // back button left the application, and System Health and Administration
 // had no way in at all.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { App } from "../App";
 import { api } from "../services/api";
 import { ROUTES, normalisePath, pathFor, resolvePath } from "../routing";
+import { activePageLabel, gotoPage, workspaceButton } from "./navigate";
 
 /**
- * The button in the primary navigation, not any button whose text
- * happens to name a page: the Overview page's own links say things
- * like "Open the Events Explorer" (ADR-115).
+ * Reaching a page can now take two clicks: its workspace, then the page
+ * (ADR-124). `gotoPage` does both and still refuses to click a button
+ * that merely names a page in body copy.
  */
-function navButton(name: RegExp) {
-  return within(screen.getByRole("navigation", { name: /Primary/i })).getByRole(
-    "button",
-    { name },
-  );
-}
 
 function failAllApiCalls() {
   // Pages must render their own error states; routing must not depend on data.
@@ -27,11 +22,6 @@ function failAllApiCalls() {
   for (const key of Object.keys(api) as (keyof typeof api)[]) {
     if (typeof api[key] === "function") vi.spyOn(api, key as any).mockImplementation(boom as any);
   }
-}
-
-function activeNavLabel(): string | null {
-  const active = document.querySelector("nav .nav-btn.active");
-  return active ? (active.textContent ?? "").trim() : null;
 }
 
 function visit(path: string) {
@@ -81,48 +71,73 @@ describe("App routing", () => {
 
   it("opens the page a deep link names", async () => {
     visit("/forecast");
-    await waitFor(() => expect(activeNavLabel()).toBe("Threat Forecasting"));
+    await waitFor(() => expect(activePageLabel()).toBe("Threat Forecasting"));
     expect(document.title).toBe("Threat Forecasting · PraHari");
   });
 
   it("reaches the two pages that had no navigation entry", async () => {
     visit("/system-health");
-    await waitFor(() => expect(activeNavLabel()).toBe("System Health"));
-    fireEvent.click(navButton(/Administration/i));
+    await waitFor(() => expect(activePageLabel()).toBe("System Health"));
+    gotoPage("Administration");
     await waitFor(() => expect(window.location.pathname).toBe("/admin"));
-    expect(activeNavLabel()).toBe("Administration");
+    expect(activePageLabel()).toBe("Administration");
   });
 
   it("puts each navigation in the address bar and history", async () => {
     visit("/");
+    // Open the workspace first, so what is measured below is one page
+    // click and not the workspace click as well.
+    gotoPage("Live Telemetry");
     const before = window.history.length;
 
-    fireEvent.click(navButton(/Events Explorer/i));
+    gotoPage("Events Explorer");
 
     expect(window.location.pathname).toBe("/events");
     expect(window.history.length).toBe(before + 1);
-    expect(activeNavLabel()).toBe("Events Explorer");
+    expect(activePageLabel()).toBe("Events Explorer");
+  });
+
+  it("treats opening a workspace as its own navigation", async () => {
+    // Clicking a workspace lands on a real page, so it earns a history
+    // entry like any other move. Reaching a page from Overview is
+    // therefore two entries, and back steps through both (ADR-124).
+    visit("/");
+    const before = window.history.length;
+
+    fireEvent.click(workspaceButton("Network"));
+    expect(window.location.pathname).toBe("/live");
+    expect(window.history.length).toBe(before + 1);
+
+    gotoPage("Analytics");
+    expect(window.location.pathname).toBe("/analytics");
+    expect(window.history.length).toBe(before + 2);
+
+    await act(async () => { window.history.back(); });
+    await waitFor(() => expect(window.location.pathname).toBe("/live"));
   });
 
   it("does not add a history entry when the current page is clicked again", async () => {
     visit("/events");
     const before = window.history.length;
-    fireEvent.click(navButton(/Events Explorer/i));
+    gotoPage("Events Explorer");
     expect(window.history.length).toBe(before);
   });
 
   it("follows the browser's back and forward buttons", async () => {
     visit("/");
-    fireEvent.click(navButton(/Analytics/i));
-    fireEvent.click(navButton(/Audit & Security/i));
-    expect(activeNavLabel()).toBe("Audit & Security");
+    gotoPage("Analytics");
+    // Within one workspace, so this is a single step and back returns
+    // here rather than to a workspace's landing page.
+    gotoPage("Events Explorer");
+    expect(activePageLabel()).toBe("Events Explorer");
 
     await act(async () => { window.history.back(); });
-    await waitFor(() => expect(activeNavLabel()).toBe("Analytics"));
+    await waitFor(() => expect(activePageLabel()).toBe("Analytics"));
     expect(window.location.pathname).toBe("/analytics");
 
     await act(async () => { window.history.forward(); });
-    await waitFor(() => expect(activeNavLabel()).toBe("Audit & Security"));
+    await waitFor(() => expect(activePageLabel()).toBe("Events Explorer"));
+    expect(window.location.pathname).toBe("/events");
   });
 
   it("shows an alias at its canonical address without a new history entry", async () => {
@@ -133,7 +148,7 @@ describe("App routing", () => {
 
     await waitFor(() => expect(window.location.pathname).toBe("/feasibility"));
     expect(window.history.length).toBe(before);
-    expect(activeNavLabel()).toBe("Feasibility");
+    expect(activePageLabel()).toBe("Feasibility");
   });
 
   it("says an unknown path is not a page instead of showing Overview", async () => {
@@ -141,17 +156,17 @@ describe("App routing", () => {
 
     await waitFor(() => expect(screen.getByText("Page not found")).toBeInTheDocument());
     expect(screen.getByText("/definitely/not-a-page")).toBeInTheDocument();
-    expect(activeNavLabel()).toBeNull();
+    expect(activePageLabel()).toBeNull();
     expect(document.title).toBe("Page not found · PraHari");
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Overview" })[0]);
+    fireEvent.click(workspaceButton("Overview"));
     await waitFor(() => expect(window.location.pathname).toBe("/"));
     expect(screen.queryByText("Page not found")).not.toBeInTheDocument();
   });
 
   it("survives a refresh on a page: a fresh render of the same URL opens it", async () => {
     visit("/");
-    fireEvent.click(navButton(/Stream & Replay/i));
+    gotoPage("Stream & Replay");
     const { unmount } = render(<App />); // a second mount reads the address bar
     await waitFor(() =>
       expect(document.querySelectorAll("nav .nav-btn.active")).toHaveLength(2));

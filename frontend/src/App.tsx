@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Header, NavTab } from "./components/Header";
+import { Header, NavTab, WorkspaceNav } from "./components/Header";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GuidedModeProvider } from "./components/GuidedMode";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -97,9 +97,13 @@ export const App: React.FC = () => {
       <Header
         activeTab={activeTab}
         onSelectTab={setActiveTab}
+        onAddDevice={() => setActiveTab("sources")}
         health={health}
         loadingHealth={loadingHealth}
       />
+      {/* The current workspace's pages. Nothing is rendered for Overview
+          or for an unknown path, so neither shows an empty strip. */}
+      {activeTab && <WorkspaceNav activeTab={activeTab} onSelectTab={setActiveTab} />}
 
       <main className="main-content" style={{ flex: 1 }}>
         {/* A render error inside a page must not unmount the application.

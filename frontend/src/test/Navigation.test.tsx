@@ -1,19 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { App } from "../App";
 import { api } from "../services/api";
 
-/**
- * The button in the primary navigation, not any button whose text
- * happens to name a page: the Overview page's own links say things
- * like "Open the Events Explorer" (ADR-115).
- */
-function navButton(name: RegExp) {
-  return within(screen.getByRole("navigation", { name: /Primary/i })).getByRole(
-    "button",
-    { name },
-  );
-}
+import { ALL_PAGE_LABELS, gotoPage } from "./navigate";
 
 /**
  * Navigation regression tests.
@@ -24,19 +14,16 @@ function navButton(name: RegExp) {
  * fails outright.
  */
 
-const TABS = [
-  "Overview",
-  "Live Telemetry",
-  "CSV Import",
-  "Stream & Replay",
-  "Events Explorer",
-  "Analytics",
-  "Feasibility",
-  "Threat Forecasting",
-  "System Health",
-  "Administration",
-  "Audit & Security",
-];
+/**
+ * Every page the header can reach, taken from the application's own
+ * workspace definition rather than listed here by hand.
+ *
+ * The hand-written list this replaces named eleven of the fifteen
+ * pages, so four were never walked — including the two the original
+ * crash was found on. A page added to a workspace is now covered the
+ * day it is added (ADR-124).
+ */
+const TABS = ALL_PAGE_LABELS;
 
 /** Minimal valid responses matching the real backend contracts. */
 function mockApiWithData() {
@@ -128,8 +115,7 @@ function mockApiAllFailing() {
 
 async function visitEveryTab() {
   for (const tab of TABS) {
-    const button = navButton(new RegExp(tab, "i"));
-    fireEvent.click(button);
+    gotoPage(tab);
     // The application shell must remain mounted after every navigation.
     await waitFor(() => {
       expect(screen.getByText("PraHari")).toBeInTheDocument();
@@ -164,13 +150,13 @@ describe("Application navigation", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
 
-    fireEvent.click(navButton(/Feasibility/i));
+    gotoPage("Feasibility");
     await waitFor(() =>
       expect(screen.getByText(/Research Feasibility Scorecard/i)).toBeInTheDocument()
     );
 
     // Previously this required a full page reload.
-    fireEvent.click(navButton(/Overview/i));
+    gotoPage("Overview");
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
     expect(screen.queryByText(/Research Feasibility Scorecard/i)).not.toBeInTheDocument();
   });
@@ -191,11 +177,11 @@ describe("Application navigation", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
 
-    fireEvent.click(navButton(/Feasibility/i));
+    gotoPage("Feasibility");
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
 
     // Navigation must still work, with or without the boundary engaging.
-    fireEvent.click(navButton(/Analytics/i));
+    gotoPage("Analytics");
     await waitFor(() => expect(screen.getByText("PraHari")).toBeInTheDocument());
     expect(document.body.textContent?.trim().length ?? 0).toBeGreaterThan(50);
   });

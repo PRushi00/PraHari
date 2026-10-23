@@ -53,7 +53,10 @@ ROUTES: list[tuple[str, str]] = [
     ("/feasibility", "Feasibility"),
     ("/forecast", "Forecast"),
     ("/investigate", "Investigation"),
-    ("/traffic", "Traffic"),
+    # Renamed "Connections" when the nav was reduced to four
+    # workspaces (ADR-124); the route and its /connections alias are
+    # unchanged, so existing deep links still resolve.
+    ("/traffic", "Connections"),
     ("/dns", "DNS"),
     ("/system-health", "Health"),
     ("/admin", "Admin"),

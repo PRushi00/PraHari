@@ -6746,3 +6746,141 @@ are the durable record, and they are read back by the tests above.
 polls failed to explain. The polls that recorded nothing are not in
 that figure and cannot now be counted, so the real number of
 unaccounted observations is higher by an unmeasured amount.
+
+---
+
+## ADR-124: Four Workspaces, and the Figures a Table May Claim
+
+### Context
+The header listed every page. Fifteen of them, across three stacked
+rows — Monitor, Forecast, Operate (ADR-118). Every page was one click
+away, which was the intent, and the result was that the first thing on
+screen was an inventory: fifteen choices with no order among them,
+taking up to 180px of vertical space before any telemetry appeared.
+
+The operator's verdict was that previous visual changes had not
+simplified anything, and that is correct: ADR-114 and ADR-115 changed
+how the row *looked* and what it *explained*, never how much of it
+there was.
+
+The Traffic Explorer had the opposite problem. Six filter boxes sat
+above an empty table in a full-width panel, so the filters read as the
+page's content. Each carried an example placeholder — `93.184.`, `443`,
+`chrome` — which greys out exactly like an applied filter, so an empty
+result looked like a filter nobody could find how to clear.
+
+### Decision
+**Four primary destinations: Overview, Network, Security, System.**
+
+No page was removed and no URL changed. The inventory moved into each
+workspace, beside the work it belongs to, where the list is short
+enough to read. `workspaceOf` is total over `NavTab`, so a page cannot
+be added without being placed, and a test asserts every route resolves
+to exactly one workspace — a page in none would be unreachable from the
+header and nothing else would say so.
+
+Overview carries no secondary strip. A summary with tabs is not one.
+
+Security opens on Threat Forecasting, not Feasibility. ADR-115's
+finding that a newcomer should run Feasibility first still holds, and
+Overview still says so in a newcomer's words; opening a workspace on a
+readiness audit answers a question the operator did not ask.
+
+**Clicking a workspace is a navigation.** It lands on a real page, so
+it takes a history entry like any other move. Reaching a page from
+Overview is therefore two entries and Back steps through both. This is
+pinned by a test rather than left to be discovered.
+
+### What a table may claim about a count
+Fixing the empty state turned up the more interesting problem.
+
+`GET /events/connections` applies `dst_port`, `protocol`, `dst_ip`,
+`process`, `hostname` and `direction` **to the page it fetched**, after
+the limit and offset have been applied, and its docstring says so:
+`total` refers to the database-level filters only and "is not silently
+adjusted to match". That is the right call — it refuses to report a
+count it never computed — but the dashboard was rendering `returned` of
+`total` as though both described the same set. With a direction filter
+on 100 stored records it read **"0 of 100 connections"**, which states
+that none of 100 matched. What the backend meant was that none of *the
+fifty on this page* matched, and the other fifty were never examined.
+
+So the page now says what is true: `N matches on this page`, with
+`100 stored · page 1 of 2` beside it, and, whenever a post-fetch filter
+is active over more than one page, a line stating that matches
+elsewhere in the store appear on other pages. The pager is labelled as
+paging stored connections, and Next stays enabled on a page that
+matched nothing, because the next page may hold a match.
+
+This also deleted a request. An earlier draft fired a second,
+unfiltered query to learn whether anything was stored at all — which
+`total` had been reporting correctly the whole time.
+
+Three empty states, three next actions, none of them a blank table:
+nothing stored anywhere; nothing matching on this page; and a failure
+to read, which is never rendered as an empty network.
+
+### Smaller corrections, all found by looking at the running application
+* `Unknown` and a confidence of `none` rendered as **`Unknownnone`** —
+  no separator, and the qualifier restating the absence it qualifies.
+  The qualifier now appears only when it qualifies something.
+* A **stopped** collector was coloured as a critical fault. Red is for
+  confirmed critical states; not running is not one.
+* A refused sample import was a `console.error` and nothing else, so a
+  deliberate refusal looked like a dead button. The backend guards the
+  operational database against research corpora and explains itself
+  when it refuses; that explanation now reaches the screen.
+* Those refusals arrive as `{error, message, remedy}` and were passed
+  through `JSON.stringify`, so the remedy reached the user wrapped in
+  braces and escaped quotes. `formatDetail` now reads out the message
+  and the remedy, and joins the per-field messages of a validation
+  error. Every page gained this at once.
+
+### Honesty rules this restructure had to keep
+The Overview is the page most likely to be read as a claim about the
+network rather than about the store, so: registered is not monitored
+and the card says so; DNS observations are counted in their own card as
+evidence of a lookup and never of a connection; the header pill reports
+the **backend**, not the host, because nothing here has measured the
+host; and sample data stays under `soc_perimeter_sensor`, named as
+sample, never mixed into real telemetry.
+
+### Verification
+Run against the actual application, not component previews.
+
+| | |
+|---|---|
+| Frontend `tsc --noEmit` | 0 errors |
+| Frontend tests | **200 passed**, 25 files (was 166/22) |
+| Production build | clean |
+| Real-Chromium route verifier | **35 passed, 0 failed** |
+| Uncaught page errors across a 13-screen session | none |
+| Horizontal overflow at 900px | none |
+
+The navigation walk now covers **all fifteen** pages, taken from the
+application's own workspace definition. The hand-written list it
+replaced named eleven, so four were never walked — including two of
+the pages the original blank-screen crash was found on.
+
+### Not established
+**The host card is still mostly unbuildable.** The reference design
+shows hostname, local IP address and host uptime. The backend exposes
+none of them: `CollectorStatus` carries `platform_name` and a state,
+and `HealthResponse.uptime_seconds` is the **API process's** uptime,
+not the machine's. Rather than label the wrong uptime as the host's,
+the card shows what exists. A host-identity endpoint would be a real
+addition, not styling, and was not written here.
+
+**Per-device traffic remains absent**, as in ADR-118 and rows 8–10 of
+the expansion plan. Nothing reports it, and a column of blanks invites
+someone to fill it.
+
+**No network-activity chart.** The reference shows connections per
+minute. It could be bucketed from stored timestamps honestly, but it
+was not built in this pass.
+
+**The four-item header is a judgement, not a measurement.** Nobody has
+been observed using either layout. The claim defended here is only the
+narrow one: fifteen links in a persistent three-row header is an
+inventory rather than a navigation, and the pages are all still
+reachable, which is tested.
