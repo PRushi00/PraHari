@@ -229,7 +229,10 @@ export const DnsPage: React.FC = () => {
             }}
           />
           {collector?.state === "running"
-            ? `Collecting every ${collector.interval_seconds}s`
+            ? `Collecting every ${collector.interval_seconds}s` +
+              (collector.polls_succeeded && !collector.records_read_total
+                ? " · nothing read yet"
+                : "")
             : collector?.state === "unsupported"
             ? "Continuous collection unavailable on this platform"
             : collector?.state === "error"
@@ -264,6 +267,54 @@ export const DnsPage: React.FC = () => {
             <div className="banner-note">
               This is a collection failure, not a statement that this host
               resolved nothing.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* A collector that is running and reading nothing is the failure
+          mode that looks healthiest. It gets its own banner (ADR-128). */}
+      {collector?.state === "running" &&
+        collector.polls_succeeded > 2 &&
+        collector.records_read_total === 0 && (
+          <div className="status-banner status-warn" role="status">
+            <AlertTriangle size={16} />
+            <div>
+              <strong>Collecting, but every poll has read zero records.</strong>
+              <div className="banner-note">
+                Normal on an idle machine. If names are being resolved right
+                now, the channel is returning nothing to PraHari — check that
+                Microsoft-Windows-DNS-Client/Operational is enabled and
+                readable by the account running PraHari.
+              </div>
+            </div>
+          </div>
+        )}
+
+      {collector?.filter_error && (
+        <div className="status-banner status-warn" role="status">
+          <AlertTriangle size={16} />
+          <div>
+            <strong>Using the fallback read.</strong>
+            <div className="banner-note">
+              The filtered event-log query failed, so collection is reading the
+              newest {collector.batch_size} records each poll and discarding
+              what it has already seen. Collection is still correct, just less
+              efficient. Reason: {collector.filter_error}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {collector?.possible_gap_seen && (
+        <div className="status-banner status-warn" role="status">
+          <AlertTriangle size={16} />
+          <div>
+            <strong>Some events may have been missed.</strong>
+            <div className="banner-note">
+              A read could not reach back to the last processed record, so
+              events scrolled out of the circular channel between polls.
+              Shorten the interval or raise the batch size.
             </div>
           </div>
         </div>

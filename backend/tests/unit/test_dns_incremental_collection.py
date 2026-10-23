@@ -423,3 +423,145 @@ def test_the_failure_limit_is_finite(db):
     nine hundred times; the log noise buries anything real.
     """
     assert 1 <= MAX_CONSECUTIVE_FAILURES <= 100
+
+
+# ---------------------------------------------------------------------
+# ADR-128 — why automatic collection never ran
+# ---------------------------------------------------------------------
+
+
+def test_collection_is_enabled_by_default():
+    """
+    Root cause #1.
+
+    `dns_collector_enabled` defaulted to False and neither launcher set
+    the variable, so a normal launch started nothing and the dashboard
+    correctly reported "Not collecting" for ever. Opting in through an
+    environment variable nobody sets is the same as not having the
+    feature.
+    """
+    from app.core.config import AppConfig
+
+    assert AppConfig().dns_collector_enabled is True
+
+
+def test_the_launcher_needs_no_dns_environment_variable():
+    """The normal startup path must be enough on its own."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    for script in ("start_prahari.bat", "start_prahari.ps1"):
+        text = (root / script).read_text(encoding="utf-8", errors="replace")
+        assert "DNS_COLLECTOR_ENABLED" not in text, (
+            f"{script} sets the flag explicitly; the default must carry it"
+        )
+
+
+def test_a_failed_filter_falls_back_instead_of_reading_nothing(db, monkeypatch):
+    """
+    Root cause #2.
+
+    The filtered query had never run on Windows and its errors were
+    swallowed, so a wrong XPath would make every poll succeed with zero
+    records while manual collection kept working. The fallback keeps
+    collection correct when the filter fails.
+    """
+    service = get_enrichment_service(db)
+    db.set_setting(service.BOOKMARK_KEY, "100")
+
+    _stub_reads(monkeypatch, [
+        EventLogRead(
+            # The window read returns old AND new records; only the new
+            # ones may be parsed.
+            records=[
+                _record(99, "old.test", "10.0.0.99", "2026-10-22T11:00:00Z"),
+                _record(100, "edge.test", "10.0.0.100", "2026-10-22T11:30:00Z"),
+                _record(101, "new.test", "10.0.0.101", "2026-10-22T12:00:00Z"),
+            ],
+            newest_record_id=101,
+            requested_after=100,
+            batch_limit=500,
+            filter_mode="fallback_window",
+            filter_error="FilterXPath is not supported here",
+        ),
+    ])
+
+    result = service.collect_from_dns_event_log(incremental=True)
+
+    assert result["succeeded"]
+    assert result["filter_mode"] == "fallback_window"
+    assert result["filter_error"], "the reason must reach the operator"
+    # Only record 101 was new.
+    assert result["records_read"] == 1
+    assert service.read_bookmark() == 101
+    hostnames = {r["hostname"] for r in db.recent_dns_observations(limit=50)}
+    assert "new.test" in hostnames
+    assert "old.test" not in hostnames, "a record below the bookmark was re-stored"
+
+
+def test_a_window_that_outran_the_bookmark_is_reported(db, monkeypatch):
+    """
+    The fallback's one real weakness, said out loud.
+
+    If more new events arrived than the batch holds, the window cannot
+    reach back to the bookmark and the events between scrolled out.
+    """
+    service = get_enrichment_service(db)
+    db.set_setting(service.BOOKMARK_KEY, "10")
+
+    _stub_reads(monkeypatch, [
+        EventLogRead(
+            records=[
+                _record(500, "a.test", "10.0.0.1", "2026-10-22T12:00:00Z"),
+                _record(501, "b.test", "10.0.0.2", "2026-10-22T12:00:01Z"),
+            ],
+            newest_record_id=501,
+            requested_after=10,
+            batch_limit=2,
+            filter_mode="fallback_window",
+        ),
+    ])
+
+    result = service.collect_from_dns_event_log(max_events=2, incremental=True)
+
+    assert result["possible_gap"] is True, (
+        "events between the bookmark and the window were lost silently"
+    )
+
+
+def test_a_filtered_read_reports_no_gap(db, monkeypatch):
+    """The event-log filter cannot miss the middle; only the window can."""
+    service = get_enrichment_service(db)
+    db.set_setting(service.BOOKMARK_KEY, "10")
+
+    _stub_reads(monkeypatch, [
+        EventLogRead(
+            records=[_record(500, "a.test", "10.0.0.1", "2026-10-22T12:00:00Z")],
+            newest_record_id=500, requested_after=10, batch_limit=1,
+            filter_mode="xpath",
+        ),
+    ])
+    result = service.collect_from_dns_event_log(max_events=1, incremental=True)
+    assert result["possible_gap"] is False
+    assert result["filter_mode"] == "xpath"
+
+
+def test_running_but_reading_nothing_is_visible_in_status(db):
+    """
+    The failure mode that looks healthiest.
+
+    A collector that polls successfully and reads zero records every
+    time is indistinguishable from a quiet network unless it says so.
+    """
+    service = DnsEventCollectorService(db=db)
+    service.polls_succeeded = 5
+    service.records_read_total = 0
+    service._task = object()  # pretend the loop is alive for status()
+
+    try:
+        notes = " ".join(service.status().notes).lower()
+    finally:
+        service._task = None
+
+    if service.platform_supported:
+        assert "zero records" in notes

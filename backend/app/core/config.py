@@ -138,13 +138,18 @@ class AppConfig(BaseSettings):
         default=["/api/v1/health", "/docs", "/redoc", "/openapi.json"]
     )
 
-    # ── Continuous DNS event-log collection (ADR-127) ──
-    # Off by default. Enabling starts a background loop that reads the
-    # Windows DNS-Client Operational channel on an interval. It enables
-    # no channel and changes no Windows configuration; where the channel
-    # is off or the platform is not Windows it collects nothing and says
-    # so. Collection can also be started and stopped at runtime.
-    dns_collector_enabled: bool = False
+    # ── Continuous DNS event-log collection (ADR-127, ADR-128) ──
+    # ON by default. It was off, and neither launcher set the variable,
+    # so a normal launch started nothing and the dashboard correctly
+    # reported "Not collecting" for ever (ADR-128). DNS evidence is the
+    # point of the feature; having to opt in through an environment
+    # variable nobody sets is the same as not having it.
+    #
+    # Enabling costs nothing where it cannot work: the loop refuses to
+    # start off Windows, and where the channel is absent or disabled it
+    # reports that and stops. It enables no channel and changes no
+    # Windows configuration. Set false to switch it off entirely.
+    dns_collector_enabled: bool = True
     dns_collector_interval_seconds: float = 8.0
     dns_collector_batch_size: int = 500
 

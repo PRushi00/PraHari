@@ -92,6 +92,20 @@ class DnsCollectorStatus(BaseModel):
     bookmark: int = 0
     log_resets_seen: int = 0
 
+    #: Which query the last poll used: "xpath", "fallback_window" or
+    #: "cold_start". A collector stuck on `fallback_window` is working,
+    #: but the cheap filtered read is not (ADR-128).
+    filter_mode: Optional[str] = None
+    #: Why the filtered read was abandoned, if it was.
+    filter_error: Optional[str] = None
+    #: True when a window read could not reach back to the bookmark, so
+    #: events may have scrolled out between polls. Said out loud rather
+    #: than left as a silent hole.
+    possible_gap_seen: bool = False
+    #: Polls that succeeded and found nothing new. This is the healthy
+    #: idle case, and it must be distinguishable from never having run.
+    empty_polls: int = 0
+
     last_error: Optional[str] = None
     notes: list[str] = Field(default_factory=list)
 
@@ -136,6 +150,10 @@ class DnsEventCollectorService:
         self.observations_recorded_total = 0
         self.skipped_failed_query_total = 0
         self.log_resets_seen = 0
+        self.empty_polls = 0
+        self.filter_mode: Optional[str] = None
+        self.filter_error: Optional[str] = None
+        self.possible_gap_seen = False
         self.last_error: Optional[str] = None
 
     # ---------------- platform ----------------
@@ -298,6 +316,12 @@ class DnsEventCollectorService:
             )
             if result.get("log_was_reset"):
                 self.log_resets_seen += 1
+            if result.get("possible_gap"):
+                self.possible_gap_seen = True
+            self.filter_mode = result.get("filter_mode")
+            self.filter_error = result.get("filter_error")
+            if not int(result.get("records_read") or 0):
+                self.empty_polls += 1
             return bool(result.get("more_available"))
 
     def _collect(self) -> dict[str, Any]:
@@ -338,6 +362,25 @@ class DnsEventCollectorService:
         except Exception:  # noqa: BLE001
             bookmark = 0
 
+        if self.filter_error:
+            notes.append(
+                "The filtered event-log query failed and collection fell back "
+                f"to reading the newest {self.batch_size} records: "
+                f"{self.filter_error}"
+            )
+        if self.possible_gap_seen:
+            notes.append(
+                "A window read could not reach back to the bookmark, so some "
+                "events may have scrolled out of the circular channel between "
+                "polls. Shorten the interval or raise the batch size."
+            )
+        if state == "running" and self.polls_succeeded and not self.records_read_total:
+            notes.append(
+                "Collection is running and every poll has read zero records. "
+                "That is normal on an idle host, but if DNS activity is "
+                "happening it means the channel is returning nothing."
+            )
+
         return DnsCollectorStatus(
             state=state,
             platform_supported=self.platform_supported,
@@ -359,6 +402,10 @@ class DnsEventCollectorService:
             skipped_failed_query_total=self.skipped_failed_query_total,
             bookmark=bookmark,
             log_resets_seen=self.log_resets_seen,
+            filter_mode=self.filter_mode,
+            filter_error=self.filter_error,
+            possible_gap_seen=self.possible_gap_seen,
+            empty_polls=self.empty_polls,
             last_error=self.last_error,
             notes=notes,
         )
