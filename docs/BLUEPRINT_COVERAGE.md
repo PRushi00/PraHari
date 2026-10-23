@@ -39,7 +39,7 @@ source and against a running instance.
 | 9 | Models, technology stack, lifecycle | 27 | `PARTIAL` / 3 `DEVIATES` |
 | 10 | Evaluation methodology | 16 | `PARTIAL` — cross-*dataset* alone is outstanding; cross-*period* measured and negative (ADR-111) |
 | 11 | Dashboard and API contracts | 31 | `MET` (ADR-108, ADR-109, ADR-114, ADR-115, ADR-118, ADR-122, ADR-124, ADR-125) |
-| 12 | Security, privacy, threat model | 16 | `MET` — source registration brought under the central-mode admin guard (ADR-118) |
+| 12 | Security, privacy, threat model | 16 | `MET` — source registration, retention enforcement and collector control all under the central-mode admin guard (ADR-118, ADR-126) |
 | 13 | Repository structure and configuration | 7 | `DEVIATES` (layout, keys) |
 | 14 | Installation and operating guide | 2 | `MET` |
 | 15 | Troubleshooting and failure handling | 15 | `MET` — `docs/TROUBLESHOOTING.md` |

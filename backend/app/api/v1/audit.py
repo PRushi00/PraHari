@@ -19,6 +19,9 @@ from app.core.config import AppConfig, get_config
 from app.storage.database import Database
 from app.schemas.events import SCHEMA_VERSION
 
+#: See `app.api.v1.events.MAX_OFFSET` (ADR-126).
+MAX_OFFSET = 2**31 - 1
+
 router = APIRouter(prefix="/audit", tags=["Audit & Security"])
 
 
@@ -71,7 +74,7 @@ class SystemConfigReport(BaseModel):
 @router.get("/logs", response_model=list[AuditLogItem])
 def list_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     resource_type: Optional[str] = Query(default=None),
     db: Database = Depends(get_db),
     _: object = Depends(require_admin_in_central),

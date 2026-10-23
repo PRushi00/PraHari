@@ -222,6 +222,12 @@ def enforce_retention(
     req: EnforceRequest,
     db: Database = Depends(get_db),
     config: AppConfig = Depends(get_config),
+    # Admin-only in central mode (ADR-126). `PUT /policy` carried this
+    # guard and `/enforce` did not, so the reversible settings change was
+    # protected while the IRREVERSIBLE deletion it configures was
+    # reachable by any authenticated credential — including an ingest
+    # sensor, which deletes across every source, not just its own.
+    _: object = Depends(require_admin_in_central),
 ) -> RetentionResult:
     """
     Delete eligible telemetry older than the retention cutoff.
